@@ -75,7 +75,7 @@ public final class StubGenerator
             f.AddStringAttribute("Signature", genericSignature);
         }
         f.AddStringAttribute("IKVM.NET.Assembly", getAssemblyName(c));
-        if(isClassDeprecated(VMClass.getWrapper(c)))
+        if(isClassDeprecated(c))
         {
             f.AddAttribute(new DeprecatedAttribute(f));
         }
@@ -171,7 +171,7 @@ public final class StubGenerator
                     });
                 m.AddAttribute(code);
                 AddExceptions(f, m, constructors[i].getExceptionTypes());
-                if(isMethodDeprecated(constructors[i].methodCookie))
+                if(isConstructorDeprecated(constructors[i]))
                 {
                     m.AddAttribute(new DeprecatedAttribute(f));
                 }
@@ -229,7 +229,7 @@ public final class StubGenerator
                 Class retType = methods[i].getReturnType();
                 FieldOrMethod m = f.AddMethod(mods, methods[i].getName(), MakeSig(args, retType));
                 AddExceptions(f, m, methods[i].getExceptionTypes());
-                if(isMethodDeprecated(methods[i].methodCookie))
+                if(isMethodDeprecated(methods[i]))
                 {
                     m.AddAttribute(new DeprecatedAttribute(f));
                 }
@@ -256,10 +256,10 @@ public final class StubGenerator
                 ((mods & (Modifiers.Static | Modifiers.Final)) == (Modifiers.Static | Modifiers.Final) &&
                 fields[i].getName().equals("serialVersionUID") && fields[i].getType() == java.lang.Long.TYPE))
             {
+                // we use the IKVM runtime API to get constant value
                 // NOTE we can't use Field.get() because that will run the static initializer and
-                // also won't allow us to see the difference between constants and blank final fields,
-                // so we use a "native" method.
-                Object constantValue = getFieldConstantValue(fields[i].impl.fieldCookie);
+                // also won't allow us to see the difference between constants and blank final fields.
+                Object constantValue = getFieldConstantValue(fields[i]);
                 Class fieldType = fields[i].getType();
                 if(fields[i].isEnumConstant())
                 {
@@ -270,7 +270,7 @@ public final class StubGenerator
                     mods |= Modifiers.Synthetic;
                 }
                 FieldOrMethod fld = f.AddField(mods, fields[i].getName(), ClassToSig(fieldType), constantValue);
-                if(isFieldDeprecated(fields[i].impl.fieldCookie))
+                if(isFieldDeprecated(fields[i]))
                 {
                     fld.AddAttribute(new DeprecatedAttribute(f));
                 }
@@ -297,10 +297,11 @@ public final class StubGenerator
     }
 
     private static native String getAssemblyName(Class c);
-    private static native boolean isClassDeprecated(Object wrapper);
-    private static native boolean isFieldDeprecated(Object fieldCookie);
-    private static native boolean isMethodDeprecated(Object methodCookie);
-    private static native Object getFieldConstantValue(Object fieldCookie);
+    private static native boolean isClassDeprecated(Class c);
+    private static native boolean isFieldDeprecated(java.lang.reflect.Field f);
+    private static native boolean isMethodDeprecated(java.lang.reflect.Method m);
+    private static native boolean isConstructorDeprecated(java.lang.reflect.Constructor c);
+    private static native Object getFieldConstantValue(java.lang.reflect.Field f);
 
     private static void AddExceptions(ClassFileWriter f, FieldOrMethod m, Class[] exceptions)
     {
