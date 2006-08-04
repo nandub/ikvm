@@ -75,7 +75,7 @@ public final class StubGenerator
             f.AddStringAttribute("Signature", genericSignature);
         }
         f.AddStringAttribute("IKVM.NET.Assembly", getAssemblyName(c));
-        if(isClassDeprecated(c))
+        if(isClassDeprecated(VMClass.getWrapper(c)))
         {
             f.AddAttribute(new DeprecatedAttribute(f));
         }
@@ -171,7 +171,7 @@ public final class StubGenerator
                     });
                 m.AddAttribute(code);
                 AddExceptions(f, m, constructors[i].getExceptionTypes());
-                if(isConstructorDeprecated(constructors[i]))
+                if(isMethodDeprecated(constructors[i].methodCookie))
                 {
                     m.AddAttribute(new DeprecatedAttribute(f));
                 }
@@ -188,13 +188,13 @@ public final class StubGenerator
         {
             // FXBUG (?) .NET reflection on java.lang.Object returns toString() twice!
             // I didn't want to add the work around to CompiledTypeWrapper, so it's here.
-            if((c.getName() == "java.lang.Object" || c.getName() == "java.lang.Throwable")
-                && methods[i].getName() == "toString")
+            if((c.getName().equals("java.lang.Object") || c.getName().equals("java.lang.Throwable"))
+                && methods[i].getName().equals("toString"))
             {
                 boolean found = false;
                 for(int j = 0; j < i; j++)
                 {
-                    if(methods[j].getName() == "toString")
+                    if(methods[j].getName().equals("toString"))
                     {
                         found = true;
                         break;
@@ -229,7 +229,7 @@ public final class StubGenerator
                 Class retType = methods[i].getReturnType();
                 FieldOrMethod m = f.AddMethod(mods, methods[i].getName(), MakeSig(args, retType));
                 AddExceptions(f, m, methods[i].getExceptionTypes());
-                if(isMethodDeprecated(methods[i]))
+                if(isMethodDeprecated(methods[i].methodCookie))
                 {
                     m.AddAttribute(new DeprecatedAttribute(f));
                 }
@@ -254,12 +254,12 @@ public final class StubGenerator
             if((mods & (Modifiers.Public | Modifiers.Protected)) != 0 ||
                 // Include serialVersionUID field, to make Japitools comparison more acurate
                 ((mods & (Modifiers.Static | Modifiers.Final)) == (Modifiers.Static | Modifiers.Final) &&
-                fields[i].getName() == "serialVersionUID" && fields[i].getType() == java.lang.Long.TYPE))
+                fields[i].getName().equals("serialVersionUID") && fields[i].getType() == java.lang.Long.TYPE))
             {
-                // we use the IKVM runtime API to get constant value
                 // NOTE we can't use Field.get() because that will run the static initializer and
-                // also won't allow us to see the difference between constants and blank final fields.
-                Object constantValue = getFieldConstantValue(fields[i]);
+                // also won't allow us to see the difference between constants and blank final fields,
+                // so we use a "native" method.
+                Object constantValue = getFieldConstantValue(fields[i].impl.fieldCookie);
                 Class fieldType = fields[i].getType();
                 if(fields[i].isEnumConstant())
                 {
@@ -270,7 +270,7 @@ public final class StubGenerator
                     mods |= Modifiers.Synthetic;
                 }
                 FieldOrMethod fld = f.AddField(mods, fields[i].getName(), ClassToSig(fieldType), constantValue);
-                if(isFieldDeprecated(fields[i]))
+                if(isFieldDeprecated(fields[i].impl.fieldCookie))
                 {
                     fld.AddAttribute(new DeprecatedAttribute(f));
                 }
@@ -297,11 +297,10 @@ public final class StubGenerator
     }
 
     private static native String getAssemblyName(Class c);
-    private static native boolean isClassDeprecated(Class c);
-    private static native boolean isFieldDeprecated(java.lang.reflect.Field f);
-    private static native boolean isMethodDeprecated(java.lang.reflect.Method m);
-    private static native boolean isConstructorDeprecated(java.lang.reflect.Constructor c);
-    private static native Object getFieldConstantValue(java.lang.reflect.Field f);
+    private static native boolean isClassDeprecated(Object wrapper);
+    private static native boolean isFieldDeprecated(Object fieldCookie);
+    private static native boolean isMethodDeprecated(Object methodCookie);
+    private static native Object getFieldConstantValue(Object fieldCookie);
 
     private static void AddExceptions(ClassFileWriter f, FieldOrMethod m, Class[] exceptions)
     {
@@ -713,7 +712,7 @@ final class ConstantPoolItemUtf8 extends ConstantPoolItem
     {
         if(o instanceof ConstantPoolItemUtf8)
         {
-            return ((ConstantPoolItemUtf8)o).str == str;
+            return ((ConstantPoolItemUtf8)o).str.equals(str);
         }
         return false;
     }
@@ -1229,7 +1228,7 @@ class ClassFileWriter
             {
                 cplist.add(null);
             }
-            cphashtable.put(index, cpi);
+            cphashtable.put(cpi, index);
         }
         return (Short)index;
     }
