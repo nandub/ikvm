@@ -28,7 +28,6 @@ using System.Text;
 using System.Collections;
 using ICSharpCode.SharpZipLib.Zip;
 using IKVM.Attributes;
-using IKVM.Internal;
 
 public class NetExp
 {
@@ -38,7 +37,7 @@ public class NetExp
 
 	public static void Main(string[] args)
 	{
-		Tracer.EnableTraceForDebug();
+		IKVM.Internal.Tracer.EnableTraceForDebug();
 		if(args.Length != 1)
 		{
 			Console.Error.WriteLine(IKVM.Runtime.Startup.GetVersionAndCopyrightInfo());
@@ -335,6 +334,17 @@ public class NetExp
 				}
 			}
 		}
-		WriteClass(name + ".class", ikvm.@internal.stubgen.StubGenerator.generateStub(c));
+		java.io.InputStream inp = c.getResourceAsStream("/" + name + ".class");
+		if(inp == null)
+		{
+			Console.Error.WriteLine("Class {0} not found", name);
+			return;
+		}
+		byte[] buf = new byte[inp.available()];
+		if(inp.read(buf) != buf.Length || inp.read() != -1)
+		{
+			throw new NotImplementedException();
+		}
+		WriteClass(name + ".class", buf);
 	}
 }
