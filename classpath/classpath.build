@@ -34,7 +34,7 @@
 <arg value="-srcpath:/classpath/" />
 -->
           <arg value="-nowarn:100:java.math.BigInteger$NativeMPI" />
-          <arg value="-version:0.33.*" />
+          <arg value="-version:0.35.*" />
           <arg value="${signoption}" />
           <arg value="-compressresources" />
           <arg value="-opt:fields" />
@@ -45,7 +45,7 @@
           <arg value="-target:library" />
           <arg value="-recurse:./*.class" />
           <arg value="-recurse:${Classpath.dir}/*.class" />
-          <arg value="-recurse:${Classpath.dir}/*.css" />
+          <arg value="-recurse:${Classpath.dir}/resource/*.css" />
           <arg value="-recurse:${Classpath.dir}/resource/*.properties" />
           <arg value="-recurse:${Classpath.dir}/resource/javax.*" />
           <arg value="-recurse:${Classpath.dir}/resource/org.xml.*" />
