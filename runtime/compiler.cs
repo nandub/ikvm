@@ -1647,11 +1647,39 @@ class Compiler
 					switch(classFile.GetConstantPoolConstantType(constant))
 					{
 						case ClassFile.ConstantType.Double:
-							ilGenerator.Emit(OpCodes.Ldc_R8, classFile.GetConstantPoolConstantDouble(constant));
+						{
+							double v = classFile.GetConstantPoolConstantDouble(constant);
+							if(v == 0.0 && BitConverter.DoubleToInt64Bits(v) < 0)
+							{
+								// FXBUG the x64 CLR JIT has a bug [1] that causes "cond ? -0:0 : 0.0" to be optimized to 0.0
+								// This bug causes problems for the sun.misc.FloatingDecimal code, so as a workaround we obfuscate the -0.0 constant.
+								// [1] https://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=276714
+								ilGenerator.Emit(OpCodes.Ldc_I8, Int64.MinValue);
+								ilGenerator.Emit(OpCodes.Call, typeof(BitConverter).GetMethod("Int64BitsToDouble"));
+							}
+							else
+							{
+								ilGenerator.Emit(OpCodes.Ldc_R8, v);
+							}
 							break;
+						}
 						case ClassFile.ConstantType.Float:
-							ilGenerator.Emit(OpCodes.Ldc_R4, classFile.GetConstantPoolConstantFloat(constant));
+						{
+							float v = classFile.GetConstantPoolConstantFloat(constant);
+							if(v == 0.0 && BitConverter.DoubleToInt64Bits(v) < 0)
+							{
+								// FXBUG the x64 CLR JIT has a bug [1] that causes "cond ? -0:0 : 0.0" to be optimized to 0.0
+								// This bug causes problems for the sun.misc.FloatingDecimal code, so as a workaround we obfuscate the -0.0 constant.
+								// [1] https://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=276714
+								ilGenerator.Emit(OpCodes.Ldc_I8, Int64.MinValue);
+								ilGenerator.Emit(OpCodes.Call, typeof(BitConverter).GetMethod("Int64BitsToDouble"));
+							}
+							else
+							{
+								ilGenerator.Emit(OpCodes.Ldc_R4, v);
+							}
 							break;
+						}
 						case ClassFile.ConstantType.Integer:
 							ilGenerator.LazyEmitLdc_I4(classFile.GetConstantPoolConstantInteger(constant));
 							break;
@@ -2417,21 +2445,11 @@ class Compiler
 					ilGenerator.Emit(OpCodes.Stloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res1 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Bgt_S, res1);
+					ilGenerator.Emit(OpCodes.Cgt);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res0 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Beq_S, res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_M1);
-					Label end = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res1);
-					ilGenerator.Emit(OpCodes.Ldc_I4_1);
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_0);
-					ilGenerator.MarkLabel(end);
+					ilGenerator.Emit(OpCodes.Clt);
+					ilGenerator.Emit(OpCodes.Sub);
 					ReleaseTempLocal(value1);
 					ReleaseTempLocal(value2);
 					break;
@@ -2444,21 +2462,11 @@ class Compiler
 					ilGenerator.Emit(OpCodes.Stloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res1 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Bgt_S, res1);
+					ilGenerator.Emit(OpCodes.Cgt);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res0 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Beq_S, res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_M1);
-					Label end = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res1);
-					ilGenerator.Emit(OpCodes.Ldc_I4_1);
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_0);
-					ilGenerator.MarkLabel(end);
+					ilGenerator.Emit(OpCodes.Clt_Un);
+					ilGenerator.Emit(OpCodes.Sub);
 					ReleaseTempLocal(value1);
 					ReleaseTempLocal(value2);
 					break;
@@ -2471,21 +2479,11 @@ class Compiler
 					ilGenerator.Emit(OpCodes.Stloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label resm1 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Blt_S, resm1);
+					ilGenerator.Emit(OpCodes.Cgt_Un);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res0 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Beq_S, res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_1);
-					Label end = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(resm1);
-					ilGenerator.Emit(OpCodes.Ldc_I4_M1);
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_0);
-					ilGenerator.MarkLabel(end);
+					ilGenerator.Emit(OpCodes.Clt);
+					ilGenerator.Emit(OpCodes.Sub);
 					ReleaseTempLocal(value1);
 					ReleaseTempLocal(value2);
 					break;
@@ -2498,21 +2496,11 @@ class Compiler
 					ilGenerator.Emit(OpCodes.Stloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res1 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Bgt_S, res1);
+					ilGenerator.Emit(OpCodes.Cgt);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res0 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Beq_S, res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_M1);
-					Label end = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res1);
-					ilGenerator.Emit(OpCodes.Ldc_I4_1);
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_0);
-					ilGenerator.MarkLabel(end);
+					ilGenerator.Emit(OpCodes.Clt_Un);
+					ilGenerator.Emit(OpCodes.Sub);
 					ReleaseTempLocal(value1);
 					ReleaseTempLocal(value2);
 					break;
@@ -2525,21 +2513,11 @@ class Compiler
 					ilGenerator.Emit(OpCodes.Stloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label resm1 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Blt_S, resm1);
+					ilGenerator.Emit(OpCodes.Cgt_Un);
 					ilGenerator.Emit(OpCodes.Ldloc, value1);
 					ilGenerator.Emit(OpCodes.Ldloc, value2);
-					Label res0 = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Beq_S, res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_1);
-					Label end = ilGenerator.DefineLabel();
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(resm1);
-					ilGenerator.Emit(OpCodes.Ldc_I4_M1);
-					ilGenerator.Emit(OpCodes.Br_S, end);
-					ilGenerator.MarkLabel(res0);
-					ilGenerator.Emit(OpCodes.Ldc_I4_0);
-					ilGenerator.MarkLabel(end);
+					ilGenerator.Emit(OpCodes.Clt);
+					ilGenerator.Emit(OpCodes.Sub);
 					ReleaseTempLocal(value1);
 					ReleaseTempLocal(value2);
 					break;
