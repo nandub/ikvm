@@ -21,6 +21,7 @@
   jeroen@frijters.net
   
 */
+#if !COMPACT_FRAMEWORK
 using System;
 using System.Collections;
 using System.Collections.Specialized;
@@ -57,21 +58,6 @@ using jthrowable = System.IntPtr;
 using jweak = System.IntPtr;
 using jmethodID = System.IntPtr;
 using jfieldID = System.IntPtr;
-
-[assembly: AssemblyTitle("IKVM.NET Runtime JNI Layer")]
-[assembly: AssemblyDescription("JVM for Mono and .NET")]
-[assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("IKVM.NET")]
-[assembly: AssemblyCopyright("Copyright (C) 2002-2007 Jeroen Frijters")]
-[assembly: AssemblyTrademark("")]
-[assembly: AssemblyCulture("")]
-#if SIGNCODE
-[assembly: AssemblyKeyName("ikvm-key")]
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("IKVM.Runtime, PublicKey=0024000004800000940000000602000000240000525341310004000001000100DD6B140E5209CAE3D1C710030021EF589D0F00D05ACA8771101A7E99E10EE063E66040DF96E6F842F717BFC5B62D2EC2B62CEB0282E4649790DACB424DB29B68ADC7EAEAB0356FCE04702379F84400B8427EDBB33DAB8720B9F16A42E2CDB87F885EF413DBC4229F2BD157C9B8DC2CD14866DEC5F31C764BFB9394CC3C60E6C0")]
-#else
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("IKVM.Runtime")]
-#endif
 
 namespace IKVM.Runtime
 {
@@ -137,7 +123,7 @@ namespace IKVM.Runtime
 				}
 			}
 
-			JVM.SetProperties(props);
+			JVM.Library.setProperties(props);
 
 			*((void**)ppvm) = JavaVM.pJavaVM;
 			return JavaVM.AttachCurrentThread(JavaVM.pJavaVM, (void**)ppenv, null);
@@ -309,9 +295,13 @@ namespace IKVM.Runtime
 						}
 					}
 				}
+#if FIRST_PASS
+				return IntPtr.Zero;
+#else
 				string msg = string.Format("{0}.{1}{2}", clazz, name, sig);
 				Tracer.Error(Tracer.Jni, "UnsatisfiedLinkError: {0}", msg);
 				throw new java.lang.UnsatisfiedLinkError(msg);
+#endif
 			}
 
 			private static string JniMangle(string name)
@@ -429,9 +419,11 @@ namespace IKVM.Runtime
 					}
 					if(nativeLibraries.Contains(p))
 					{
+#if !FIRST_PASS
 						string msg = string.Format("Native library {0} already loaded in another classloader", filename);
 						Tracer.Error(Tracer.Jni, "UnsatisfiedLinkError: {0}", msg);
 						throw new java.lang.UnsatisfiedLinkError(msg);
+#endif
 					}
 					Tracer.Info(Tracer.Jni, "Library loaded: {0}, handle = 0x{1:X}", filename, p.ToInt64());
 					IntPtr onload = ikvm_GetProcAddress(p, "JNI_OnLoad", IntPtr.Size * 2);
@@ -443,7 +435,6 @@ namespace IKVM.Runtime
 						ClassLoaderWrapper prevLoader = f.Enter(loader);
 						try
 						{
-							// TODO on Whidbey we should be able to use Marshal.GetDelegateForFunctionPointer to call OnLoad
 							version = ikvm_CallOnLoad(onload, JavaVM.pJavaVM, null);
 							Tracer.Info(Tracer.Jni, "JNI_OnLoad returned: 0x{0:X8}", version);
 						}
@@ -453,9 +444,11 @@ namespace IKVM.Runtime
 						}
 						if(!JNI.IsSupportedJniVersion(version))
 						{
+#if !FIRST_PASS
 							string msg = string.Format("Unsupported JNI version 0x{0:X} required by {1}", version, filename);
 							Tracer.Error(Tracer.Jni, "UnsatisfiedLinkError: {0}", msg);
 							throw new java.lang.UnsatisfiedLinkError(msg);
+#endif
 						}
 					}
 					nativeLibraries.Add(p);
@@ -480,7 +473,6 @@ namespace IKVM.Runtime
 
 	unsafe class VtableBuilder
 	{
-		// TODO on Whidbey we should use generics to cut down on the number of delegates needed
 		delegate int pf_int_IntPtr(JNIEnv* pEnv, IntPtr p);
 		delegate IntPtr pf_IntPtr_IntPtr(JNIEnv* pEnv, IntPtr p);
 		delegate void pf_void_IntPtr(JNIEnv* pEnv, IntPtr p);
@@ -574,7 +566,6 @@ namespace IKVM.Runtime
 			{
 				if(vtableDelegates[i] != null)
 				{
-					// TODO on Whidbey we can use Marshal.GetFunctionPointerForDelegate
 					p[i] = JniHelper.ikvm_MarshalDelegate(vtableDelegates[i]);
 				}
 				else
@@ -1327,7 +1318,9 @@ namespace IKVM.Runtime
 				// don't allow dotted names!
 				if(name.IndexOf('.') >= 0)
 				{
+#if !FIRST_PASS
 					SetPendingException(pEnv, new java.lang.NoClassDefFoundError(name));
+#endif
 					return IntPtr.Zero;
 				}
 				// spec doesn't say it, but Sun allows signature format class names (but not for primitives)
@@ -1338,7 +1331,9 @@ namespace IKVM.Runtime
 				TypeWrapper wrapper = FindNativeMethodClassLoader(pEnv).LoadClassByDottedNameFast(name.Replace('/', '.'));
 				if(wrapper == null)
 				{
+#if !FIRST_PASS
 					SetPendingException(pEnv, new java.lang.NoClassDefFoundError(name));
+#endif
 					return IntPtr.Zero;
 				}
 				wrapper.Finish();
@@ -1393,7 +1388,7 @@ namespace IKVM.Runtime
 		private static void SetPendingException(JNIEnv* pEnv, Exception x)
 		{
 			DeleteLocalRef(pEnv, pEnv->pendingException);
-			pEnv->pendingException = x == null ? IntPtr.Zero : pEnv->MakeLocalRef(ikvm.runtime.Util.mapException(x));
+			pEnv->pendingException = x == null ? IntPtr.Zero : pEnv->MakeLocalRef(JVM.Library.mapException(x));
 		}
 
 		internal static jint Throw(JNIEnv* pEnv, jthrowable throwable)
@@ -1432,7 +1427,9 @@ namespace IKVM.Runtime
 			}
 			else
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.NoSuchMethodError("<init>(Ljava.lang.String;)V"));
+#endif
 				return JNI_ERR;
 			}
 		}
@@ -1450,7 +1447,9 @@ namespace IKVM.Runtime
 				SetPendingException(pEnv, null);
 				try
 				{
+#if !FIRST_PASS
 					java.lang.Throwable.instancehelper_printStackTrace(x);
+#endif
 				}
 				catch(Exception ex)
 				{
@@ -1594,7 +1593,9 @@ namespace IKVM.Runtime
 				TypeWrapper wrapper = TypeWrapper.FromClass(pEnv->UnwrapRef(clazz));
 				if(wrapper.IsAbstract)
 				{
+#if !FIRST_PASS
 					SetPendingException(pEnv, new java.lang.InstantiationException(wrapper.Name));
+#endif
 					return IntPtr.Zero;
 				}
 				wrapper.Finish();
@@ -1676,14 +1677,16 @@ namespace IKVM.Runtime
 			{
 				return MethodWrapper.FromCookie(methodID).Invoke(pEnv->UnwrapRef(obj), argarray, nonVirtual);
 			}
+#if !FIRST_PASS
 			catch(java.lang.reflect.InvocationTargetException x)
 			{
-				SetPendingException(pEnv, ikvm.runtime.Util.mapException(x.getCause()));
+				SetPendingException(pEnv, JVM.Library.mapException(x.getCause()));
 				return null;
 			}
+#endif
 			catch(Exception x)
 			{
-				SetPendingException(pEnv, ikvm.runtime.Util.mapException(x));
+				SetPendingException(pEnv, JVM.Library.mapException(x));
 				return null;
 			}
 		}
@@ -1738,7 +1741,9 @@ namespace IKVM.Runtime
 						}
 					}
 				}
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.NoSuchMethodError(string.Format("{0}{1}", StringFromUTF8(name), StringFromUTF8(sig).Replace('/', '.'))));
+#endif
 			}
 			catch(RetargetableJavaException x)
 			{
@@ -1955,7 +1960,9 @@ namespace IKVM.Runtime
 						}
 					}
 				}
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.NoSuchFieldError((isstatic ? "Static" : "Instance") + " field '" + StringFromUTF8(name) + "' with signature '" + fieldsig + "' not found in class '" + wrapper.Name + "'"));
+#endif
 			}
 			catch(RetargetableJavaException x)
 			{
@@ -2374,7 +2381,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.NegativeArraySizeException());
+#endif
 				return IntPtr.Zero;
 			}
 			catch(Exception x)
@@ -2393,7 +2402,9 @@ namespace IKVM.Runtime
 			}
 			catch(IndexOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 				return IntPtr.Zero;
 			}
 		}
@@ -2407,7 +2418,9 @@ namespace IKVM.Runtime
 			}
 			catch(IndexOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2740,7 +2753,9 @@ namespace IKVM.Runtime
 			}
 			catch(IndexOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2757,7 +2772,9 @@ namespace IKVM.Runtime
 			}
 			catch(IndexOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2770,7 +2787,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2783,7 +2802,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2796,7 +2817,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2809,7 +2832,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2822,7 +2847,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2835,7 +2862,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2852,7 +2881,9 @@ namespace IKVM.Runtime
 			}
 			catch(IndexOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2869,7 +2900,9 @@ namespace IKVM.Runtime
 			}
 			catch(IndexOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2882,7 +2915,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2895,7 +2930,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2908,7 +2945,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2921,7 +2960,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2934,7 +2975,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2947,7 +2990,9 @@ namespace IKVM.Runtime
 			}
 			catch(ArgumentOutOfRangeException)
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.ArrayIndexOutOfBoundsException());
+#endif
 			}
 		}
 
@@ -2980,7 +3025,9 @@ namespace IKVM.Runtime
 					if(fi == null)
 					{
 						Tracer.Error(Tracer.Jni, "Failed to register native method: {0}.{1}{2}", wrapper.Name, methodName, methodSig);
+#if !FIRST_PASS
 						SetPendingException(pEnv, new java.lang.NoSuchMethodError(methodName));
+#endif
 						return JNI_ERR;
 					}
 					fi.SetValue(null, (IntPtr)methods[i].fnPtr);
@@ -3070,7 +3117,9 @@ namespace IKVM.Runtime
 			{
 				if(start < 0 || start > s.Length || s.Length - start < len)
 				{
+#if !FIRST_PASS
 					SetPendingException(pEnv, new java.lang.StringIndexOutOfBoundsException());
+#endif
 					return;
 				}
 				else
@@ -3086,7 +3135,9 @@ namespace IKVM.Runtime
 			}
 			else
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.NullPointerException());
+#endif
 			}
 		}
 
@@ -3097,7 +3148,9 @@ namespace IKVM.Runtime
 			{
 				if(start < 0 || start > s.Length || s.Length - start < len)
 				{
+#if !FIRST_PASS
 					SetPendingException(pEnv, new java.lang.StringIndexOutOfBoundsException());
+#endif
 					return;
 				}
 				else
@@ -3127,7 +3180,9 @@ namespace IKVM.Runtime
 			}
 			else
 			{
+#if !FIRST_PASS
 				SetPendingException(pEnv, new java.lang.NullPointerException());
+#endif
 			}
 		}
 
@@ -3261,7 +3316,9 @@ namespace IKVM.Runtime
 				}
 				return (jchar*)(void*)Marshal.StringToHGlobalUni(s);		
 			}
+#if !FIRST_PASS
 			SetPendingException(pEnv, new java.lang.NullPointerException());
+#endif
 			return null;
 		}
 
@@ -3325,7 +3382,9 @@ namespace IKVM.Runtime
 			{
 				if(capacity < 0 || capacity > int.MaxValue)
 				{
+#if !FIRST_PASS
 					SetPendingException(pEnv, new java.lang.IllegalArgumentException("capacity"));
+#endif
 					return IntPtr.Zero;
 				}
 #if OPENJDK
@@ -3338,7 +3397,7 @@ namespace IKVM.Runtime
 			}
 			catch(Exception x)
 			{
-				SetPendingException(pEnv, ikvm.runtime.Util.mapException(x));
+				SetPendingException(pEnv, JVM.Library.mapException(x));
 				return IntPtr.Zero;
 			}
 		}
@@ -3347,15 +3406,11 @@ namespace IKVM.Runtime
 		{
 			try
 			{
-#if OPENJDK
-				return (IntPtr)((sun.nio.ch.DirectBuffer)pEnv->UnwrapRef(buf)).address();
-#else
 				return JVM.Library.getDirectBufferAddress(pEnv->UnwrapRef(buf));
-#endif
 			}
 			catch(Exception x)
 			{
-				SetPendingException(pEnv, ikvm.runtime.Util.mapException(x));
+				SetPendingException(pEnv, JVM.Library.mapException(x));
 				return IntPtr.Zero;
 			}
 		}
@@ -3364,11 +3419,11 @@ namespace IKVM.Runtime
 		{
 			try
 			{
-				return (jlong)(long)((java.nio.Buffer)pEnv->UnwrapRef(buf)).capacity();
+				return (jlong)(long)JVM.Library.getDirectBufferCapacity(pEnv->UnwrapRef(buf));
 			}
 			catch(Exception x)
 			{
-				SetPendingException(pEnv, ikvm.runtime.Util.mapException(x));
+				SetPendingException(pEnv, JVM.Library.mapException(x));
 				return 0;
 			}
 		}
@@ -3485,3 +3540,4 @@ namespace IKVM.Runtime
 		internal static JNIEnv* pJNIEnv;
 	}
 }
+#endif
