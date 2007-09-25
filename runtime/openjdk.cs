@@ -23,7 +23,6 @@
 */
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -31,7 +30,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
-using System.Security.Cryptography.X509Certificates;
 using StackFrame = System.Diagnostics.StackFrame;
 using StackTrace = System.Diagnostics.StackTrace;
 using SystemArray = System.Array;
@@ -123,11 +121,56 @@ using ssaGetPropertyAction = sun.security.action.GetPropertyAction;
 using sndResolverConfigurationImpl = sun.net.dns.ResolverConfigurationImpl;
 #endif
 
+#if WHIDBEY
 sealed class DynamicMethodSupport
 {
 	// MONOBUG as of Mono 1.2.5.1, DynamicMethod is too broken to be used
 	internal static readonly bool Enabled = Type.GetType("Mono.Runtime") == null;
 }
+#else
+sealed class DynamicMethodSupport
+{
+	internal static readonly bool Enabled = Environment.Version.Major >= 2 && Type.GetType("Mono.Runtime") == null;
+}
+
+sealed class DynamicMethod
+{
+	private static ConstructorInfo ctor1;
+	private static ConstructorInfo ctor2;
+	private static MethodInfo createMethod;
+	private static MethodInfo getILGenMethod;
+	private object dm;
+
+	static DynamicMethod()
+	{
+		Type type = Type.GetType("System.Reflection.Emit.DynamicMethod", true);
+		ctor1 = type.GetConstructor(new Type[] { typeof(string), typeof(MethodAttributes), typeof(CallingConventions), typeof(Type), typeof(Type[]), typeof(Module), typeof(bool) });
+		ctor2 = type.GetConstructor(new Type[] { typeof(string), typeof(Type), typeof(Type[]), typeof(Type) });
+		createMethod = type.GetMethod("CreateDelegate", new Type[] { typeof(Type) });
+		getILGenMethod = type.GetMethod("GetILGenerator", new Type[0]);
+	}
+
+	internal DynamicMethod(string name, MethodAttributes attributes, CallingConventions callingConvention, Type returnType, Type[] parameterTypes, Module owner, bool skipVisibility)
+	{
+		dm = ctor1.Invoke(new object[] { name, attributes, callingConvention, returnType, parameterTypes, owner, skipVisibility });
+	}
+
+	internal DynamicMethod(string name, Type returnType, Type[] parameterTypes, Type owner)
+	{
+		dm = ctor2.Invoke(new object[] { name, returnType, parameterTypes, owner });
+	}
+
+	internal ILGenerator GetILGenerator()
+	{
+		return (ILGenerator)getILGenMethod.Invoke(dm, null);
+	}
+
+	internal Delegate CreateDelegate(Type delegateType)
+	{
+		return (Delegate)createMethod.Invoke(dm, new object[] { delegateType });
+	}
+}
+#endif
 
 namespace IKVM.Runtime
 {
@@ -292,82 +335,22 @@ namespace IKVM.NativeCode.java
 		{
 			public static string encoding()
 			{
-				int cp = 437;
-				try
-				{
-					cp = global::System.Console.InputEncoding.CodePage;
-				}
-				catch
-				{
-				}
-				if (cp >= 874 && cp <= 950)
-				{
-					return "ms" + cp;
-				}
-				return "cp" + cp;
+				// TODO
+				return "IBM437";
 			}
-
-			private const int STD_INPUT_HANDLE = -10;
-			private const int ENABLE_ECHO_INPUT = 0x0004;
-
-			[System.Runtime.InteropServices.DllImport("kernel32")]
-			private static extern IntPtr GetStdHandle(int nStdHandle);
-
-			[System.Runtime.InteropServices.DllImport("kernel32")]
-			private static extern int GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
-
-			[System.Runtime.InteropServices.DllImport("kernel32")]
-			private static extern int SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
 
 			public static bool echo(bool on)
 			{
-#if !FIRST_PASS
-				// HACK the only way to get this to work is by p/invoking the Win32 APIs
-				if (Environment.OSVersion.Platform == PlatformID.Win32NT)
-				{
-					IntPtr hStdIn = GetStdHandle(STD_INPUT_HANDLE);
-					if (hStdIn.ToInt64() == 0 || hStdIn.ToInt64() == -1)
-					{
-						throw new global::java.io.IOException("The handle is invalid");
-					}
-					int fdwMode;
-					if (GetConsoleMode(hStdIn, out fdwMode) == 0)
-					{
-						throw new global::java.io.IOException("GetConsoleMode failed");
-					}
-					bool old = (fdwMode & ENABLE_ECHO_INPUT) != 0;
-					if (on)
-					{
-						fdwMode |= ENABLE_ECHO_INPUT;
-					}
-					else
-					{
-						fdwMode &= ~ENABLE_ECHO_INPUT;
-					}
-					if (SetConsoleMode(hStdIn, fdwMode) == 0)
-					{
-						throw new global::java.io.IOException("SetConsoleMode failed");
-					}
-					return old;
-				}
-#endif
-				return true;
+				// TODO
+				return false;
 			}
 
 			public static bool istty()
 			{
-				// The JDK returns false here if stdin or stdout (not stderr) is redirected to a file
-				// or if there is no console associated with the current process.
-				// The best we can do is to look at the KeyAvailable property, which
-				// will throw an InvalidOperationException if stdin is redirected or not available
-				try
-				{
-					return global::System.Console.KeyAvailable || true;
-				}
-				catch (InvalidOperationException)
-				{
-					return false;
-				}
+				// the JDK returns false here if stdin or stdout is redirected (not stderr)
+				// or if there is no console associated with the current process
+				// TODO figure out if there is a managed way to detect redirection or console presence
+				return true;
 			}
 		}
 
@@ -855,176 +838,86 @@ namespace IKVM.NativeCode.java
 			}
 
 #if !FIRST_PASS
-			private static Dictionary<string, VfsEntry> entries;
+			// TODO on WHIDBEY this variable can be typed juzZipFile (because Interlocked.CompareExchange<>() is availble there)
+			private static object zipFile;
 
-			private abstract class VfsEntry
-			{
-				internal abstract long Size { get; }
-				internal virtual bool IsDirectory { get { return false; } }
-				internal abstract System.IO.Stream Open();
-			}
-
-			private class VfsDummyEntry : VfsEntry
+			private class VfsEntry : juzZipEntry
 			{
 				private bool directory;
 
-				internal VfsDummyEntry(bool directory)
+				internal VfsEntry(bool directory)
+					: base("")
 				{
 					this.directory = directory;
 				}
 
-				internal override long Size
+				public override bool isDirectory()
 				{
-					get { return 0; }
-				}
-
-				internal override bool IsDirectory
-				{
-					get { return directory; }
-				}
-
-				internal override System.IO.Stream Open()
-				{
-					return System.IO.Stream.Null;
+					return directory;
 				}
 			}
 
-			private class VfsZipEntry : VfsEntry
+			private static juzZipEntry GetZipEntry(string name)
 			{
-				private juzZipFile zipFile;
-				private juzZipEntry entry;
-
-				internal VfsZipEntry(juzZipFile zipFile, juzZipEntry entry)
+				if (zipFile == null)
 				{
-					this.zipFile = zipFile;
-					this.entry = entry;
-				}
-
-				internal override long Size
-				{
-					get { return entry.getSize(); }
-				}
-
-				internal override bool IsDirectory
-				{
-					get { return entry.isDirectory(); }
-				}
-
-				internal override System.IO.Stream Open()
-				{
-					return new ZipEntryStream(zipFile, entry);
-				}
-			}
-
-			private class VfsCacertsEntry : VfsEntry
-			{
-				private byte[] buf;
-
-				internal override long Size
-				{
-					get 
+					// this is a weird loop back, the vfs.zip resource is loaded from vfs,
+					// because that's the easiest way to construct a ZipFile from a Stream.
+					juzZipFile zf = new juzZipFile(RootPath + "vfs.zip");
+					if (Interlocked.CompareExchange(ref zipFile, zf, null) != null)
 					{
-						Populate();
-						return buf.Length;
+						zf.close();
 					}
 				}
-
-				internal override System.IO.Stream Open()
+				if (IsVirtualFS(name))
 				{
-					Populate();
-					return new System.IO.MemoryStream(buf, false);
-				}
-
-				private void Populate()
-				{
-					if (buf == null)
+					if (name.Length < RootPath.Length)
 					{
-						global::java.security.KeyStore jstore = global::java.security.KeyStore.getInstance("jks");
-						jstore.load(null);
-						global::java.security.cert.CertificateFactory cf = global::java.security.cert.CertificateFactory.getInstance("X509");
-
-						X509Store store = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
-						store.Open(OpenFlags.ReadOnly);
-						foreach (X509Certificate2 cert in store.Certificates)
-						{
-							if (!cert.HasPrivateKey)
-							{
-								jstore.setCertificateEntry(cert.Subject, cf.generateCertificate(new global::java.io.ByteArrayInputStream(cert.RawData)));
-							}
-						}
-						store.Close();
-						global::java.io.ByteArrayOutputStream baos = new global::java.io.ByteArrayOutputStream();
-						jstore.store(baos, new char[0]);
-						buf = baos.toByteArray();
+						return new VfsEntry(true);
+					}
+					else
+					{
+						name = name.Substring(RootPath.Length);
 					}
 				}
-			}
-
-			private class VfsVfsZipEntry : VfsEntry
-			{
-				internal override long Size
+				name = name.Replace('\\', '/');
+				juzZipEntry entry = ((juzZipFile)zipFile).getEntry(name);
+				if (entry == null)
 				{
-					get
+					if (name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("zip")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("awt")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("rmi")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("w2k_lsa_auth")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_nt")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_unix")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("unpack")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("net"))
 					{
-						using (System.IO.Stream stream = Open())
-						{
-							return stream.Length;
-						}
+						return new VfsEntry(false);
 					}
 				}
-
-				internal override System.IO.Stream Open()
-				{
-					//return new System.IO.FileStream("c:\\ikvm\\openjdk\\vfs.zip", System.IO.FileMode.Open);
-					return Assembly.GetExecutingAssembly().GetManifestResourceStream("vfs.zip");
-				}
+				return entry;
 			}
 
-			private static void Initialize()
-			{
-				// this is a weird loop back, the vfs.zip resource is loaded from vfs,
-				// because that's the easiest way to construct a ZipFile from a Stream.
-				juzZipFile zf = new juzZipFile(RootPath + "vfs.zip");
-				global::java.util.Enumeration e = zf.entries();
-				Dictionary<string, VfsEntry> dict = new Dictionary<string, VfsEntry>();
-				char sep = jiFile.separatorChar;
-				while (e.hasMoreElements())
-				{
-					juzZipEntry entry = (juzZipEntry)e.nextElement();
-					dict[RootPath + entry.getName().Replace('/', sep)] = new VfsZipEntry(zf, entry);
-				}
-				dict[RootPath] = new VfsDummyEntry(true);
-				dict[RootPath + "lib/security/cacerts".Replace('/', sep)] = new VfsCacertsEntry();
-				dict[RootPath + "bin"] = new VfsDummyEntry(true);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("zip")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("awt")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("rmi")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("w2k_lsa_auth")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_nt")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_unix")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("unpack")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("net")] = new VfsDummyEntry(false);
-				if (Interlocked.CompareExchange(ref entries, dict, null) != null)
-				{
-					// we lost the race, so we close our zip file
-					zf.close();
-				}
-			}
-
-			private static VfsEntry GetVfsEntry(string name)
-			{
-				if (entries == null)
-				{
-					if (name == RootPath + "vfs.zip")
-					{
-						return new VfsVfsZipEntry();
-					}
-					Initialize();
-				}
-				VfsEntry ve;
-				entries.TryGetValue(name, out ve);
-				return ve;
-			}
+			/*
+			 * On WHIDBEY we should generate cacerts on the fly by using something like this:
+			 *
+			 * java.security.KeyStore jstore = java.security.KeyStore.getInstance("jks");
+			 * jstore.load(null);
+			 * java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X509");
+			 * 
+			 * X509Store store = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
+			 * store.Open(OpenFlags.ReadOnly);
+			 * foreach (X509Certificate2 cert in store.Certificates)
+			 * {
+			 *   if (!cert.HasPrivateKey)
+			 *   {
+			 *     jstore.setCertificateEntry(cert.Subject, cf.generateCertificate(new java.io.ByteArrayInputStream(cert.RawData)));
+			 *   }
+			 * }
+			 * java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+			 * jstore.store(baos, new char[0]);
+			 */
 
 			private sealed class ZipEntryStream : System.IO.Stream
 			{
@@ -1166,12 +1059,17 @@ namespace IKVM.NativeCode.java
 				{
 					throw new System.IO.IOException("vfs is read-only");
 				}
-				VfsEntry entry = GetVfsEntry(name);
+				name = name.Substring(RootPath.Length);
+				if (name == "vfs.zip")
+				{
+					return Assembly.GetExecutingAssembly().GetManifestResourceStream(name);
+				}
+				juzZipEntry entry = GetZipEntry(name);
 				if (entry == null)
 				{
 					throw new System.IO.FileNotFoundException("File not found");
 				}
-				return entry.Open();
+				return new ZipEntryStream(((juzZipFile)zipFile), entry);
 #endif
 			}
 
@@ -1180,8 +1078,8 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return 0;
 #else
-				VfsEntry entry = GetVfsEntry(path);
-				return entry == null ? 0 : entry.Size;
+				juzZipEntry entry = GetZipEntry(path);
+				return entry == null ? 0 : entry.getSize();
 #endif
 			}
 
@@ -1190,7 +1088,7 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return false;
 #else
-				return access == Win32FileSystem.ACCESS_READ && GetVfsEntry(path) != null;
+				return access == Win32FileSystem.ACCESS_READ && GetZipEntry(path) != null;
 #endif
 			}
 
@@ -1199,7 +1097,7 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return 0;
 #else
-				VfsEntry entry = GetVfsEntry(path);
+				juzZipEntry entry = GetZipEntry(path);
 				if (entry == null)
 				{
 					return 0;
@@ -1207,7 +1105,7 @@ namespace IKVM.NativeCode.java
 				const int BA_EXISTS = 0x01;
 				const int BA_REGULAR = 0x02;
 				const int BA_DIRECTORY = 0x04;
-				return entry.IsDirectory ? BA_EXISTS | BA_DIRECTORY : BA_EXISTS | BA_REGULAR;
+				return entry.isDirectory() ? BA_EXISTS | BA_DIRECTORY : BA_EXISTS | BA_REGULAR;
 #endif
 			}
 		}
@@ -1282,13 +1180,10 @@ namespace IKVM.NativeCode.java
 					string name = fi.Name;
 					try
 					{
-						if (!VirtualFileSystem.IsVirtualFS(path))
+						string[] arr = System.IO.Directory.GetFileSystemEntries(dir, name);
+						if (arr.Length == 1)
 						{
-							string[] arr = System.IO.Directory.GetFileSystemEntries(dir, name);
-							if (arr.Length == 1)
-							{
-								name = arr[0];
-							}
+							name = arr[0];
 						}
 					}
 					catch (System.UnauthorizedAccessException)
@@ -1626,6 +1521,22 @@ namespace IKVM.NativeCode.java
 				}
 				catch (System.IO.IOException)
 				{
+					if (Environment.Version.Major == 1 && fileInfo is System.IO.DirectoryInfo)
+					{
+						// FXBUG on .NET 1.1 DirectoryInfo.Delete() can throw an exception even on success,
+						// because it checks GetLastWin32Error() even if RemoveDirectory() succeeded.
+						try
+						{
+							fileInfo.Refresh();
+						}
+						catch (System.ArgumentException)
+						{
+						}
+						catch (System.IO.IOException)
+						{
+						}
+						return !fileInfo.Exists;
+					}
 				}
 				catch (System.NotSupportedException)
 				{
@@ -2752,10 +2663,7 @@ namespace IKVM.NativeCode.java
 
 			public static int getModifiers(object thisClass)
 			{
-				// the 0x7FFF mask comes from JVM_ACC_WRITTEN_FLAGS in hotspot\src\share\vm\utilities\accessFlags.hpp
-				// masking out ACC_SUPER comes from instanceKlass::compute_modifier_flags() in hotspot\src\share\vm\oops\instanceKlass.cpp
-				const int mask = 0x7FFF & (int)~IKVM.Attributes.Modifiers.Super;
-				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers & mask;
+				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers;
 			}
 
 			public static object[] getSigners(object thisClass)
@@ -2821,14 +2729,19 @@ namespace IKVM.NativeCode.java
 					wrapper = wrapper.ElementTypeWrapper;
 				}
 				object pd = pdField.GetValue(wrapper.ClassObject);
-				if (pd == null)
+				if (pd == null && wrapper.GetClassLoader() is AssemblyClassLoader)
 				{
-					// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
-					// to work around boot strap issues.
-					AssemblyClassLoader acl = wrapper.GetClassLoader() as AssemblyClassLoader;
-					if (acl != null)
+					object loader = wrapper.GetClassLoader().GetJavaClassLoader();
+					if (loader != null)
 					{
-						pd = acl.GetProtectionDomain();
+						// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
+						// to work around boot strap issues.
+						// TODO this should be done more efficiently
+						MethodInfo method = loader.GetType().GetMethod("getProtectionDomain", BindingFlags.Public | BindingFlags.Instance);
+						if (method != null)
+						{
+							pd = method.Invoke(loader, null);
+						}
 					}
 				}
 				return pd;
@@ -2939,7 +2852,7 @@ namespace IKVM.NativeCode.java
 					// we need to finish the type otherwise all fields will not be in the field map yet
 					wrapper.Finish();
 					FieldWrapper[] fields = wrapper.GetFields();
-					List<jlrField> list = new List<jlrField>();
+					ArrayList list = new ArrayList();
 					for (int i = 0; i < fields.Length; i++)
 					{
 						if (fields[i].IsHideFromReflection)
@@ -2953,10 +2866,10 @@ namespace IKVM.NativeCode.java
 						else
 						{
 							fields[i].FieldTypeWrapper.EnsureLoadable(wrapper.GetClassLoader());
-							list.Add((jlrField)fields[i].ToField(false));
+							list.Add(fields[i].ToField(false));
 						}
 					}
-					return list.ToArray();
+					return (jlrField[])list.ToArray(typeof(jlrField));
 				}
 				catch (RetargetableJavaException x)
 				{
@@ -2992,7 +2905,7 @@ namespace IKVM.NativeCode.java
 					// we need to look through the array for unloadable types, because we may not let them
 					// escape into the 'wild'
 					MethodWrapper[] methods = wrapper.GetMethods();
-					List<jlrMethod> list = new List<jlrMethod>();
+					ArrayList list = new ArrayList();
 					for (int i = 0; i < methods.Length; i++)
 					{
 						// we don't want to expose "hideFromReflection" methods (one reason is that it would
@@ -3007,10 +2920,10 @@ namespace IKVM.NativeCode.java
 							{
 								args[j].EnsureLoadable(wrapper.GetClassLoader());
 							}
-							list.Add((jlrMethod)methods[i].ToMethodOrConstructor(false));
+							list.Add(methods[i].ToMethodOrConstructor(false));
 						}
 					}
-					return list.ToArray();
+					return (jlrMethod[])list.ToArray(typeof(jlrMethod));
 				}
 				catch (RetargetableJavaException x)
 				{
@@ -3046,7 +2959,7 @@ namespace IKVM.NativeCode.java
 					// we need to look through the array for unloadable types, because we may not let them
 					// escape into the 'wild'
 					MethodWrapper[] methods = wrapper.GetMethods();
-					List<jlrConstructor> list = new List<jlrConstructor>();
+					ArrayList list = new ArrayList();
 					for (int i = 0; i < methods.Length; i++)
 					{
 						// we don't want to expose "hideFromReflection" methods (one reason is that it would
@@ -3060,10 +2973,10 @@ namespace IKVM.NativeCode.java
 							{
 								args[j].EnsureLoadable(wrapper.GetClassLoader());
 							}
-							list.Add((jlrConstructor)methods[i].ToMethodOrConstructor(false));
+							list.Add(methods[i].ToMethodOrConstructor(false));
 						}
 					}
-					return list.ToArray();
+					return (jlrConstructor[])list.ToArray(typeof(jlrConstructor));
 				}
 				catch (RetargetableJavaException x)
 				{
@@ -3428,7 +3341,7 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return null;
 #else
-				List<jlClass> stack = new List<jlClass>();
+				ArrayList stack = new ArrayList();
 				StackTrace trace = new StackTrace();
 				for (int i = 0; i < trace.FrameCount; i++)
 				{
@@ -3449,9 +3362,9 @@ namespace IKVM.NativeCode.java
 					{
 						continue;
 					}
-					stack.Add((jlClass)ClassLoaderWrapper.GetWrapperFromType(type).ClassObject);
+					stack.Add(ClassLoaderWrapper.GetWrapperFromType(type).ClassObject);
 				}
-				return stack.ToArray();
+				return stack.ToArray(typeof(jlClass));
 #endif
 			}
 
@@ -4217,11 +4130,11 @@ namespace IKVM.NativeCode.java
 				string apartment = ((string)jsAccessController.doPrivileged(new ssaGetPropertyAction("ikvm.apartmentstate", ""))).ToLower();
 				if (apartment == "mta")
 				{
-					t.nativeThread.SetApartmentState(ApartmentState.MTA);
+					t.nativeThread.ApartmentState = ApartmentState.MTA;
 				}
 				else if (apartment == "sta")
 				{
-					t.nativeThread.SetApartmentState(ApartmentState.STA);
+					t.nativeThread.ApartmentState = ApartmentState.STA;
 				}
 				SetThreadStatus(thisThread, RUNNABLE);
 				t.nativeThread.Start();
@@ -4292,7 +4205,8 @@ namespace IKVM.NativeCode.java
 							bool suspended = false;
 							if ((t.nativeThread.ThreadState & ThreadState.Suspended) == 0 && t.nativeThread != SystemThreadingThread.CurrentThread)
 							{
-								SuspendThread(t.nativeThread);
+								t.nativeThread.Suspend();
+								suspended = true;
 							}
 							StackTrace stack;
 							try
@@ -4303,7 +4217,7 @@ namespace IKVM.NativeCode.java
 							{
 								if (suspended)
 								{
-									ResumeThread(t.nativeThread);
+									t.nativeThread.Resume();
 								}
 							}
 							stacks[i] = JVM.Library.getStackTrace(stack);
@@ -4316,22 +4230,6 @@ namespace IKVM.NativeCode.java
 				}
 				return stacks;
 #endif
-			}
-
-			private static void SuspendThread(SystemThreadingThread thread)
-			{
-#pragma warning disable 618
-				// Thread.Suspend() is obsolete, we know that. Warning disabled.
-				thread.Suspend();
-#pragma warning restore
-			}
-
-			private static void ResumeThread(SystemThreadingThread thread)
-			{
-#pragma warning disable 618
-				// Thread.Resume() is obsolete, we know that. Warning disabled.
-				thread.Resume();
-#pragma warning restore
 			}
 
 #if !FIRST_PASS
@@ -4411,7 +4309,7 @@ namespace IKVM.NativeCode.java
 							ThreadState suspend = ThreadState.Suspended | ThreadState.SuspendRequested;
 							while ((t.nativeThread.ThreadState & suspend) != 0)
 							{
-								ResumeThread(t.nativeThread);
+								t.nativeThread.Resume();
 							}
 						}
 						catch (ThreadStateException)
@@ -4433,7 +4331,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						SuspendThread(t.nativeThread);
+						t.nativeThread.Suspend();
 					}
 					catch (ThreadStateException)
 					{
@@ -4448,7 +4346,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						ResumeThread(t.nativeThread);
+						t.nativeThread.Resume();
 					}
 					catch (ThreadStateException)
 					{
@@ -4652,8 +4550,12 @@ namespace IKVM.NativeCode.java
 #else
 				try
 				{
+#if WHIDBEY
 					System.Net.IPAddress[] addr = System.Net.Dns.GetHostAddresses(hostname);
-					List<jnInetAddress> addresses = new List<jnInetAddress>();
+#else
+					System.Net.IPAddress[] addr = System.Net.Dns.Resolve(hostname).AddressList;
+#endif
+					ArrayList addresses = new ArrayList();
 					for (int i = 0; i < addr.Length; i++)
 					{
 						byte[] b = addr[i].GetAddressBytes();
@@ -4662,7 +4564,7 @@ namespace IKVM.NativeCode.java
 							addresses.Add(jnInetAddress.getByAddress(hostname, b));
 						}
 					}
-					return addresses.ToArray();
+					return (jnInetAddress[])addresses.ToArray(typeof(jnInetAddress));
 				}
 				catch (System.ArgumentException x)
 				{
@@ -4680,14 +4582,32 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return null;
 #else
+				string s;
 				try
 				{
-					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
+					s = System.Net.Dns.GetHostByAddress(string.Format("{0}.{1}.{2}.{3}", addr[0], addr[1], addr[2], addr[3])).HostName;
 				}
 				catch (System.Net.Sockets.SocketException x)
 				{
 					throw new jnUnknownHostException(x.Message);
 				}
+				try
+				{
+					System.Net.Dns.GetHostByName(s);
+				}
+				catch (System.Net.Sockets.SocketException)
+				{
+					// FXBUG .NET framework bug
+					// HACK if GetHostByAddress returns a netbios name, it appends the default DNS suffix, but if the
+					// machine's netbios name isn't the same as the DNS hostname, this might result in an unresolvable
+					// name, if that happens we chop off the DNS suffix.
+					int idx = s.IndexOf('.');
+					if (idx > 0)
+					{
+						return s.Substring(0, idx);
+					}
+				}
+				return s;
 #endif
 			}
 
@@ -4767,7 +4687,11 @@ namespace IKVM.NativeCode.java
 #else
 				try
 				{
+#if WHIDBEY
 					System.Net.IPAddress[] addr = System.Net.Dns.GetHostAddresses(hostname);
+#else
+					System.Net.IPAddress[] addr = System.Net.Dns.Resolve(hostname).AddressList;
+#endif
 					jnInetAddress[] addresses = new jnInetAddress[addr.Length];
 					for (int i = 0; i < addr.Length; i++)
 					{
@@ -5332,7 +5256,6 @@ namespace IKVM.NativeCode.java
 				}
 				// do a volatile store of the sum of the bytes to make sure the reads don't get optimized out
 				bogusField = bogus;
-				GC.KeepAlive(thisMappedByteBuffer);
 				return 0;
 			}
 
@@ -5341,7 +5264,6 @@ namespace IKVM.NativeCode.java
 				if (JVM.IsUnix)
 				{
 					ikvm_msync((IntPtr)address, (int)length);
-					GC.KeepAlive(thisMappedByteBuffer);
 				}
 				else
 				{
@@ -5351,7 +5273,6 @@ namespace IKVM.NativeCode.java
 					{
 						if (FlushViewOfFile((IntPtr)address, (IntPtr)length) != 0)
 						{
-							GC.KeepAlive(thisMappedByteBuffer);
 							return;
 						}
 						const int ERROR_LOCK_VIOLATION = 33;
@@ -5464,7 +5385,7 @@ namespace IKVM.NativeCode.java
 				bool is_privileged = false;
 				object protection_domain = null;
 				StackTrace stack = new StackTrace(1);
-				List<ProtectionDomain> array = new List<ProtectionDomain>();
+				ArrayList array = new ArrayList();
 
 				for (int i = 0; i < stack.FrameCount; i++)
 				{
@@ -5485,7 +5406,7 @@ namespace IKVM.NativeCode.java
 					if (previous_protection_domain != protection_domain && protection_domain != null)
 					{
 						previous_protection_domain = protection_domain;
-						array.Add((ProtectionDomain)protection_domain);
+						array.Add(protection_domain);
 					}
 
 					if (is_privileged)
@@ -5504,7 +5425,9 @@ namespace IKVM.NativeCode.java
 					return CreateAccessControlContext(null, is_privileged, privileged_context);
 				}
 
-				return CreateAccessControlContext(array.ToArray(), is_privileged, privileged_context);
+				ProtectionDomain[] context = new ProtectionDomain[array.Count];
+				array.CopyTo(context);
+				return CreateAccessControlContext(context, is_privileged, privileged_context);
 #endif
 			}
 
@@ -5899,7 +5822,7 @@ namespace IKVM.NativeCode.java
 #else
 					juzZipFile zf = (juzZipFile)thisJarFile;
 					juEnumeration entries = zf.entries();
-					List<string> list = null;
+					ArrayList list = null;
 					while (entries.hasMoreElements())
 					{
 						juzZipEntry entry = (juzZipEntry)entries.nextElement();
@@ -5907,12 +5830,12 @@ namespace IKVM.NativeCode.java
 						{
 							if (list == null)
 							{
-								list = new List<string>();
+								list = new ArrayList();
 							}
 							list.Add(entry.getName());
 						}
 					}
-					return list == null ? null : list.ToArray();
+					return list == null ? null : (string[])list.ToArray(typeof(string));
 #endif
 				}
 			}
@@ -6265,13 +6188,9 @@ namespace IKVM.NativeCode.sun.misc
 
 	public sealed class MiscHelper
 	{
-		public static object getAssemblyClassLoader(Assembly asm, object extcl)
+		public static object getAssemblyClassLoader(Assembly asm)
 		{
-			if (extcl == null || asm.IsDefined(typeof(IKVM.Attributes.CustomAssemblyClassLoaderAttribute), false))
-			{
-				return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
-			}
-			return null;
+			return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
 		}
 	}
 
@@ -6568,45 +6487,21 @@ namespace IKVM.NativeCode.sun.reflect
 {
 	public sealed class Reflection
 	{
-		private static readonly Dictionary<RuntimeMethodHandle, bool> isHideFromJavaCache = new Dictionary<RuntimeMethodHandle, bool>();
+		private static readonly Hashtable isHideFromJavaCache = Hashtable.Synchronized(new Hashtable());
 
 		private Reflection() { }
 
 		internal static bool IsHideFromJava(MethodBase mb)
 		{
-			if (mb.Name.StartsWith("__<", StringComparison.Ordinal))
+			// TODO on .NET 2.0 isHideFromJavaCache should be a Dictionary<RuntimeMethodHandle, bool>
+			object cached = isHideFromJavaCache[mb];
+			if (cached == null)
 			{
-				return true;
+				cached = mb.IsDefined(typeof(IKVM.Attributes.HideFromJavaAttribute), false)
+					|| mb.IsDefined(typeof(IKVM.Attributes.HideFromReflectionAttribute), false);
+				isHideFromJavaCache[mb] = cached;
 			}
-			RuntimeMethodHandle handle;
-			try
-			{
-				handle = mb.MethodHandle;
-			}
-			catch (InvalidOperationException)
-			{
-				// DynamicMethods don't have a RuntimeMethodHandle and we always want to hide them anyway
-				return true;
-			}
-			catch (NotSupportedException)
-			{
-				// DynamicMethods don't have a RuntimeMethodHandle and we always want to hide them anyway
-				return true;
-			}
-			lock (isHideFromJavaCache)
-			{
-				bool cached;
-				if (isHideFromJavaCache.TryGetValue(handle, out cached))
-				{
-					return cached;
-				}
-			}
-			bool isHide = mb.IsDefined(typeof(IKVM.Attributes.HideFromJavaAttribute), false) || mb.IsDefined(typeof(IKVM.Attributes.HideFromReflectionAttribute), false);
-			lock (isHideFromJavaCache)
-			{
-				isHideFromJavaCache[handle] = isHide;
-			}
-			return isHide;
+			return (bool)cached;
 		}
 
 		// NOTE this method is hooked up explicitly through map.xml to prevent inlining of the native stub
@@ -6658,7 +6553,7 @@ namespace IKVM.NativeCode.sun.reflect
 		{
 			TypeWrapper current = TypeWrapper.FromClass(currentClass);
 			TypeWrapper member = TypeWrapper.FromClass(memberClass);
-			return member.IsInternal && member.GetClassLoader().InternalsVisibleTo(current.GetClassLoader());
+			return member.IsInternal && member.GetClassLoader() == current.GetClassLoader();
 		}
 	}
 
@@ -6693,10 +6588,6 @@ namespace IKVM.NativeCode.sun.reflect
 				}
 				else
 				{
-					if (args[i] != null && !argumentTypes[i].IsInstance(args[i]))
-					{
-						throw new jlIllegalArgumentException();
-					}
 					nargs[i] = args[i];
 				}
 			}
@@ -6768,7 +6659,7 @@ namespace IKVM.NativeCode.sun.reflect
 			private static readonly MethodInfo doubleValue;
 			internal static readonly ConstructorInfo invocationTargetExceptionCtor;
 			private delegate object Invoker(object obj, object[] args);
-			private Invoker invoker;
+			private readonly Invoker invoker;
 
 			static FastMethodAccessorImpl()
 			{
@@ -6791,29 +6682,6 @@ namespace IKVM.NativeCode.sun.reflect
 				doubleValue = typeof(jlDouble).GetMethod("doubleValue", Type.EmptyTypes);
 
 				invocationTargetExceptionCtor = typeof(jlrInvocationTargetException).GetConstructor(new Type[] { typeof(Exception) });
-			}
-
-			private sealed class RunClassInit
-			{
-				private FastMethodAccessorImpl outer;
-				private TypeWrapper tw;
-				private Invoker invoker;
-
-				internal RunClassInit(FastMethodAccessorImpl outer, TypeWrapper tw, Invoker invoker)
-				{
-					this.outer = outer;
-					this.tw = tw;
-					this.invoker = invoker;
-				}
-
-				[IKVM.Attributes.HideFromJava]
-				internal object invoke(object obj, object[] args)
-				{
-					// FXBUG pre-SP1 a DynamicMethod that calls a static method doesn't trigger the cctor, so we do that explicitly.
-					tw.RunClassInit();
-					outer.invoker = invoker;
-					return invoker(obj, args);
-				}
 			}
 
 			internal FastMethodAccessorImpl(jlrMethod method)
@@ -6890,6 +6758,15 @@ namespace IKVM.NativeCode.sun.reflect
 				EmitHelper.Throw(ilgen, "java.lang.IllegalArgumentException");
 				ilgen.EndExceptionBlock();
 
+				if (mw.DeclaringType.IsInterface && mw.DeclaringType.HasStaticInitializer)
+				{
+					// NOTE since Everett doesn't support adding static methods to interfaces,
+					// EmitRunClassConstructor doesn't work for interface, so we do it manually.
+					// TODO once we're on Whidbey, this won't be necessary anymore.
+					ilgen.Emit(OpCodes.Ldtoken, mw.DeclaringType.TypeAsBaseType);
+					ilgen.Emit(OpCodes.Call, typeof(System.Runtime.CompilerServices.RuntimeHelpers).GetMethod("RunClassConstructor"));
+				}
+
 				// this is the actual call
 				ilgen.BeginExceptionBlock();
 				for (int i = 0; i < args.Length; i++)
@@ -6924,11 +6801,6 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.Emit(OpCodes.Ldloc, ret);
 				ilgen.Emit(OpCodes.Ret);
 				invoker = (Invoker)dm.CreateDelegate(typeof(Invoker));
-
-				if (mw.IsStatic)
-				{
-					invoker = new Invoker(new RunClassInit(this, mw.DeclaringType, invoker).invoke);
-				}
 			}
 
 			private static void Expand(CountingILGenerator ilgen, TypeWrapper type)
@@ -7147,7 +7019,7 @@ namespace IKVM.NativeCode.sun.reflect
 				MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(constructor);
 				mw.DeclaringType.Finish();
 				mw.ResolveMethod();
-				DynamicMethod dm = new DynamicMethod("__<Invoker>", typeof(object), new Type[] { typeof(object[]) }, mw.DeclaringType.TypeAsTBD);
+				DynamicMethod dm = new DynamicMethod("__<Invoker>", typeof(object), new Type[] { typeof(object), typeof(object[]) }, mw.DeclaringType.TypeAsTBD);
 				CountingILGenerator ilgen = dm.GetILGenerator();
 				LocalBuilder ret = ilgen.DeclareLocal(typeof(object));
 
@@ -7156,10 +7028,10 @@ namespace IKVM.NativeCode.sun.reflect
 				if (mw.GetParameters().Length == 0)
 				{
 					// zero length array may be null
-					ilgen.Emit(OpCodes.Ldarg_0);
+					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Brfalse_S, argsLengthOK);
 				}
-				ilgen.Emit(OpCodes.Ldarg_0);
+				ilgen.Emit(OpCodes.Ldarg_1);
 				ilgen.Emit(OpCodes.Ldlen);
 				ilgen.Emit(OpCodes.Ldc_I4, mw.GetParameters().Length);
 				ilgen.Emit(OpCodes.Beq_S, argsLengthOK);
@@ -7175,7 +7047,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.BeginExceptionBlock();
 				for (int i = 0; i < args.Length; i++)
 				{
-					ilgen.Emit(OpCodes.Ldarg_0);
+					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Ldc_I4, i);
 					ilgen.Emit(OpCodes.Ldelem_Ref);
 					TypeWrapper tw = mw.GetParameters()[i];
@@ -7951,7 +7823,6 @@ namespace IKVM.NativeCode.sun.reflect
 				if (fw.IsStatic)
 				{
 					fw.EmitGet(ilgen);
-					fw.FieldTypeWrapper.EmitConvSignatureTypeToStackType(ilgen);
 				}
 				else
 				{
