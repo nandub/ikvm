@@ -30,6 +30,7 @@ using ILGenerator = IKVM.Internal.CountingILGenerator;
 #endif
 using System.Diagnostics;
 using IKVM.Attributes;
+using IKVM.Runtime;
 
 namespace IKVM.Internal
 {
@@ -137,8 +138,8 @@ namespace IKVM.Internal
 				return IsPublic ||
 					caller == DeclaringType ||
 					(IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller))) ||
-					(IsInternal && DeclaringType.GetClassLoader().InternalsVisibleTo(caller.GetClassLoader())) ||
-					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller));
+					(IsInternal && caller.GetClassLoader() == DeclaringType.GetClassLoader()) ||
+					(!IsPrivate && caller.IsInSamePackageAs(DeclaringType));
 			}
 			return false;
 		}
@@ -235,6 +236,8 @@ namespace IKVM.Internal
 	abstract class MethodWrapper : MemberWrapper
 	{
 #if OPENJDK && !FIRST_PASS
+		private static readonly FieldInfo methodSlotField = typeof(java.lang.reflect.Method).GetField("slot", BindingFlags.NonPublic | BindingFlags.Instance);
+		private static readonly FieldInfo constructorSlotField = typeof(java.lang.reflect.Constructor).GetField("slot", BindingFlags.NonPublic | BindingFlags.Instance);
 		private volatile object reflectionMethod;
 #endif
 		internal static readonly MethodWrapper[] EmptyArray  = new MethodWrapper[0];
@@ -264,13 +267,6 @@ namespace IKVM.Internal
 			throw new InvalidOperationException();
 		}
 #endif
-		internal virtual bool IsDynamicOnly
-		{
-			get
-			{
-				return false;
-			}
-		}
 
 		internal class GhostMethodWrapper : SmartMethodWrapper
 		{
@@ -364,6 +360,82 @@ namespace IKVM.Internal
 		}
 
 #if !STATIC_COMPILER
+#if OPENJDK
+#if FIRST_PASS
+		internal byte[] GetRawAnnotations()
+		{
+			return null;
+		}
+
+		internal byte[] GetRawParameterAnnotations()
+		{
+			return null;
+		}
+
+		internal byte[] GetRawAnnotationDefault()
+		{
+			return null;
+		}
+#else
+		internal byte[] GetRawAnnotations()
+		{
+			object[] objAnn = this.DeclaringType.GetMethodAnnotations(this);
+			byte[] annotations = null;
+			if (objAnn != null)
+			{
+				ArrayList ann = new ArrayList();
+				foreach (object obj in objAnn)
+				{
+					if (obj is java.lang.annotation.Annotation)
+					{
+						ann.Add(obj);
+					}
+				}
+				ikvm.@internal.stubgen.StubGenerator.IConstantPoolWriter cp = IKVM.NativeCode.java.lang.Class.GetConstantPoolWriter(this.DeclaringType);
+				annotations = ikvm.@internal.stubgen.StubGenerator.writeAnnotations(cp, (java.lang.annotation.Annotation[])ann.ToArray(typeof(java.lang.annotation.Annotation)));
+			}
+			return annotations;
+		}
+
+		internal byte[] GetRawParameterAnnotations()
+		{
+			object[][] objParamAnn = this.DeclaringType.GetParameterAnnotations(this);
+			byte[] parameterAnnotations = null;
+			if (objParamAnn != null)
+			{
+				java.lang.annotation.Annotation[][] ann = new java.lang.annotation.Annotation[objParamAnn.Length][];
+				for (int i = 0; i < objParamAnn.Length; i++)
+				{
+					ArrayList list = new ArrayList();
+					foreach (object obj in objParamAnn[i])
+					{
+						if (obj is java.lang.annotation.Annotation)
+						{
+							list.Add(obj);
+						}
+					}
+					ann[i] = (java.lang.annotation.Annotation[])list.ToArray(typeof(java.lang.annotation.Annotation));
+				}
+				ikvm.@internal.stubgen.StubGenerator.IConstantPoolWriter cp = IKVM.NativeCode.java.lang.Class.GetConstantPoolWriter(this.DeclaringType);
+				parameterAnnotations = ikvm.@internal.stubgen.StubGenerator.writeParameterAnnotations(cp, ann);
+			}
+			return parameterAnnotations;
+		}
+
+		internal byte[] GetRawAnnotationDefault()
+		{
+			byte[] annotationDefault = null;
+			object objAnnDef = this.DeclaringType.GetAnnotationDefault(this);
+			if (objAnnDef != null)
+			{
+				ikvm.@internal.stubgen.StubGenerator.IConstantPoolWriter cp = IKVM.NativeCode.java.lang.Class.GetConstantPoolWriter(this.DeclaringType);
+				annotationDefault = ikvm.@internal.stubgen.StubGenerator.writeAnnotationDefault(cp, objAnnDef);
+			}
+			return annotationDefault;
+		}
+#endif // !FIRST_PASS
+#endif // OPENJDK
+
 		internal object ToMethodOrConstructor(bool copy)
 		{
 #if FIRST_PASS
@@ -393,8 +465,8 @@ namespace IKVM.Internal
 						(int)this.Modifiers | (this.IsInternal ? 0x40000000 : 0),
 						Array.IndexOf(this.DeclaringType.GetMethods(), this),
 						this.DeclaringType.GetGenericMethodSignature(this),
-						null,
-						null
+						GetRawAnnotations(),
+						GetRawParameterAnnotations()
 					);
 				}
 				else
@@ -452,10 +524,9 @@ namespace IKVM.Internal
 			java.lang.reflect.Method method = methodOrConstructor as java.lang.reflect.Method;
 			if (method != null)
 			{
-				return TypeWrapper.FromClass(method.getDeclaringClass()).GetMethods()[method._slot()];
+				return TypeWrapper.FromClass(method.getDeclaringClass()).GetMethods()[(int)methodSlotField.GetValue(method)];
 			}
-			java.lang.reflect.Constructor constructor = (java.lang.reflect.Constructor)methodOrConstructor;
-			return TypeWrapper.FromClass(constructor.getDeclaringClass()).GetMethods()[constructor._slot()];
+			return TypeWrapper.FromClass(((java.lang.reflect.Constructor)methodOrConstructor).getDeclaringClass()).GetMethods()[(int)constructorSlotField.GetValue(methodOrConstructor)];
 #else
 			return (MethodWrapper)JVM.Library.getWrapperFromMethodOrConstructor(methodOrConstructor);
 #endif
@@ -666,11 +737,41 @@ namespace IKVM.Internal
 			// if we've still got the builder object, we need to replace it with the real thing before we can call it
 			if(method is MethodBuilder)
 			{
-				method = method.Module.ResolveMethod(((MethodBuilder)method).GetToken().Token);
+				bool found = false;
+				int token = ((MethodBuilder)method).GetToken().Token;
+				ModuleBuilder module = (ModuleBuilder)((MethodBuilder)method).GetModule();
+				foreach(MethodInfo mi in this.DeclaringType.TypeAsTBD.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+				{
+					if(module.GetMethodToken(mi).Token == token)
+					{
+						found = true;
+						method = mi;
+						break;
+					}
+				}
+				if(!found)
+				{
+					throw new InvalidOperationException("Failed to fixate method: " + this.DeclaringType.Name + "." + this.Name + this.Signature);
+				}
 			}
 			if(method is ConstructorBuilder)
 			{
-				method = method.Module.ResolveMethod(((ConstructorBuilder)method).GetToken().Token);
+				bool found = false;
+				int token = ((ConstructorBuilder)method).GetToken().Token;
+				ModuleBuilder module = (ModuleBuilder)((ConstructorBuilder)method).GetModule();
+				foreach(ConstructorInfo ci in this.DeclaringType.TypeAsTBD.GetConstructors(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+				{
+					if(module.GetConstructorToken(ci).Token == token)
+					{
+						found = true;
+						method = ci;
+						break;
+					}
+				}
+				if(!found)
+				{
+					throw new InvalidOperationException("Failed to fixate constructor: " + this.DeclaringType.Name + "." + this.Name + this.Signature);
+				}
 			}
 #endif // !COMPACT_FRAMEWORK
 		}
@@ -724,7 +825,7 @@ namespace IKVM.Internal
 						}
 						catch(TargetInvocationException x)
 						{
-							throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
+							throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
 						}
 					}
 					else if(!method.DeclaringType.IsInstanceOfType(obj))
@@ -768,7 +869,7 @@ namespace IKVM.Internal
 					}
 					catch(TargetInvocationException x)
 					{
-						throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
+						throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
 					}
 #endif
 				}
@@ -790,7 +891,7 @@ namespace IKVM.Internal
 			}
 			catch(TargetInvocationException x)
 			{
-				throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
+				throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
 			}
 #else // !FIRST_PASS
 			return null;
@@ -803,7 +904,12 @@ namespace IKVM.Internal
 			private static Hashtable cache;
 			private static ModuleBuilder module;
 
-			private class KeyGen : IEqualityComparer
+			private class KeyGen :
+#if WHIDBEY
+				IEqualityComparer
+#else
+				IHashCodeProvider, IComparer
+#endif
 			{
 				public int GetHashCode(object o)
 				{
@@ -843,7 +949,11 @@ namespace IKVM.Internal
 			static NonvirtualInvokeHelper()
 			{
 				KeyGen keygen = new KeyGen();
+#if WHIDBEY
 				cache = new Hashtable(keygen);
+#else
+				cache = new Hashtable(keygen, keygen);
+#endif
 				AssemblyName name = new AssemblyName();
 				name.Name = "NonvirtualInvoker";
 				AssemblyBuilder ab = AppDomain.CurrentDomain.DefineDynamicAssembly(name, JVM.IsSaveDebugImage ? AssemblyBuilderAccess.RunAndSave : AssemblyBuilderAccess.Run);
@@ -1145,6 +1255,62 @@ namespace IKVM.Internal
 #endif
 	}
 
+	// This class tests if reflection on a constant field triggers the class constructor to run
+	// (it shouldn't run, but on .NET 1.0 & 1.1 it does)
+	sealed class ReflectionOnConstant
+	{
+		private static bool isBroken;
+		private static System.Collections.Hashtable warnOnce;
+
+		static ReflectionOnConstant()
+		{
+			typeof(Helper).GetField("foo", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
+		}
+
+		internal static bool IsBroken
+		{
+			get
+			{
+				return isBroken;
+			}
+		}
+
+		internal static void IssueWarning(FieldInfo field)
+		{
+#if !COMPACT_FRAMEWORK
+			// FXBUG .NET (1.0 & 1.1)
+			// FieldInfo.GetValue() on a literal causes the type initializer to run and
+			// we don't want that.
+			// TODO may need to find a workaround, for now we just spit out a warning
+			if(ReflectionOnConstant.IsBroken && field.DeclaringType.TypeInitializer != null)
+			{
+				if(Tracer.FxBug.TraceWarning)
+				{
+					if(warnOnce == null)
+					{
+						warnOnce = new System.Collections.Hashtable();
+					}
+					if(!warnOnce.ContainsKey(field.DeclaringType.FullName))
+					{
+						warnOnce.Add(field.DeclaringType.FullName, null);
+						Tracer.Warning(Tracer.FxBug, "Running type initializer for {0} due to CLR bug", field.DeclaringType.FullName);
+					}
+				}
+			}
+#endif // !COMPACT_FRAMEWORK
+		}
+
+		private class Helper
+		{
+			internal const int foo = 1;
+
+			static Helper()
+			{
+				isBroken = true;
+			}
+		}
+	}
+
 	abstract class FieldWrapper : MemberWrapper
 	{
 #if OPENJDK && !FIRST_PASS
@@ -1199,7 +1365,19 @@ namespace IKVM.Internal
 				object val = null;
 				if(field.IsLiteral)
 				{
+					ReflectionOnConstant.IssueWarning(field);
+#if WHIDBEY
 					val = field.GetRawConstantValue();
+#else
+					try
+					{
+						val = field.GetValue(null);
+					}
+					catch(TargetInvocationException x)
+					{
+						throw x.InnerException;
+					}
+#endif
 					if(field.FieldType.IsEnum)
 					{
 						val = DotNetTypeWrapper.EnumValueFieldWrapper.GetEnumPrimitiveValue(Enum.GetUnderlyingType(field.FieldType), val);
@@ -1215,7 +1393,7 @@ namespace IKVM.Internal
 				}
 				if(val != null && !(val is string))
 				{
-					return JVM.Box(val);
+					return JVM.Library.box(val);
 				}
 				return val;
 			}
@@ -1242,6 +1420,21 @@ namespace IKVM.Internal
 			object field = reflectionField;
 			if (field == null)
 			{
+				object[] objAnn = this.DeclaringType.GetFieldAnnotations(this);
+				byte[] annotations = null;
+				if (objAnn != null)
+				{
+					ArrayList ann = new ArrayList();
+					foreach (object obj in objAnn)
+					{
+						if (obj is java.lang.annotation.Annotation)
+						{
+							ann.Add(obj);
+						}
+					}
+					ikvm.@internal.stubgen.StubGenerator.IConstantPoolWriter cp = IKVM.NativeCode.java.lang.Class.GetConstantPoolWriter(this.DeclaringType);
+					annotations = ikvm.@internal.stubgen.StubGenerator.writeAnnotations(cp, (java.lang.annotation.Annotation[])ann.ToArray(typeof(java.lang.annotation.Annotation)));
+				}
 				field = reflectionFactory.newField(
 					(java.lang.Class)this.DeclaringType.ClassObject,
 					this.Name,
@@ -1249,7 +1442,7 @@ namespace IKVM.Internal
 					(int)this.Modifiers | (this.IsInternal ? 0x40000000 : 0),
 					Array.IndexOf(this.DeclaringType.GetFields(), this),
 					this.DeclaringType.GetGenericFieldSignature(this),
-					null
+					annotations
 				);
 			}
 			lock (this)
@@ -1356,12 +1549,68 @@ namespace IKVM.Internal
 			return new SimpleFieldWrapper(declaringType, fieldType, fi, name, sig, modifiers);
 		}
 
+		private FieldInfo TokenBasedLookup(BindingFlags bindings, int token)
+		{
+			ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
+			foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
+			{
+				if(module.GetFieldToken(f).Token == token)
+				{
+					return f;
+				}
+			}
+			if(Type.GetType("Mono.Runtime") != null)
+			{
+				// MONOBUG token based lookup doesn't work on Mono 1.1.17,
+				// so we'll try again but now do a name/type based comparison
+				// (note that this is not water tight, because of erased types)
+				foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
+				{
+					if(f.Name == field.Name && f.FieldType.Equals(field.FieldType))
+					{
+						return f;
+					}
+				}
+			}
+			throw new InvalidOperationException();
+		}
+
 		internal void ResolveField()
 		{
 			FieldBuilder fb = field as FieldBuilder;
 			if(fb != null)
 			{
-				field = field.Module.ResolveField(fb.GetToken().Token);
+#if WHIDBEY
+				field = DeclaringType.TypeAsTBD.Module.ResolveField(fb.GetToken().Token);
+#else
+				// first do a name based lookup as that is much faster than doing a token based lookup
+				BindingFlags bindings = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+				if(this.IsStatic)
+				{
+					bindings |= BindingFlags.Static;
+				}
+				else
+				{
+					bindings |= BindingFlags.Instance;
+				}
+				try
+				{
+					FieldInfo fi = DeclaringType.TypeAsTBD.GetField(field.Name, bindings);
+					// now check that we've got the right field by comparing the tokens
+					ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
+					if(module.GetFieldToken(fi).Token != fb.GetToken().Token)
+					{
+						fi = TokenBasedLookup(bindings, fb.GetToken().Token);
+					}
+					field = fi;
+				}
+				catch(AmbiguousMatchException)
+				{
+					// .NET 2.0 will throw this exception if there are multiple fields
+					// with the same name (.NET 1.1 will simply return one of them)
+					field = TokenBasedLookup(bindings, fb.GetToken().Token);
+				}
+#endif
 			}
 		}
 
@@ -1580,6 +1829,7 @@ namespace IKVM.Internal
 
 		protected override void EmitSetImpl(ILGenerator ilgen)
 		{
+			FieldInfo fi = GetField();
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
 				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
@@ -1587,19 +1837,7 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
 			}
-			FieldInfo fi = GetField();
-			if(fi != null)
-			{
-				// common case (we're in a DynamicTypeWrapper and the caller is too)
-				ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
-			}
-			else
-			{
-				// this means that we are an instance on a CompiledTypeWrapper and we're being called
-				// from DynamicMethod based reflection, so we can safely emit a call to the private
-				// setter, because the DynamicMethod is allowed to access our private members.
-				ilgen.Emit(OpCodes.Call, prop.GetSetMethod(true));
-			}
+			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
 		}
 #endif
 	}
@@ -1620,7 +1858,21 @@ namespace IKVM.Internal
 		{
 			// Reading a field should trigger the cctor, but since we're inlining the value
 			// we have to trigger it explicitly
-			DeclaringType.EmitRunClassConstructor(ilgen);
+			if(DeclaringType.IsInterface)
+			{
+				if(DeclaringType.HasStaticInitializer)
+				{
+					// NOTE since Everett doesn't support adding static methods to interfaces,
+					// EmitRunClassConstructor doesn't work for interface, so we do it manually.
+					// TODO once we're on Whidbey, this won't be necessary anymore.
+					ilgen.Emit(OpCodes.Ldtoken, DeclaringType.TypeAsBaseType);
+					ilgen.Emit(OpCodes.Call, typeof(System.Runtime.CompilerServices.RuntimeHelpers).GetMethod("RunClassConstructor"));
+				}
+			}
+			else
+			{
+				DeclaringType.EmitRunClassConstructor(ilgen);
+			}
 
 			// NOTE even though you're not supposed to access a constant static final (the compiler is supposed
 			// to inline them), we have to support it (because it does happen, e.g. if the field becomes final
@@ -1693,6 +1945,7 @@ namespace IKVM.Internal
 		{
 			if(constant == null)
 			{
+#if WHIDBEY
 				FieldInfo field = GetField();
 #if !STATIC_COMPILER
 				if(field.FieldType.IsEnum && !field.DeclaringType.IsEnum)
@@ -1708,6 +1961,9 @@ namespace IKVM.Internal
 				{
 					constant = field.GetRawConstantValue();
 				}
+#else // WHIDBEY
+				constant = GetField().GetValue(null);
+#endif // WHIDBEY
 			}
 			return constant;
 		}
