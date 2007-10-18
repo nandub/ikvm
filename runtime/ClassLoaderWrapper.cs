@@ -31,6 +31,7 @@ using System.Collections;
 using System.Diagnostics;
 using System.Threading;
 using IKVM.Attributes;
+using IKVM.Runtime;
 
 namespace IKVM.Internal
 {
@@ -57,8 +58,6 @@ namespace IKVM.Internal
 		private static ArrayList genericClassLoaders;
 #if !STATIC_COMPILER && !FIRST_PASS
 		private readonly java.lang.ClassLoader javaClassLoader;
-		private static bool customClassLoaderRedirectsLoaded;
-		private static Hashtable customClassLoaderRedirects;
 #endif
 		protected Hashtable types = new Hashtable();
 		private readonly Hashtable defineClassInProgress = new Hashtable();
@@ -96,13 +95,7 @@ namespace IKVM.Internal
 			Assembly coreAssembly = JVM.CoreAssembly;
 			if(coreAssembly != null)
 			{
-				try
-				{
-					Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
-				}
-				catch(System.Security.SecurityException)
-				{
-				}
+				Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
 				RemappedClassAttribute[] remapped = AttributeHelper.GetRemappedClasses(coreAssembly);
 				if(remapped.Length > 0)
 				{
@@ -137,11 +130,6 @@ namespace IKVM.Internal
 #endif
 		}
 
-		internal static bool IsDynamicType(Type type)
-		{
-			return typeToTypeWrapper[type] is DynamicTypeWrapper;
-		}
-
 		internal static bool IsRemappedType(Type type)
 		{
 			return remappedTypes.ContainsKey(type);
@@ -156,9 +144,9 @@ namespace IKVM.Internal
 			remappedTypes.Add(type, type);
 		}
 
-		// return the TypeWrapper if it is already loaded, this exists for DynamicTypeWrapper.SetupGhosts
-		// and ClassLoader.findLoadedClass()
-		internal virtual TypeWrapper GetLoadedClass(string name)
+		// HACK return the TypeWrapper if it is already loaded
+		// (this exists solely for DynamicTypeWrapper.SetupGhosts and VMClassLoader.findLoadedClass)
+		internal TypeWrapper GetLoadedClass(string name)
 		{
 			lock(types.SyncRoot)
 			{
@@ -227,25 +215,12 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal bool RemoveAsserts
-		{
-			get
-			{
-				return (codegenoptions & CodeGenOptions.RemoveAsserts) != 0;
-			}
-		}
-
 		internal virtual string SourcePath
 		{
 			get
 			{
 				return null;
 			}
-		}
-
-		protected virtual void CheckDefineClassAllowed(string className)
-		{
-			// this hook exists so that AssemblyClassLoader can prevent DefineClass when the name is already present in the assembly
 		}
 
 		internal TypeWrapper DefineClass(ClassFile f, object protectionDomain)
@@ -272,7 +247,6 @@ namespace IKVM.Internal
 				}
 				return RegisterInitiatingLoader(tw);
 			}
-			CheckDefineClassAllowed(f.Name);
 			lock(types.SyncRoot)
 			{
 				if(types.ContainsKey(f.Name))
@@ -379,6 +353,14 @@ namespace IKVM.Internal
 				{
 					return LoadArrayClass(name);
 				}
+				if(name.EndsWith("_$$$$_") && name.IndexOf("_$$$_") > 0)
+				{
+					TypeWrapper tw = LoadGenericClass(name);
+					if(tw != null)
+					{
+						return tw;
+					}
+				}
 				return LoadClassImpl(name, throwClassNotFoundException);
 			}
 			finally
@@ -454,12 +436,12 @@ namespace IKVM.Internal
 			// M() is a replacement of "__" with "$$005F$$005F" followed by a replace of "." with "__"
 			//
 			int pos = name.IndexOf("_$$$_");
-			if(pos <= 0 || !name.EndsWith("_$$$$_"))
+			if(pos <= 0)
 			{
 				return null;
 			}
 			Type type = GetType(DotNetTypeWrapper.DemangleTypeName(name.Substring(0, pos)));
-			if(type == null || !type.IsGenericTypeDefinition)
+			if(type == null || !Whidbey.IsGenericTypeDefinition(type))
 			{
 				return null;
 			}
@@ -532,7 +514,6 @@ namespace IKVM.Internal
 				{
 					case 'L':
 						tw = LoadClassByDottedNameFast(s.Substring(dims + 1));
-						tw.Finish();
 						break;
 					case 'Z':
 						tw = PrimitiveTypeWrapper.BOOLEAN;
@@ -571,7 +552,7 @@ namespace IKVM.Internal
 			}
 			try
 			{
-				type = type.MakeGenericType(typeArguments);
+				type = Whidbey.MakeGenericType(type, typeArguments);
 			}
 			catch(ArgumentException)
 			{
@@ -589,11 +570,6 @@ namespace IKVM.Internal
 
 		protected virtual TypeWrapper LoadClassImpl(string name, bool throwClassNotFoundException)
 		{
-			TypeWrapper tw = LoadGenericClass(name);
-			if(tw != null)
-			{
-				return tw;
-			}
 #if !STATIC_COMPILER && !FIRST_PASS
 			Profiler.Enter("ClassLoader.loadClass");
 			try
@@ -803,13 +779,7 @@ namespace IKVM.Internal
 			}
 			lock(wrapperLock)
 			{
-#if FIRST_PASS
-				ClassLoaderWrapper wrapper = null;
-#elif OPENJDK
-				ClassLoaderWrapper wrapper = ((java.lang.ClassLoader)javaClassLoader).wrapper;
-#else
 				ClassLoaderWrapper wrapper = (ClassLoaderWrapper)JVM.Library.getWrapperFromClassLoader(javaClassLoader);
-#endif
 				if(wrapper == null)
 				{
 					CodeGenOptions opt = CodeGenOptions.None;
@@ -818,7 +788,7 @@ namespace IKVM.Internal
 						opt |= CodeGenOptions.Debug;
 					}
 					wrapper = new ClassLoaderWrapper(opt, javaClassLoader);
-					SetWrapperForClassLoader(javaClassLoader, wrapper);
+					JVM.Library.setWrapperForClassLoader(javaClassLoader, wrapper);
 				}
 				return wrapper;
 			}
@@ -829,7 +799,7 @@ namespace IKVM.Internal
 		{
 			//Tracer.Info(Tracer.Runtime, "GetWrapperFromType: {0}", type.AssemblyQualifiedName);
 			TypeWrapper.AssertFinished(type);
-			Debug.Assert(!type.ContainsGenericParameters);
+			Debug.Assert(!Whidbey.ContainsGenericParameters(type));
 			Debug.Assert(!type.IsPointer);
 			Debug.Assert(!type.IsByRef);
 			TypeWrapper wrapper = (TypeWrapper)typeToTypeWrapper[type];
@@ -881,12 +851,12 @@ namespace IKVM.Internal
 		internal static ClassLoaderWrapper GetGenericClassLoader(TypeWrapper wrapper)
 		{
 			Type type = wrapper.TypeAsTBD;
-			Debug.Assert(type.IsGenericType);
-			Debug.Assert(!type.ContainsGenericParameters);
+			Debug.Assert(Whidbey.IsGenericType(type));
+			Debug.Assert(!Whidbey.ContainsGenericParameters(type));
 
 			ArrayList list = new ArrayList();
 			list.Add(GetAssemblyClassLoader(type.Assembly));
-			foreach(Type arg in type.GetGenericArguments())
+			foreach(Type arg in Whidbey.GetGenericArguments(type))
 			{
 				ClassLoaderWrapper loader = GetWrapperFromType(arg).GetClassLoader();
 				if(!list.Contains(loader))
@@ -916,24 +886,16 @@ namespace IKVM.Internal
 					}
 				}
 				object javaClassLoader = null;
-#if !STATIC_COMPILER && !FIRST_PASS
-				javaClassLoader = java.security.AccessController.doPrivileged(new CreateAssemblyClassLoader(null));
+#if !STATIC_COMPILER
+				javaClassLoader = JVM.Library.newAssemblyClassLoader(null);
 #endif
 				GenericClassLoader newLoader = new GenericClassLoader(key, javaClassLoader);
-				SetWrapperForClassLoader(javaClassLoader, newLoader);
+#if !STATIC_COMPILER
+				JVM.Library.setWrapperForClassLoader(javaClassLoader, newLoader);
+#endif
 				genericClassLoaders.Add(newLoader);
 				return newLoader;
 			}
-		}
-
-		private static void SetWrapperForClassLoader(object javaClassLoader, ClassLoaderWrapper wrapper)
-		{
-#if FIRST_PASS || STATIC_COMPILER
-#elif OPENJDK
-			((java.lang.ClassLoader)javaClassLoader).wrapper = wrapper;
-#else
-			JVM.Library.setWrapperForClassLoader(javaClassLoader, wrapper);
-#endif
 		}
 
 		internal static ClassLoaderWrapper GetGenericClassLoaderByName(string name)
@@ -985,7 +947,7 @@ namespace IKVM.Internal
 			{
 				return GetGenericClassLoaderByName(name);
 			}
-#if STATIC_COMPILER
+#if WHIDBEY && STATIC_COMPILER
 			return ClassLoaderWrapper.GetAssemblyClassLoader(Assembly.ReflectionOnlyLoad(name));
 #else
 			return ClassLoaderWrapper.GetAssemblyClassLoader(Assembly.Load(name));
@@ -1015,193 +977,34 @@ namespace IKVM.Internal
 			Debug.Assert(!(assembly is AssemblyBuilder));
 #endif // !COMPACT_FRAMEWORK
 
-			ConstructorInfo customClassLoaderCtor = null;
-			AssemblyClassLoader loader;
-			object javaClassLoader = null;
 			lock(wrapperLock)
 			{
-				loader = (AssemblyClassLoader)assemblyClassLoaders[assembly];
+				AssemblyClassLoader loader = (AssemblyClassLoader)assemblyClassLoaders[assembly];
 				if(loader == null)
 				{
+					object javaClassLoader = null;
 #if !STATIC_COMPILER && !FIRST_PASS
 					if(assembly == JVM.CoreAssembly)
 					{
 						return GetBootstrapClassLoader();
 					}
-					if(!assembly.ReflectionOnly)
+					else
 					{
-						Type customClassLoaderClass = null;
-						LoadCustomClassLoaderRedirects();
-						if(customClassLoaderRedirects != null)
-						{
-							string assemblyName = assembly.FullName;
-							foreach(DictionaryEntry de in customClassLoaderRedirects)
-							{
-								string asm = (string)de.Key;
-								// we only support matching on the assembly's simple name,
-								// because there appears to be no viable alternative.
-								// On .NET 2.0 there is AssemblyName.ReferenceMatchesDefinition()
-								// but it is broken (and .NET 2.0 specific).
-								if(assemblyName.StartsWith(asm + ","))
-								{
-									try
-									{
-										customClassLoaderClass = Type.GetType((string)de.Value, true);
-									}
-									catch(Exception x)
-									{
-										Tracer.Error(Tracer.Runtime, "Unable to load custom class loader {0} specified in app.config for assembly {1}: {2}", de.Value, assembly, x);
-									}
-									break;
-								}
-							}
-						}
-						if(customClassLoaderClass == null)
-						{
-							object[] attribs = assembly.GetCustomAttributes(typeof(CustomAssemblyClassLoaderAttribute), false);
-							if(attribs.Length == 1)
-							{
-								customClassLoaderClass = ((CustomAssemblyClassLoaderAttribute)attribs[0]).Type;
-							}
-						}
-						if(customClassLoaderClass != null)
-						{
-							try
-							{
-								if(!customClassLoaderClass.IsPublic && !customClassLoaderClass.Assembly.Equals(assembly))
-								{
-									throw new Exception("Type not accessible");
-								}
-								// NOTE we're creating an uninitialized instance of the custom class loader here, so that getClassLoader will return the proper object
-								// when it is called during the construction of the custom class loader later on. This still doesn't make it safe to use the custom
-								// class loader before it is constructed, but at least the object instance is valid and should anyone cache it, they will get the
-								// right object to use later on.
-								// Note also that we're not running the constructor here, because we don't want to run user code while holding a global lock.
-								javaClassLoader = (java.lang.ClassLoader)CreateUnitializedCustomClassLoader(customClassLoaderClass);
-								customClassLoaderCtor = customClassLoaderClass.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(Assembly) }, null);
-								if(customClassLoaderCtor == null)
-								{
-									javaClassLoader = null;
-									throw new Exception("No constructor");
-								}
-								if(!customClassLoaderCtor.IsPublic && !customClassLoaderClass.Assembly.Equals(assembly))
-								{
-									javaClassLoader = null;
-									throw new Exception("Constructor not accessible");
-								}
-								Tracer.Info(Tracer.Runtime, "Created custom assembly class loader {0} for assembly {1}", customClassLoaderClass.FullName, assembly);
-							}
-							catch(Exception x)
-							{
-								Tracer.Error(Tracer.Runtime, "Unable to create custom assembly class loader {0} for {1}: {2}", customClassLoaderClass.FullName, assembly, x);
-							}
-						}
-					}
-					if(javaClassLoader == null)
-					{
-						javaClassLoader = java.security.AccessController.doPrivileged(new CreateAssemblyClassLoader(assembly));
+						javaClassLoader = JVM.Library.newAssemblyClassLoader(assembly);
 					}
 #endif
-					loader = new AssemblyClassLoader(assembly, javaClassLoader, customClassLoaderCtor != null);
+					loader = new AssemblyClassLoader(assembly, javaClassLoader);
 					assemblyClassLoaders[assembly] = loader;
 #if !STATIC_COMPILER
-					if(customClassLoaderCtor != null)
-					{
-						loader.SetInitInProgress();
-					}
 					if(javaClassLoader != null)
 					{
-						SetWrapperForClassLoader(javaClassLoader, loader);
+						JVM.Library.setWrapperForClassLoader(javaClassLoader, loader);
 					}
 #endif
 				}
-			}
-#if !STATIC_COMPILER && !FIRST_PASS
-			if(customClassLoaderCtor != null)
-			{
-				try
-				{
-					java.security.AccessController.doPrivileged(new CustomClassLoaderCtorCaller(customClassLoaderCtor, javaClassLoader, assembly));
-				}
-				finally
-				{
-					loader.SetInitDone();
-				}
-			}
-			loader.WaitInitDone();
-#endif
-			return loader;
-		}
-
-		private static object CreateUnitializedCustomClassLoader(Type customClassLoaderClass)
-		{
-			return System.Runtime.Serialization.FormatterServices.GetUninitializedObject(customClassLoaderClass);
-		}
-
-#if !STATIC_COMPILER && !FIRST_PASS
-		private static void LoadCustomClassLoaderRedirects()
-		{
-			// this method assumes that we hold a global lock
-			if(!customClassLoaderRedirectsLoaded)
-			{
-				customClassLoaderRedirectsLoaded = true;
-				try
-				{
-					foreach(string key in System.Configuration.ConfigurationSettings.AppSettings.AllKeys)
-					{
-						const string prefix = "ikvm-classloader:";
-						if(key.StartsWith(prefix))
-						{
-							if(customClassLoaderRedirects == null)
-							{
-								customClassLoaderRedirects = new Hashtable();
-							}
-							customClassLoaderRedirects[key.Substring(prefix.Length)] = System.Configuration.ConfigurationManager.AppSettings.Get(key);
-						}
-					}
-				}
-				catch(Exception x)
-				{
-					Tracer.Error(Tracer.Runtime, "Error while reading custom class loader redirects: {0}", x);
-				}
+				return loader;
 			}
 		}
-
-		sealed class CreateAssemblyClassLoader : java.security.PrivilegedAction
-		{
-			private Assembly assembly;
-
-			internal CreateAssemblyClassLoader(Assembly assembly)
-			{
-				this.assembly = assembly;
-			}
-
-			public object run()
-			{
-				return new ikvm.runtime.AssemblyClassLoader(assembly);
-			}
-		}
-
-		sealed class CustomClassLoaderCtorCaller : java.security.PrivilegedAction
-		{
-			private ConstructorInfo ctor;
-			private object classLoader;
-			private Assembly assembly;
-
-			internal CustomClassLoaderCtorCaller(ConstructorInfo ctor, object classLoader, Assembly assembly)
-			{
-				this.ctor = ctor;
-				this.classLoader = classLoader;
-				this.assembly = assembly;
-			}
-
-			public object run()
-			{
-				ctor.Invoke(classLoader, new object[] { assembly });
-				return null;
-			}
-		}
-#endif
 
 		internal static void SetWrapperForType(Type type, TypeWrapper wrapper)
 		{
@@ -1263,11 +1066,6 @@ namespace IKVM.Internal
 			return String.Format("{0}@{1:X}", GetWrapperFromType(javaClassLoader.GetType()).Name, javaClassLoader.GetHashCode());
 		}
 #endif
-
-		internal virtual bool InternalsVisibleTo(ClassLoaderWrapper other)
-		{
-			return this == other;
-		}
 	}
 
 	class GenericClassLoader : ClassLoaderWrapper
@@ -1311,14 +1109,9 @@ namespace IKVM.Internal
 
 		protected override TypeWrapper LoadClassImpl(string name, bool throwClassNotFoundException)
 		{
-			TypeWrapper tw = LoadGenericClass(name);
-			if(tw != null)
-			{
-				return tw;
-			}
 			foreach(ClassLoaderWrapper loader in delegates)
 			{
-				tw = loader.LoadClassByDottedNameFast(name);
+				TypeWrapper tw = loader.LoadClassByDottedNameFast(name);
 				if(tw != null)
 				{
 					return tw;
@@ -1355,26 +1148,23 @@ namespace IKVM.Internal
 		private Assembly assembly;
 		private AssemblyName[] references;
 		private AssemblyClassLoader[] delegates;
-		private AssemblyName[] internalsVisibleTo;
+#if WHIDBEY
 		private bool isReflectionOnly;
+#endif // WHIDBEY
 		private bool[] isJavaModule;
 		private Module[] modules;
 		private Hashtable nameMap;
-#if !STATIC_COMPILER
-		private Thread initializerThread;
-		private volatile object protectionDomain;
-#endif
 		private bool hasDotNetModule;
-		private bool hasCustomClassLoader;
 
-		internal AssemblyClassLoader(Assembly assembly, object javaClassLoader, bool hasCustomClassLoader)
+		internal AssemblyClassLoader(Assembly assembly, object javaClassLoader)
 			: base(CodeGenOptions.None, javaClassLoader)
 		{
 			this.assembly = assembly;
 			modules = assembly.GetModules(false);
 			isJavaModule = new bool[modules.Length];
-			this.hasCustomClassLoader = hasCustomClassLoader;
+#if WHIDBEY
 			isReflectionOnly = assembly.ReflectionOnly;
+#endif // WHIDBEY
 			for(int i = 0; i < modules.Length; i++)
 			{
 				object[] attr = AttributeHelper.GetJavaModuleAttributes(modules[i]);
@@ -1408,7 +1198,6 @@ namespace IKVM.Internal
 			}
 			references = assembly.GetReferencedAssemblies();
 			delegates = new AssemblyClassLoader[references.Length];
-			internalsVisibleTo = AttributeHelper.GetInternalsVisibleToAttributes(assembly);
 		}
 
 		internal Assembly Assembly
@@ -1511,17 +1300,18 @@ namespace IKVM.Internal
 					Type type = GetType(modules[i], DotNetTypeWrapper.DemangleTypeName(name));
 					if(type != null && DotNetTypeWrapper.IsAllowedOutside(type))
 					{
+						TypeWrapper tw = new DotNetTypeWrapper(type);
 						// check the name to make sure that the canonical name was used
-						if(DotNetTypeWrapper.GetName(type) == name)
+						if(tw.Name == name)
 						{
-							return RegisterInitiatingLoader(new DotNetTypeWrapper(type, name));
+							return RegisterInitiatingLoader(tw);
 						}
 					}
 				}
 			}
 			if(hasDotNetModule)
 			{
-				// for fake types, we load the declaring outer type (the real one) and
+				// for manufactured types, we load the declaring outer type (the real one) and
 				// let that generated the manufactured nested classes
 				TypeWrapper outer = null;
 				if(name.EndsWith(DotNetTypeWrapper.DelegateInterfaceSuffix))
@@ -1544,7 +1334,7 @@ namespace IKVM.Internal
 				{
 					outer = DoLoad(name.Substring(0, name.Length - DotNetTypeWrapper.EnumEnumSuffix.Length));
 				}
-				if(outer != null && outer.IsFakeTypeContainer)
+				if(outer != null && (outer is DotNetTypeWrapper || outer.IsDynamicOnly))
 				{
 					foreach(TypeWrapper tw in outer.InnerClasses)
 					{
@@ -1626,35 +1416,25 @@ namespace IKVM.Internal
 					// since this type was not compiled from Java source, we don't need to
 					// look for our attributes, but we do need to filter unrepresentable
 					// stuff (and transform some other stuff)
-					return RegisterInitiatingLoader(new DotNetTypeWrapper(type, name));
+					return RegisterInitiatingLoader(new DotNetTypeWrapper(type));
 				}
 			}
 		}
 
+#if STATIC_COMPILER
 		protected override TypeWrapper LoadClassImpl(string name, bool throwClassNotFoundException)
+		{
+			return LoadClass(name);
+		}
+#endif
+
+		internal TypeWrapper LoadClass(string name)
 		{
 			TypeWrapper tw = DoLoad(name);
 			if(tw != null)
 			{
 				return tw;
 			}
-			if(hasCustomClassLoader)
-			{
-				return base.LoadClassImpl(name, throwClassNotFoundException);
-			}
-			else
-			{
-				tw = LoadGenericClass(name);
-				if(tw != null)
-				{
-					return tw;
-				}
-				return LoadReferenced(name);
-			}
-		}
-
-		internal TypeWrapper LoadReferenced(string name)
-		{
 			for(int i = 0; i < delegates.Length; i++)
 			{
 				if(delegates[i] == null)
@@ -1663,11 +1443,13 @@ namespace IKVM.Internal
 					try
 					{
 						// TODO consider throttling the Load attempts (or caching failure)
+#if WHIDBEY
 						if(isReflectionOnly)
 						{
 							asm = Assembly.ReflectionOnlyLoad(references[i].FullName);
 						}
 						else
+#endif
 						{
 							asm = Assembly.Load(references[i]);
 						}
@@ -1682,7 +1464,7 @@ namespace IKVM.Internal
 				}
 				if(delegates[i] != null)
 				{
-					TypeWrapper tw = delegates[i].DoLoad(name);
+					tw = delegates[i].DoLoad(name);
 					if(tw != null)
 					{
 						return tw;
@@ -1727,11 +1509,13 @@ namespace IKVM.Internal
 					try
 					{
 						// TODO consider throttling the Load attempts (or caching failure)
+#if WHIDBEY
 						if(isReflectionOnly)
 						{
 							asm = Assembly.ReflectionOnlyLoad(references[i].FullName);
 						}
 						else
+#endif
 					{
 						asm = Assembly.Load(references[i]);
 					}
@@ -1782,10 +1566,7 @@ namespace IKVM.Internal
 					{
 						list = new ArrayList();
 					}
-					if(!list.Contains(asm))
-					{
-						list.Add(asm);
-					}
+					list.Add(asm);
 				}
 			}
 			if(list == null)
@@ -1794,124 +1575,19 @@ namespace IKVM.Internal
 			}
 			return (Assembly[])list.ToArray(typeof(Assembly));
 		}
-
-		internal void SetInitInProgress()
-		{
-			initializerThread = Thread.CurrentThread;
-		}
-
-		internal void SetInitDone()
-		{
-			lock(this)
-			{
-				initializerThread = null;
-				Monitor.PulseAll(this);
-			}
-		}
-
-		internal void WaitInitDone()
-		{
-			lock(this)
-			{
-				if(initializerThread != Thread.CurrentThread)
-				{
-					while(initializerThread != null)
-					{
-						Monitor.Wait(this);
-					}
-				}
-			}
-		}
 #endif // !STATIC_COMPILER
-
-		internal virtual object GetProtectionDomain()
-		{
-#if STATIC_COMPILER || FIRST_PASS
-			return null;
-#else
-			if(protectionDomain == null)
-			{
-				java.net.URL codebase;
-				try
-				{
-					codebase = new java.net.URL(assembly.CodeBase);
-				}
-				catch(java.net.MalformedURLException)
-				{
-					codebase = null;
-				}
-				java.security.Permissions permissions = new java.security.Permissions();
-				permissions.add(new java.security.AllPermission());
-				object pd = new java.security.ProtectionDomain(new java.security.CodeSource(codebase, (java.security.cert.Certificate[])null), permissions, (java.lang.ClassLoader)GetJavaClassLoader(), null);
-				lock(this)
-				{
-					if(protectionDomain == null)
-					{
-						protectionDomain = pd;
-					}
-				}
-			}
-			return protectionDomain;
-#endif
-		}
-
-		protected override void CheckDefineClassAllowed(string className)
-		{
-			if(DoLoad(className) != null)
-			{
-				throw new LinkageError("duplicate class definition: " + className);
-			}
-		}
-
-		internal override TypeWrapper GetLoadedClass(string name)
-		{
-			TypeWrapper tw = base.GetLoadedClass(name);
-			return tw != null ? tw : DoLoad(name);
-		}
-
-		internal override bool InternalsVisibleTo(ClassLoaderWrapper other)
-		{
-			if(this == other)
-			{
-				return true;
-			}
-			AssemblyName otherName;
-#if STATIC_COMPILER
-			CompilerClassLoader ccl = other as CompilerClassLoader;
-			if(ccl == null)
-			{
-				return false;
-			}
-			otherName = ccl.GetAssemblyName();
-#else
-			AssemblyClassLoader acl = other as AssemblyClassLoader;
-			if(acl == null)
-			{
-				return false;
-			}
-			otherName = acl.Assembly.GetName();
-#endif
-			foreach(AssemblyName name in internalsVisibleTo)
-			{
-				if(AssemblyName.ReferenceMatchesDefinition(name, otherName))
-				{
-					return true;
-				}
-			}
-			return false;
-		}
 	}
 
 	class BootstrapClassLoader : AssemblyClassLoader
 	{
 		internal BootstrapClassLoader()
-			: base(JVM.CoreAssembly, null, false)
+			: base(JVM.CoreAssembly, null)
 		{
 		}
 
-		internal override object GetProtectionDomain()
+		protected override TypeWrapper LoadClassImpl(string name, bool throwClassNotFoundException)
 		{
-			return null;
+			return LoadClass(name);
 		}
 	}
 }

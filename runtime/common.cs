@@ -46,28 +46,209 @@ using jlrConstructor = java.lang.reflect.Constructor;
 using jlrField = java.lang.reflect.Field;
 #endif
 
-// HACK we have our own version of ExtensionAttribute to avoid a System.Core.dll (i.e. .NET 3.5) dependency
-// it turns out that the C# compiler will honor the attribute, even if it's from a different assembly
-// (note that it's internal because it should only be used by the core class library assembly and it will
-// go away at some point in the future (when taking a .NET 3.5 dependency is acceptable))
-namespace System.Runtime.CompilerServices
-{
-	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
-	// HACK we only "see" public attributes (as Java annotations),
-	// so we make our ExtensionAttribute public in the first compilation pass
-	// (we don't want it to be public later on, because that will cause conflicts
-	// with the real ExtensionAttribute).
-#if FIRST_PASS
-	public
-#endif
-	sealed class ExtensionAttribute : Attribute
-	{
-	}
-}
-
 namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 {
-	static class Handler
+#if !WHIDBEY
+	class LZInputStream : Stream 
+	{
+		private Stream inp;
+		private int[] ptr_tbl;
+		private int[] char_tbl;
+		private int[] stack;
+		private int table_size;
+		private int count;
+		private int bitoff;
+		private int bitbuf;
+		private int prev = -1;
+		private int bits;
+		private int cc;
+		private int fc;
+		private int sp;
+
+		public LZInputStream(Stream inp)
+		{
+			this.inp = inp;
+			bitoff = 0;
+			count = 0;
+			table_size = 256;
+			bits = 9;
+			ptr_tbl = new int[table_size];
+			char_tbl = new int[table_size];
+			stack = new int[table_size];
+			sp = 0;
+			cc = prev = incode();
+			stack[sp++] = cc;
+		}
+
+		private int read()
+		{
+			if (sp == 0) 
+			{
+				if (stack.Length != table_size) 
+				{
+					stack = new int[table_size];
+				}
+				int ic = cc = incode();
+				if (cc == -1) 
+				{
+					return -1;
+				}
+				if (count >= 0 && cc >= count + 256) 
+				{
+					stack[sp++] = fc;
+					cc = prev;
+					ic = find(prev, fc);
+				}
+				while (cc >= 256) 
+				{
+					stack[sp++] = char_tbl[cc - 256];
+					cc = ptr_tbl[cc - 256];
+				}
+				stack[sp++] = cc;
+				fc = cc;
+				if (count >= 0) 
+				{
+					ptr_tbl[count] = prev;
+					char_tbl[count] = fc;
+				}
+				count++;
+				if (count == table_size) 
+				{
+					count = -1;
+					if (bits == 12)
+					{
+						table_size = 256;
+						bits = 9;
+					}
+					else
+					{
+						bits++;
+						table_size = (1 << bits) - 256;
+					}
+					ptr_tbl = null;
+					char_tbl = null;
+					ptr_tbl = new int[table_size];
+					char_tbl= new int[table_size];
+				}
+				prev = ic;
+			}
+			return stack[--sp] & 0xFF;
+		}
+
+		private int find(int p, int c) 
+		{
+			int i;
+			for (i = 0; i < count; i++) 
+			{
+				if (ptr_tbl[i] == p && char_tbl[i] == c) 
+				{
+					break;
+				}
+			}
+			return i + 256;
+		}
+
+		private int incode()
+		{
+			while (bitoff < bits) 
+			{
+				int v = inp.ReadByte();
+				if (v == -1) 
+				{
+					return -1;
+				}
+				bitbuf |= (v & 0xFF) << bitoff;
+				bitoff += 8;
+			}
+			bitoff -= bits;
+			int result = bitbuf;
+			bitbuf >>= bits;
+			result -= bitbuf << bits;
+			return result;
+		}
+
+		public override int Read(byte[] b, int off, int len)
+		{
+			int i = 0;
+			for (; i < len ; i++)
+			{
+				int r = read();
+				if(r == -1)
+				{
+					break;
+				}
+				b[off + i] = (byte)r;
+			}
+			return i;
+		}
+
+		public override bool CanRead
+		{
+			get
+			{
+				return true;
+			}
+		}
+
+		public override bool CanSeek
+		{
+			get
+			{
+				return false;
+			}
+		}
+
+		public override bool CanWrite
+		{
+			get
+			{
+				return false;
+			}
+		}
+
+		public override void Flush()
+		{
+			throw new NotSupportedException();
+		}
+
+		public override long Length
+		{
+			get
+			{
+				throw new NotSupportedException();
+			}
+		}
+
+		public override long Position
+		{
+			get
+			{
+				throw new NotSupportedException();
+			}
+			set
+			{
+				throw new NotSupportedException();
+			}
+		}
+
+		public override long Seek(long offset, SeekOrigin origin)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void SetLength(long value)
+		{
+			throw new NotSupportedException();
+		}
+
+		public override void Write(byte[] buffer, int offset, int count)
+		{
+			throw new NotSupportedException();
+		}
+	}
+#endif // !WHIDBEY
+
+	public class Handler
 	{
 		public static Stream ReadResourceFromAssemblyImpl(Assembly asm, string resource)
 		{
@@ -79,6 +260,7 @@ namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 			{
 				return asm.GetManifestResourceStream(mangledName);
 			}
+#if WHIDBEY
 			Stream s = asm.GetManifestResourceStream(mangledName);
 			if(s == null)
 			{
@@ -97,6 +279,39 @@ namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 					Tracer.Error(Tracer.ClassLoading, "Resource \"{0}\" in {1} has an unsupported encoding", resource, asm.FullName);
 					throw new IOException("Unsupported resource encoding for resource " + resource + " found in assembly " + asm.FullName);
 			}
+#else
+			using(Stream s = asm.GetManifestResourceStream(mangledName))
+			{
+				if(s == null)
+				{
+					Tracer.Warning(Tracer.ClassLoading, "Resource \"{0}\" not found in {1}", resource, asm.FullName);
+					throw new FileNotFoundException("resource " + resource + " not found in assembly " + asm.FullName);
+				}
+				using(System.Resources.ResourceReader r = new System.Resources.ResourceReader(s))
+				{
+					foreach(DictionaryEntry de in r)
+					{
+						if((string)de.Key == "lz")
+						{
+							Tracer.Info(Tracer.ClassLoading, "Reading compressed resource \"{0}\" from {1}", resource, asm.FullName);
+							return new LZInputStream(new MemoryStream((byte[])de.Value));
+						}
+						else if((string)de.Key == "ikvm")
+						{
+							Tracer.Info(Tracer.ClassLoading, "Reading resource \"{0}\" from {1}", resource, asm.FullName);
+							return new MemoryStream((byte[])de.Value);
+						}
+						else
+						{
+							Tracer.Error(Tracer.ClassLoading, "Resource \"{0}\" in {1} has an unsupported encoding", resource, asm.FullName);
+							throw new IOException("Unsupported resource encoding " + de.Key + " for resource " + resource + " found in assembly " + asm.FullName);
+						}
+					}
+					Tracer.Error(Tracer.ClassLoading, "Resource \"{0}\" in {1} is invalid", resource, asm.FullName);
+					throw new IOException("Invalid resource " + resource + " found in assembly " + asm.FullName);
+				}
+			}
+#endif
 		}
 
 		public static object LoadClassFromAssembly(Assembly asm, string className)
@@ -111,10 +326,12 @@ namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 
 		public static Assembly LoadAssembly(string name)
 		{
+#if WHIDBEY
 			if(name.EndsWith("[ReflectionOnly]"))
 			{
 				return Assembly.ReflectionOnlyLoad(name.Substring(0, name.Length - 16));
 			}
+#endif
 			return Assembly.Load(name);
 		}
 
@@ -127,7 +344,7 @@ namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 
 namespace IKVM.NativeCode.gnu.classpath
 {
-	static class VMSystemProperties
+	public class VMSystemProperties
 	{
 		public static string getVersion()
 		{
@@ -145,9 +362,129 @@ namespace IKVM.NativeCode.gnu.classpath
 
 namespace IKVM.NativeCode.ikvm.@internal
 {
+	public class AssemblyClassLoader
+	{
+		public static object LoadClass(object classLoader, string name)
+		{
+			try
+			{
+				TypeWrapper tw = null;
+				if(classLoader == null)
+				{
+					tw = ClassLoaderWrapper.GetBootstrapClassLoader().LoadClassByDottedName(name);
+				}
+				else
+				{
+					ClassLoaderWrapper classLoaderWrapper = (ClassLoaderWrapper)JVM.Library.getWrapperFromClassLoader(classLoader);
+					AssemblyClassLoader_ acl = classLoaderWrapper as AssemblyClassLoader_;
+					if(acl != null)
+					{
+						// HACK we need to support generic type instantiations here, because we may not have gone
+						// through LoadClassByDottedNameFastImpl.
+						if(name.EndsWith("_$$$$_") && name.IndexOf("_$$$_") > 0)
+						{
+							tw = acl.LoadGenericClass(name);
+						}
+						if(tw == null)
+						{
+							tw = acl.LoadClass(name);
+						}
+						if(tw == null)
+						{
+							throw new ClassNotFoundException(name);
+						}
+					}
+					else
+					{
+						// this must be a GenericClassLoader
+						tw = ((GenericClassLoader)classLoaderWrapper).LoadClassByDottedName(name);
+					}
+				}
+				Tracer.Info(Tracer.ClassLoading, "Loaded class \"{0}\" from {1}", name, classLoader == null ? "boot class loader" : classLoader);
+				return tw.ClassObject;
+			}
+			catch(RetargetableJavaException x)
+			{
+				Tracer.Info(Tracer.ClassLoading, "Failed to load class \"{0}\" from {1}", name, classLoader == null ? "boot class loader" : classLoader);
+				throw x.ToJava();
+			}
+		}
+
+		public static Assembly[] FindResourceAssemblies(object classLoader, string name, bool firstOnly)
+		{
+			IKVM.Internal.AssemblyClassLoader wrapper = classLoader == null ? ClassLoaderWrapper.GetBootstrapClassLoader() : (JVM.Library.getWrapperFromClassLoader(classLoader) as IKVM.Internal.AssemblyClassLoader);
+			if(wrapper == null)
+			{
+				// must be a GenericClassLoader
+				Tracer.Info(Tracer.ClassLoading, "Failed to find resource \"{0}\" in generic class loader", name);
+				return null;
+			}
+			Assembly[] assemblies = wrapper.FindResourceAssemblies(name, firstOnly);
+			if(assemblies == null || assemblies.Length == 0)
+			{
+				Tracer.Info(Tracer.ClassLoading, "Failed to find resource \"{0}\" in {1}", name, wrapper.Assembly.FullName);
+				return null;
+			}
+			foreach(Assembly asm in assemblies)
+			{
+				Tracer.Info(Tracer.ClassLoading, "Found resource \"{0}\" in {1}", name, asm.FullName);
+			}
+			return assemblies;
+		}
+
+		// NOTE the array may contain duplicates!
+		public static string[] GetPackages(object classLoader)
+		{
+			IKVM.Internal.AssemblyClassLoader wrapper = classLoader == null ? ClassLoaderWrapper.GetBootstrapClassLoader() : (JVM.Library.getWrapperFromClassLoader(classLoader) as IKVM.Internal.AssemblyClassLoader);
+			if(wrapper == null)
+			{
+				// must be a GenericClassLoader
+				return null;
+			}
+			string[] packages = new string[0];
+			foreach(Module m in wrapper.Assembly.GetModules(false))
+			{
+				object[] attr = m.GetCustomAttributes(typeof(PackageListAttribute), false);
+				foreach(PackageListAttribute p in attr)
+				{
+					string[] mp = p.GetPackages();
+					string[] tmp = new string[packages.Length + mp.Length];
+					Array.Copy(packages, 0, tmp, 0, packages.Length);
+					Array.Copy(mp, 0, tmp, packages.Length, mp.Length);
+					packages = tmp;
+				}
+			}
+			return packages;
+		}
+
+		public static bool IsReflectionOnly(Assembly asm)
+		{
+#if WHIDBEY
+			return asm.ReflectionOnly;
+#else
+			return false;
+#endif
+		}
+
+		public static int GetGenericClassLoaderId(object classLoader)
+		{
+			return ClassLoaderWrapper.GetGenericClassLoaderId((ClassLoaderWrapper)JVM.Library.getWrapperFromClassLoader(classLoader));
+		}
+
+		public static Assembly GetBootClassLoaderAssembly()
+		{
+			return ((IKVM.Internal.AssemblyClassLoader)ClassLoaderWrapper.GetBootstrapClassLoader()).Assembly;
+		}
+
+		public static string GetGenericClassLoaderName(object classLoader)
+		{
+			return ((GenericClassLoader)JVM.Library.getWrapperFromClassLoader(classLoader)).GetName();
+		}
+	}
+
 	namespace stubgen
 	{
-		static class StubGenerator
+		public class StubGenerator
 		{
 			public static string getAssemblyName(object c)
 			{
@@ -204,158 +541,14 @@ namespace IKVM.NativeCode.ikvm.@internal
 
 namespace IKVM.NativeCode.ikvm.runtime
 {
-	static class AssemblyClassLoader
+	public class Util
 	{
-		public static object LoadClass(object classLoader, Assembly assembly, string name)
-		{
-			try
-			{
-				TypeWrapper tw = null;
-				if(classLoader == null)
-				{
-					tw = ClassLoaderWrapper.GetBootstrapClassLoader().LoadClassByDottedName(name);
-				}
-				else if(assembly != null)
-				{
-					AssemblyClassLoader_ acl = ClassLoaderWrapper.GetAssemblyClassLoader(assembly);
-					tw = acl.GetLoadedClass(name);
-					if(tw == null)
-					{
-						tw = acl.LoadGenericClass(name);
-					}
-					if(tw == null)
-					{
-						tw = acl.LoadReferenced(name);
-					}
-					if(tw == null)
-					{
-						throw new ClassNotFoundException(name);
-					}
-				}
-				else
-				{
-					// this must be a GenericClassLoader
-					tw = ((GenericClassLoader)ClassLoaderWrapper.GetClassLoaderWrapper(classLoader)).LoadClassByDottedName(name);
-				}
-				Tracer.Info(Tracer.ClassLoading, "Loaded class \"{0}\" from {1}", name, classLoader == null ? "boot class loader" : classLoader);
-				return tw.ClassObject;
-			}
-			catch(RetargetableJavaException x)
-			{
-				Tracer.Info(Tracer.ClassLoading, "Failed to load class \"{0}\" from {1}", name, classLoader == null ? "boot class loader" : classLoader);
-				throw x.ToJava();
-			}
-		}
+		private static Type enumEnumType = JVM.CoreAssembly.GetType("ikvm.internal.EnumEnum");
+		private static FieldInfo enumEnumTypeField = enumEnumType.GetField("typeWrapper", BindingFlags.Instance | BindingFlags.NonPublic);
 
-		public static Assembly[] FindResourceAssemblies(Assembly assembly, string name, bool firstOnly)
-		{
-			IKVM.Internal.AssemblyClassLoader wrapper = ClassLoaderWrapper.GetAssemblyClassLoader(assembly);
-			Assembly[] assemblies = wrapper.FindResourceAssemblies(name, firstOnly);
-			if(assemblies == null || assemblies.Length == 0)
-			{
-				Tracer.Info(Tracer.ClassLoading, "Failed to find resource \"{0}\" in {1}", name, wrapper.Assembly.FullName);
-				return null;
-			}
-			foreach(Assembly asm in assemblies)
-			{
-				Tracer.Info(Tracer.ClassLoading, "Found resource \"{0}\" in {1}", name, asm.FullName);
-			}
-			return assemblies;
-		}
+		// we don't want "beforefieldinit"
+		static Util() {}
 
-		public static Assembly GetAssemblyFromClassLoader(object classLoader)
-		{
-			AssemblyClassLoader_ acl = ClassLoaderWrapper.GetClassLoaderWrapper(classLoader) as AssemblyClassLoader_;
-			return acl != null ? acl.Assembly : null;
-		}
-
-		// NOTE the array may contain duplicates!
-		public static string[] GetPackages(Assembly assembly)
-		{
-			IKVM.Internal.AssemblyClassLoader wrapper = ClassLoaderWrapper.GetAssemblyClassLoader(assembly);
-			string[] packages = new string[0];
-			foreach(Module m in wrapper.Assembly.GetModules(false))
-			{
-				object[] attr = m.GetCustomAttributes(typeof(PackageListAttribute), false);
-				foreach(PackageListAttribute p in attr)
-				{
-					string[] mp = p.GetPackages();
-					string[] tmp = new string[packages.Length + mp.Length];
-					Array.Copy(packages, 0, tmp, 0, packages.Length);
-					Array.Copy(mp, 0, tmp, packages.Length, mp.Length);
-					packages = tmp;
-				}
-			}
-			return packages;
-		}
-
-		public static bool IsReflectionOnly(Assembly asm)
-		{
-			return asm.ReflectionOnly;
-		}
-
-		public static int GetGenericClassLoaderId(object classLoader)
-		{
-#if FIRST_PASS
-			return 0;
-#elif OPENJDK
-			return ClassLoaderWrapper.GetGenericClassLoaderId(((global::java.lang.ClassLoader)classLoader).wrapper);
-#else
-			return ClassLoaderWrapper.GetGenericClassLoaderId((ClassLoaderWrapper)JVM.Library.getWrapperFromClassLoader(classLoader));
-#endif
-		}
-
-		public static Assembly GetBootClassLoaderAssembly()
-		{
-			return ClassLoaderWrapper.GetBootstrapClassLoader().Assembly;
-		}
-
-		public static string GetGenericClassLoaderName(object classLoader)
-		{
-#if FIRST_PASS
-			return null;
-#elif OPENJDK
-			return ((GenericClassLoader)((global::java.lang.ClassLoader)classLoader).wrapper).GetName();
-#else
-			return ((GenericClassLoader)JVM.Library.getWrapperFromClassLoader(classLoader)).GetName();
-#endif
-		}
-	}
-
-	static class AppDomainAssemblyClassLoader
-	{
-		public static object loadClassFromAssembly(Assembly asm, string className)
-		{
-			if(asm is System.Reflection.Emit.AssemblyBuilder)
-			{
-				return null;
-			}
-			if(asm.Equals(DynamicClassLoader.Instance.ModuleBuilder.Assembly))
-			{
-				// this can happen on Orcas, where an AssemblyBuilder has a corresponding Assembly
-				return null;
-			}
-			TypeWrapper tw = ClassLoaderWrapper.GetAssemblyClassLoader(asm).DoLoad(className);
-			return tw != null ? tw.ClassObject : null;
-		}
-
-		public static bool findResourceInAssembly(Assembly asm, string resourceName)
-		{
-			if(asm is System.Reflection.Emit.AssemblyBuilder)
-			{
-				return false;
-			}
-			if(asm.Equals(DynamicClassLoader.Instance.ModuleBuilder.Assembly))
-			{
-				// this can happen on Orcas, where an AssemblyBuilder has a corresponding Assembly
-				return false;
-			}
-			return asm.GetManifestResourceInfo(JVM.MangleResourceName(resourceName)) != null;
-		}
-	}
-
-	static class Util
-	{
 		public static object getClassFromObject(object o)
 		{
 			return GetTypeWrapperFromObject(o).ClassObject;
@@ -368,6 +561,10 @@ namespace IKVM.NativeCode.ikvm.runtime
 			{
 				return DotNetTypeWrapper.GetWrapperFromDotNetType(t);
 			}
+			if(t == enumEnumType)
+			{
+				return (TypeWrapper)enumEnumTypeField.GetValue(o);
+			}
 			return ClassLoaderWrapper.GetWrapperFromType(t);
 		}
 
@@ -378,7 +575,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 			{
 				return DotNetTypeWrapper.GetWrapperFromDotNetType(t).ClassObject;
 			}
-			if(t.ContainsGenericParameters)
+			if(Whidbey.ContainsGenericParameters(t))
 			{
 				return null;
 			}
@@ -392,7 +589,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 
 		public static object getFriendlyClassFromType(Type type)
 		{
-			if(type.ContainsGenericParameters)
+			if(Whidbey.ContainsGenericParameters(type))
 			{
 				return null;
 			}
@@ -422,6 +619,10 @@ namespace IKVM.NativeCode.ikvm.runtime
 		public static Type getInstanceTypeFromClass(object clazz)
 		{
 			TypeWrapper wrapper = TypeWrapper.FromClass(clazz);
+			if(wrapper.IsDynamicOnly)
+			{
+				return null;
+			}
 			if(wrapper.IsRemapped && wrapper.IsFinal)
 			{
 				return wrapper.TypeAsTBD;
