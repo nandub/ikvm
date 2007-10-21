@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2007, 2008 Jeroen Frijters
+  Copyright (C) 2007 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -23,7 +23,6 @@
 */
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -31,7 +30,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
-using System.Security.Cryptography.X509Certificates;
 using StackFrame = System.Diagnostics.StackFrame;
 using StackTrace = System.Diagnostics.StackTrace;
 using SystemArray = System.Array;
@@ -81,6 +79,7 @@ using jlrAccessibleObject = java.lang.reflect.AccessibleObject;
 using jlrInvocationTargetException = java.lang.reflect.InvocationTargetException;
 using ProtectionDomain = java.security.ProtectionDomain;
 using srMethodAccessor = sun.reflect.MethodAccessor;
+using srConstantPool = sun.reflect.ConstantPool;
 using srConstructorAccessor = sun.reflect.ConstructorAccessor;
 using srFieldAccessor = sun.reflect.FieldAccessor;
 using srLangReflectAccess = sun.reflect.LangReflectAccess;
@@ -88,6 +87,7 @@ using srReflection = sun.reflect.Reflection;
 using srReflectionFactory = sun.reflect.ReflectionFactory;
 using jnByteBuffer = java.nio.ByteBuffer;
 using StubGenerator = ikvm.@internal.stubgen.StubGenerator;
+using IConstantPoolWriter = ikvm.@internal.stubgen.StubGenerator.IConstantPoolWriter;
 using Annotation = java.lang.annotation.Annotation;
 using smJavaIOAccess = sun.misc.JavaIOAccess;
 using smLauncher = sun.misc.Launcher;
@@ -121,31 +121,60 @@ using ssaGetPropertyAction = sun.security.action.GetPropertyAction;
 using sndResolverConfigurationImpl = sun.net.dns.ResolverConfigurationImpl;
 #endif
 
+#if WHIDBEY
 sealed class DynamicMethodSupport
 {
 	// MONOBUG as of Mono 1.2.5.1, DynamicMethod is too broken to be used
-	internal static readonly bool Enabled = IsFullTrust && Type.GetType("Mono.Runtime") == null;
+	internal static readonly bool Enabled = Type.GetType("Mono.Runtime") == null;
+}
+#else
+sealed class DynamicMethodSupport
+{
+	internal static readonly bool Enabled = Environment.Version.Major >= 2 && Type.GetType("Mono.Runtime") == null;
+}
 
-	private static bool IsFullTrust
+sealed class DynamicMethod
+{
+	private static ConstructorInfo ctor1;
+	private static ConstructorInfo ctor2;
+	private static MethodInfo createMethod;
+	private static MethodInfo getILGenMethod;
+	private object dm;
+
+	static DynamicMethod()
 	{
-		get
-		{
-			try
-			{
-				new System.Security.Permissions.SecurityPermission(System.Security.Permissions.SecurityPermissionFlag.UnmanagedCode).Demand();
-				return true;
-			}
-			catch (System.Security.SecurityException)
-			{
-				return false;
-			}
-		}
+		Type type = Type.GetType("System.Reflection.Emit.DynamicMethod", true);
+		ctor1 = type.GetConstructor(new Type[] { typeof(string), typeof(MethodAttributes), typeof(CallingConventions), typeof(Type), typeof(Type[]), typeof(Module), typeof(bool) });
+		ctor2 = type.GetConstructor(new Type[] { typeof(string), typeof(Type), typeof(Type[]), typeof(Type) });
+		createMethod = type.GetMethod("CreateDelegate", new Type[] { typeof(Type) });
+		getILGenMethod = type.GetMethod("GetILGenerator", new Type[0]);
+	}
+
+	internal DynamicMethod(string name, MethodAttributes attributes, CallingConventions callingConvention, Type returnType, Type[] parameterTypes, Module owner, bool skipVisibility)
+	{
+		dm = ctor1.Invoke(new object[] { name, attributes, callingConvention, returnType, parameterTypes, owner, skipVisibility });
+	}
+
+	internal DynamicMethod(string name, Type returnType, Type[] parameterTypes, Type owner)
+	{
+		dm = ctor2.Invoke(new object[] { name, returnType, parameterTypes, owner });
+	}
+
+	internal ILGenerator GetILGenerator()
+	{
+		return (ILGenerator)getILGenMethod.Invoke(dm, null);
+	}
+
+	internal Delegate CreateDelegate(Type delegateType)
+	{
+		return (Delegate)createMethod.Invoke(dm, new object[] { delegateType });
 	}
 }
+#endif
 
 namespace IKVM.Runtime
 {
-	public static class Assertions
+	public sealed class Assertions
 	{
 		private static bool sysAsserts;
 		private static bool userAsserts;
@@ -165,6 +194,8 @@ namespace IKVM.Runtime
 				this.next = next;
 			}
 		}
+
+		private Assertions() { }
 
 		private static void AddOption(string classOrPackage, bool enabled)
 		{
@@ -300,90 +331,30 @@ namespace IKVM.NativeCode.java
 {
 	namespace io
 	{
-		static class Console
+		public sealed class Console
 		{
 			public static string encoding()
 			{
-				int cp = 437;
-				try
-				{
-					cp = global::System.Console.InputEncoding.CodePage;
-				}
-				catch
-				{
-				}
-				if (cp >= 874 && cp <= 950)
-				{
-					return "ms" + cp;
-				}
-				return "cp" + cp;
+				// TODO
+				return "IBM437";
 			}
-
-			private const int STD_INPUT_HANDLE = -10;
-			private const int ENABLE_ECHO_INPUT = 0x0004;
-
-			[System.Runtime.InteropServices.DllImport("kernel32")]
-			private static extern IntPtr GetStdHandle(int nStdHandle);
-
-			[System.Runtime.InteropServices.DllImport("kernel32")]
-			private static extern int GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
-
-			[System.Runtime.InteropServices.DllImport("kernel32")]
-			private static extern int SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
 
 			public static bool echo(bool on)
 			{
-#if !FIRST_PASS
-				// HACK the only way to get this to work is by p/invoking the Win32 APIs
-				if (Environment.OSVersion.Platform == PlatformID.Win32NT)
-				{
-					IntPtr hStdIn = GetStdHandle(STD_INPUT_HANDLE);
-					if (hStdIn.ToInt64() == 0 || hStdIn.ToInt64() == -1)
-					{
-						throw new global::java.io.IOException("The handle is invalid");
-					}
-					int fdwMode;
-					if (GetConsoleMode(hStdIn, out fdwMode) == 0)
-					{
-						throw new global::java.io.IOException("GetConsoleMode failed");
-					}
-					bool old = (fdwMode & ENABLE_ECHO_INPUT) != 0;
-					if (on)
-					{
-						fdwMode |= ENABLE_ECHO_INPUT;
-					}
-					else
-					{
-						fdwMode &= ~ENABLE_ECHO_INPUT;
-					}
-					if (SetConsoleMode(hStdIn, fdwMode) == 0)
-					{
-						throw new global::java.io.IOException("SetConsoleMode failed");
-					}
-					return old;
-				}
-#endif
-				return true;
+				// TODO
+				return false;
 			}
 
 			public static bool istty()
 			{
-				// The JDK returns false here if stdin or stdout (not stderr) is redirected to a file
-				// or if there is no console associated with the current process.
-				// The best we can do is to look at the KeyAvailable property, which
-				// will throw an InvalidOperationException if stdin is redirected or not available
-				try
-				{
-					return global::System.Console.KeyAvailable || true;
-				}
-				catch (InvalidOperationException)
-				{
-					return false;
-				}
+				// the JDK returns false here if stdin or stdout is redirected (not stderr)
+				// or if there is no console associated with the current process
+				// TODO figure out if there is a managed way to detect redirection or console presence
+				return true;
 			}
 		}
 
-		static class FileDescriptor
+		public sealed class FileDescriptor
 		{
 			public static System.IO.Stream open(String name, System.IO.FileMode fileMode, System.IO.FileAccess fileAccess)
 			{
@@ -398,7 +369,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class FileSystem
+		public sealed class FileSystem
 		{
 			public static object getFileSystem()
 			{
@@ -417,7 +388,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class ObjectInputStream
+		public sealed class ObjectInputStream
 		{
 			public static void bytesToFloats(byte[] src, int srcpos, float[] dst, int dstpos, int nfloats)
 			{
@@ -469,7 +440,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class ObjectOutputStream
+		public sealed class ObjectOutputStream
 		{
 			public static void floatsToBytes(float[] src, int srcpos, byte[] dst, int dstpos, int nfloats)
 			{
@@ -490,113 +461,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		public static class IOHelpers
-		{
-			public static void WriteByte(byte[] buf, int offset, byte value)
-			{
-				buf[offset] = value;
-			}
-
-			public static void WriteBoolean(byte[] buf, int offset, bool value)
-			{
-				buf[offset] = value ? (byte)1 : (byte)0;
-			}
-
-			public static void WriteChar(byte[] buf, int offset, char value)
-			{
-				buf[offset + 0] = (byte)(value >> 8);
-				buf[offset + 1] = (byte)(value >> 0);
-			}
-
-			public static void WriteShort(byte[] buf, int offset, short value)
-			{
-				buf[offset + 0] = (byte)(value >> 8);
-				buf[offset + 1] = (byte)(value >> 0);
-			}
-
-			public static void WriteInt(byte[] buf, int offset, int value)
-			{
-				buf[offset + 0] = (byte)(value >> 24);
-				buf[offset + 1] = (byte)(value >> 16);
-				buf[offset + 2] = (byte)(value >> 8);
-				buf[offset + 3] = (byte)(value >> 0);
-			}
-
-			public static void WriteFloat(byte[] buf, int offset, float value)
-			{
-#if !FIRST_PASS
-				WriteInt(buf, offset, jlFloat.floatToIntBits(value));
-#endif
-			}
-
-			public static void WriteLong(byte[] buf, int offset, long value)
-			{
-				WriteInt(buf, offset, (int)(value >> 32));
-				WriteInt(buf, offset + 4, (int)value);
-			}
-
-			public static void WriteDouble(byte[] buf, int offset, double value)
-			{
-#if !FIRST_PASS
-				WriteLong(buf, offset, jlDouble.doubleToLongBits(value));
-#endif
-			}
-
-			public static byte ReadByte(byte[] buf, int offset)
-			{
-				return buf[offset];
-			}
-
-			public static bool ReadBoolean(byte[] buf, int offset)
-			{
-				return buf[offset] != 0;
-			}
-
-			public static char ReadChar(byte[] buf, int offset)
-			{
-				return (char)((buf[offset] << 8) + buf[offset + 1]);
-			}
-
-			public static short ReadShort(byte[] buf, int offset)
-			{
-				return (short)((buf[offset] << 8) + buf[offset + 1]);
-			}
-
-			public static int ReadInt(byte[] buf, int offset)
-			{
-				return (buf[offset + 0] << 24)
-					 + (buf[offset + 1] << 16)
-					 + (buf[offset + 2] << 8)
-					 + (buf[offset + 3] << 0);
-			}
-
-			public static float ReadFloat(byte[] buf, int offset)
-			{
-#if FIRST_PASS
-				return 0;
-#else
-				return jlFloat.intBitsToFloat(ReadInt(buf, offset));
-#endif
-			}
-
-			public static long ReadLong(byte[] buf, int offset)
-			{
-				long hi = (uint)ReadInt(buf, offset);
-				long lo = (uint)ReadInt(buf, offset + 4);
-				return lo + (hi << 32);
-			}
-
-			public static double ReadDouble(byte[] buf, int offset)
-			{
-#if FIRST_PASS
-				return 0;
-#else
-				return jlDouble.longBitsToDouble(ReadLong(buf, offset));
-#endif
-			}
-		}
-
-		static class ObjectStreamClass
+		public sealed class ObjectStreamClass
 		{
 			public static void initNative()
 			{
@@ -623,24 +488,115 @@ namespace IKVM.NativeCode.java
 			}
 
 #if !FIRST_PASS
+			public static void WriteByte(byte[] buf, int offset, byte value)
+			{
+				buf[offset] = value;
+			}
+
+			public static void WriteBoolean(byte[] buf, int offset, bool value)
+			{
+				buf[offset] = value ? (byte)1 : (byte)0;
+			}
+
+			public static void WriteChar(byte[] buf, int offset, char value)
+			{
+				buf[offset + 0] = (byte)(value >> 8);
+				buf[offset + 1] = (byte)(value >> 0);
+			}
+
+			public static void WriteShort(byte[] buf, int offset, short value)
+			{
+				buf[offset + 0] = (byte)(value >> 8);
+				buf[offset + 1] = (byte)(value >> 0);
+			}
+
+			public static void WriteInt(byte[] buf, int offset, int value)
+			{
+				buf[offset + 0] = (byte)(value >> 24);
+				buf[offset + 1] = (byte)(value >> 16);
+				buf[offset + 2] = (byte)(value >>  8);
+				buf[offset + 3] = (byte)(value >>  0);
+			}
+
+			public static void WriteFloat(byte[] buf, int offset, float value)
+			{
+				WriteInt(buf, offset, jlFloat.floatToIntBits(value));
+			}
+
+			public static void WriteLong(byte[] buf, int offset, long value)
+			{
+				WriteInt(buf, offset, (int)(value >> 32));
+				WriteInt(buf, offset + 4, (int)value);
+			}
+
+			public static void WriteDouble(byte[] buf, int offset, double value)
+			{
+				WriteLong(buf, offset, jlDouble.doubleToLongBits(value));
+			}
+
+			public static byte ReadByte(byte[] buf, int offset)
+			{
+				return buf[offset];
+			}
+
+			public static bool ReadBoolean(byte[] buf, int offset)
+			{
+				return buf[offset] != 0;
+			}
+
+			public static char ReadChar(byte[] buf, int offset)
+			{
+				return (char)((buf[offset] << 8) + buf[offset + 1]);
+			}
+
+			public static short ReadShort(byte[] buf, int offset)
+			{
+				return (short)((buf[offset] << 8) + buf[offset + 1]);
+			}
+
+			public static int ReadInt(byte[] buf, int offset)
+			{
+				return (buf[offset + 0] << 24)
+					 + (buf[offset + 1] << 16)
+					 + (buf[offset + 2] <<  8)
+					 + (buf[offset + 3] <<  0);
+			}
+
+			public static float ReadFloat(byte[] buf, int offset)
+			{
+				return jlFloat.intBitsToFloat(ReadInt(buf, offset));
+			}
+
+			public static long ReadLong(byte[] buf, int offset)
+			{
+				long hi = (uint)ReadInt(buf, offset);
+				long lo = (uint)ReadInt(buf, offset + 4);
+				return lo + (hi << 32);
+			}
+
+			public static double ReadDouble(byte[] buf, int offset)
+			{
+				return jlDouble.longBitsToDouble(ReadLong(buf, offset));
+			}
+
 			private sealed class FastFieldReflector : iiFieldReflectorBase
 			{
-				private static readonly MethodInfo ReadByteMethod = typeof(IOHelpers).GetMethod("ReadByte");
-				private static readonly MethodInfo ReadBooleanMethod = typeof(IOHelpers).GetMethod("ReadBoolean");
-				private static readonly MethodInfo ReadCharMethod = typeof(IOHelpers).GetMethod("ReadChar");
-				private static readonly MethodInfo ReadShortMethod = typeof(IOHelpers).GetMethod("ReadShort");
-				private static readonly MethodInfo ReadIntMethod = typeof(IOHelpers).GetMethod("ReadInt");
-				private static readonly MethodInfo ReadFloatMethod = typeof(IOHelpers).GetMethod("ReadFloat");
-				private static readonly MethodInfo ReadLongMethod = typeof(IOHelpers).GetMethod("ReadLong");
-				private static readonly MethodInfo ReadDoubleMethod = typeof(IOHelpers).GetMethod("ReadDouble");
-				private static readonly MethodInfo WriteByteMethod = typeof(IOHelpers).GetMethod("WriteByte");
-				private static readonly MethodInfo WriteBooleanMethod = typeof(IOHelpers).GetMethod("WriteBoolean");
-				private static readonly MethodInfo WriteCharMethod = typeof(IOHelpers).GetMethod("WriteChar");
-				private static readonly MethodInfo WriteShortMethod = typeof(IOHelpers).GetMethod("WriteShort");
-				private static readonly MethodInfo WriteIntMethod = typeof(IOHelpers).GetMethod("WriteInt");
-				private static readonly MethodInfo WriteFloatMethod = typeof(IOHelpers).GetMethod("WriteFloat");
-				private static readonly MethodInfo WriteLongMethod = typeof(IOHelpers).GetMethod("WriteLong");
-				private static readonly MethodInfo WriteDoubleMethod = typeof(IOHelpers).GetMethod("WriteDouble");
+				private static readonly MethodInfo ReadByteMethod = typeof(ObjectStreamClass).GetMethod("ReadByte");
+				private static readonly MethodInfo ReadBooleanMethod = typeof(ObjectStreamClass).GetMethod("ReadBoolean");
+				private static readonly MethodInfo ReadCharMethod = typeof(ObjectStreamClass).GetMethod("ReadChar");
+				private static readonly MethodInfo ReadShortMethod = typeof(ObjectStreamClass).GetMethod("ReadShort");
+				private static readonly MethodInfo ReadIntMethod = typeof(ObjectStreamClass).GetMethod("ReadInt");
+				private static readonly MethodInfo ReadFloatMethod = typeof(ObjectStreamClass).GetMethod("ReadFloat");
+				private static readonly MethodInfo ReadLongMethod = typeof(ObjectStreamClass).GetMethod("ReadLong");
+				private static readonly MethodInfo ReadDoubleMethod = typeof(ObjectStreamClass).GetMethod("ReadDouble");
+				private static readonly MethodInfo WriteByteMethod = typeof(ObjectStreamClass).GetMethod("WriteByte");
+				private static readonly MethodInfo WriteBooleanMethod = typeof(ObjectStreamClass).GetMethod("WriteBoolean");
+				private static readonly MethodInfo WriteCharMethod = typeof(ObjectStreamClass).GetMethod("WriteChar");
+				private static readonly MethodInfo WriteShortMethod = typeof(ObjectStreamClass).GetMethod("WriteShort");
+				private static readonly MethodInfo WriteIntMethod = typeof(ObjectStreamClass).GetMethod("WriteInt");
+				private static readonly MethodInfo WriteFloatMethod = typeof(ObjectStreamClass).GetMethod("WriteFloat");
+				private static readonly MethodInfo WriteLongMethod = typeof(ObjectStreamClass).GetMethod("WriteLong");
+				private static readonly MethodInfo WriteDoubleMethod = typeof(ObjectStreamClass).GetMethod("WriteDouble");
 				private static readonly FieldInfo fieldField = typeof(jiObjectStreamField).GetField("field", BindingFlags.Instance | BindingFlags.NonPublic);
 				private delegate void ObjFieldGetterSetter(object obj, object[] objarr);
 				private delegate void PrimFieldGetterSetter(object obj, byte[] objarr);
@@ -799,7 +755,6 @@ namespace IKVM.NativeCode.java
 								ilgenObjGetter.Emit(OpCodes.Ldc_I4, field.getOffset());
 								ilgenObjGetter.Emit(OpCodes.Ldarg_0);
 								fw.EmitGet(ilgenObjGetter);
-								fw.FieldTypeWrapper.EmitConvSignatureTypeToStackType(ilgenObjGetter);
 								ilgenObjGetter.Emit(OpCodes.Stelem_Ref);
 
 								// Setter
@@ -808,7 +763,6 @@ namespace IKVM.NativeCode.java
 								ilgenObjSetter.Emit(OpCodes.Ldc_I4, field.getOffset());
 								ilgenObjSetter.Emit(OpCodes.Ldelem_Ref);
 								fw.FieldTypeWrapper.EmitCheckcast(null, ilgenObjSetter);
-								fw.FieldTypeWrapper.EmitConvStackTypeToSignatureType(ilgenObjSetter, null);
 								fw.EmitSet(ilgenObjSetter);
 							}
 						}
@@ -884,176 +838,86 @@ namespace IKVM.NativeCode.java
 			}
 
 #if !FIRST_PASS
-			private static Dictionary<string, VfsEntry> entries;
+			// TODO on WHIDBEY this variable can be typed juzZipFile (because Interlocked.CompareExchange<>() is availble there)
+			private static object zipFile;
 
-			private abstract class VfsEntry
-			{
-				internal abstract long Size { get; }
-				internal virtual bool IsDirectory { get { return false; } }
-				internal abstract System.IO.Stream Open();
-			}
-
-			private class VfsDummyEntry : VfsEntry
+			private class VfsEntry : juzZipEntry
 			{
 				private bool directory;
 
-				internal VfsDummyEntry(bool directory)
+				internal VfsEntry(bool directory)
+					: base("")
 				{
 					this.directory = directory;
 				}
 
-				internal override long Size
+				public override bool isDirectory()
 				{
-					get { return 0; }
-				}
-
-				internal override bool IsDirectory
-				{
-					get { return directory; }
-				}
-
-				internal override System.IO.Stream Open()
-				{
-					return System.IO.Stream.Null;
+					return directory;
 				}
 			}
 
-			private class VfsZipEntry : VfsEntry
+			private static juzZipEntry GetZipEntry(string name)
 			{
-				private juzZipFile zipFile;
-				private juzZipEntry entry;
-
-				internal VfsZipEntry(juzZipFile zipFile, juzZipEntry entry)
+				if (zipFile == null)
 				{
-					this.zipFile = zipFile;
-					this.entry = entry;
-				}
-
-				internal override long Size
-				{
-					get { return entry.getSize(); }
-				}
-
-				internal override bool IsDirectory
-				{
-					get { return entry.isDirectory(); }
-				}
-
-				internal override System.IO.Stream Open()
-				{
-					return new ZipEntryStream(zipFile, entry);
-				}
-			}
-
-			private class VfsCacertsEntry : VfsEntry
-			{
-				private byte[] buf;
-
-				internal override long Size
-				{
-					get 
+					// this is a weird loop back, the vfs.zip resource is loaded from vfs,
+					// because that's the easiest way to construct a ZipFile from a Stream.
+					juzZipFile zf = new juzZipFile(RootPath + "vfs.zip");
+					if (Interlocked.CompareExchange(ref zipFile, zf, null) != null)
 					{
-						Populate();
-						return buf.Length;
+						zf.close();
 					}
 				}
-
-				internal override System.IO.Stream Open()
+				if (IsVirtualFS(name))
 				{
-					Populate();
-					return new System.IO.MemoryStream(buf, false);
-				}
-
-				private void Populate()
-				{
-					if (buf == null)
+					if (name.Length < RootPath.Length)
 					{
-						global::java.security.KeyStore jstore = global::java.security.KeyStore.getInstance("jks");
-						jstore.load(null);
-						global::java.security.cert.CertificateFactory cf = global::java.security.cert.CertificateFactory.getInstance("X509");
-
-						X509Store store = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
-						store.Open(OpenFlags.ReadOnly);
-						foreach (X509Certificate2 cert in store.Certificates)
-						{
-							if (!cert.HasPrivateKey)
-							{
-								jstore.setCertificateEntry(cert.Subject, cf.generateCertificate(new global::java.io.ByteArrayInputStream(cert.RawData)));
-							}
-						}
-						store.Close();
-						global::java.io.ByteArrayOutputStream baos = new global::java.io.ByteArrayOutputStream();
-						jstore.store(baos, new char[0]);
-						buf = baos.toByteArray();
+						return new VfsEntry(true);
+					}
+					else
+					{
+						name = name.Substring(RootPath.Length);
 					}
 				}
-			}
-
-			private class VfsVfsZipEntry : VfsEntry
-			{
-				internal override long Size
+				name = name.Replace('\\', '/');
+				juzZipEntry entry = ((juzZipFile)zipFile).getEntry(name);
+				if (entry == null)
 				{
-					get
+					if (name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("zip")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("awt")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("rmi")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("w2k_lsa_auth")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_nt")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_unix")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("unpack")
+						|| name == "bin/" + IKVM.NativeCode.java.lang.System.mapLibraryName("net"))
 					{
-						using (System.IO.Stream stream = Open())
-						{
-							return stream.Length;
-						}
+						return new VfsEntry(false);
 					}
 				}
-
-				internal override System.IO.Stream Open()
-				{
-					//return new System.IO.FileStream("c:\\ikvm\\openjdk\\vfs.zip", System.IO.FileMode.Open);
-					return Assembly.GetExecutingAssembly().GetManifestResourceStream("vfs.zip");
-				}
+				return entry;
 			}
 
-			private static void Initialize()
-			{
-				// this is a weird loop back, the vfs.zip resource is loaded from vfs,
-				// because that's the easiest way to construct a ZipFile from a Stream.
-				juzZipFile zf = new juzZipFile(RootPath + "vfs.zip");
-				global::java.util.Enumeration e = zf.entries();
-				Dictionary<string, VfsEntry> dict = new Dictionary<string, VfsEntry>();
-				char sep = jiFile.separatorChar;
-				while (e.hasMoreElements())
-				{
-					juzZipEntry entry = (juzZipEntry)e.nextElement();
-					dict[RootPath + entry.getName().Replace('/', sep)] = new VfsZipEntry(zf, entry);
-				}
-				dict[RootPath] = new VfsDummyEntry(true);
-				dict[RootPath + "lib/security/cacerts".Replace('/', sep)] = new VfsCacertsEntry();
-				dict[RootPath + "bin"] = new VfsDummyEntry(true);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("zip")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("awt")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("rmi")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("w2k_lsa_auth")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_nt")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("jaas_unix")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("unpack")] = new VfsDummyEntry(false);
-				dict[RootPath + "bin" + sep + IKVM.NativeCode.java.lang.System.mapLibraryName("net")] = new VfsDummyEntry(false);
-				if (Interlocked.CompareExchange(ref entries, dict, null) != null)
-				{
-					// we lost the race, so we close our zip file
-					zf.close();
-				}
-			}
-
-			private static VfsEntry GetVfsEntry(string name)
-			{
-				if (entries == null)
-				{
-					if (name == RootPath + "vfs.zip")
-					{
-						return new VfsVfsZipEntry();
-					}
-					Initialize();
-				}
-				VfsEntry ve;
-				entries.TryGetValue(name, out ve);
-				return ve;
-			}
+			/*
+			 * On WHIDBEY we should generate cacerts on the fly by using something like this:
+			 *
+			 * java.security.KeyStore jstore = java.security.KeyStore.getInstance("jks");
+			 * jstore.load(null);
+			 * java.security.cert.CertificateFactory cf = java.security.cert.CertificateFactory.getInstance("X509");
+			 * 
+			 * X509Store store = new X509Store(StoreName.Root, StoreLocation.LocalMachine);
+			 * store.Open(OpenFlags.ReadOnly);
+			 * foreach (X509Certificate2 cert in store.Certificates)
+			 * {
+			 *   if (!cert.HasPrivateKey)
+			 *   {
+			 *     jstore.setCertificateEntry(cert.Subject, cf.generateCertificate(new java.io.ByteArrayInputStream(cert.RawData)));
+			 *   }
+			 * }
+			 * java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+			 * jstore.store(baos, new char[0]);
+			 */
 
 			private sealed class ZipEntryStream : System.IO.Stream
 			{
@@ -1195,12 +1059,17 @@ namespace IKVM.NativeCode.java
 				{
 					throw new System.IO.IOException("vfs is read-only");
 				}
-				VfsEntry entry = GetVfsEntry(name);
+				name = name.Substring(RootPath.Length);
+				if (name == "vfs.zip")
+				{
+					return Assembly.GetExecutingAssembly().GetManifestResourceStream(name);
+				}
+				juzZipEntry entry = GetZipEntry(name);
 				if (entry == null)
 				{
 					throw new System.IO.FileNotFoundException("File not found");
 				}
-				return entry.Open();
+				return new ZipEntryStream(((juzZipFile)zipFile), entry);
 #endif
 			}
 
@@ -1209,8 +1078,8 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return 0;
 #else
-				VfsEntry entry = GetVfsEntry(path);
-				return entry == null ? 0 : entry.Size;
+				juzZipEntry entry = GetZipEntry(path);
+				return entry == null ? 0 : entry.getSize();
 #endif
 			}
 
@@ -1219,7 +1088,7 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return false;
 #else
-				return access == Win32FileSystem.ACCESS_READ && GetVfsEntry(path) != null;
+				return access == Win32FileSystem.ACCESS_READ && GetZipEntry(path) != null;
 #endif
 			}
 
@@ -1228,7 +1097,7 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return 0;
 #else
-				VfsEntry entry = GetVfsEntry(path);
+				juzZipEntry entry = GetZipEntry(path);
 				if (entry == null)
 				{
 					return 0;
@@ -1236,12 +1105,12 @@ namespace IKVM.NativeCode.java
 				const int BA_EXISTS = 0x01;
 				const int BA_REGULAR = 0x02;
 				const int BA_DIRECTORY = 0x04;
-				return entry.IsDirectory ? BA_EXISTS | BA_DIRECTORY : BA_EXISTS | BA_REGULAR;
+				return entry.isDirectory() ? BA_EXISTS | BA_DIRECTORY : BA_EXISTS | BA_REGULAR;
 #endif
 			}
 		}
 
-		static class Win32FileSystem
+		public sealed class Win32FileSystem
 		{
 			internal const int ACCESS_READ = 0x04;
 			const int ACCESS_WRITE = 0x02;
@@ -1311,13 +1180,10 @@ namespace IKVM.NativeCode.java
 					string name = fi.Name;
 					try
 					{
-						if (!VirtualFileSystem.IsVirtualFS(path))
+						string[] arr = System.IO.Directory.GetFileSystemEntries(dir, name);
+						if (arr.Length == 1)
 						{
-							string[] arr = System.IO.Directory.GetFileSystemEntries(dir, name);
-							if (arr.Length == 1)
-							{
-								name = arr[0];
-							}
+							name = arr[0];
 						}
 					}
 					catch (System.UnauthorizedAccessException)
@@ -1332,9 +1198,6 @@ namespace IKVM.NativeCode.java
 				{
 				}
 				catch (System.IO.IOException)
-				{
-				}
-				catch (System.Security.SecurityException)
 				{
 				}
 				return path;
@@ -1658,6 +1521,22 @@ namespace IKVM.NativeCode.java
 				}
 				catch (System.IO.IOException)
 				{
+					if (Environment.Version.Major == 1 && fileInfo is System.IO.DirectoryInfo)
+					{
+						// FXBUG on .NET 1.1 DirectoryInfo.Delete() can throw an exception even on success,
+						// because it checks GetLastWin32Error() even if RemoveDirectory() succeeded.
+						try
+						{
+							fileInfo.Refresh();
+						}
+						catch (System.ArgumentException)
+						{
+						}
+						catch (System.IO.IOException)
+						{
+						}
+						return !fileInfo.Exists;
+					}
 				}
 				catch (System.NotSupportedException)
 				{
@@ -1852,7 +1731,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class UnixFileSystem
+		public sealed class UnixFileSystem
 		{
 			public static int getBooleanAttributes0(object _this, object f)
 			{
@@ -1941,7 +1820,7 @@ namespace IKVM.NativeCode.java
 	{
 		namespace reflect
 		{
-			static class Array
+			public sealed class Array
 			{
 #if FIRST_PASS
 			public static int getLength(object arrayObj)
@@ -2553,10 +2432,80 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Class
+#if !FIRST_PASS
+		sealed class ConstantPoolWriter : IConstantPoolWriter
 		{
+			private ArrayList items = new ArrayList();
+
+			public short AddUtf8(String str)
+			{
+				return (short)items.Add(str);
+			}
+
+			public short AddInt(int i)
+			{
+				return (short)items.Add(i);
+			}
+
+			public short AddLong(long l)
+			{
+				return (short)items.Add(l);
+			}
+
+			public short AddFloat(float f)
+			{
+				return (short)items.Add(f);
+			}
+
+			public short AddDouble(double d)
+			{
+				return (short)items.Add(d);
+			}
+
+			internal string GetUtf8(int index)
+			{
+				return (string)items[index];
+			}
+
+			internal int GetInt(int index)
+			{
+				return (int)items[index];
+			}
+
+			internal long GetLong(int index)
+			{
+				return (long)items[index];
+			}
+
+			internal float GetFloat(int index)
+			{
+				return (float)items[index];
+			}
+
+			internal double GetDouble(int index)
+			{
+				return (double)items[index];
+			}
+		}
+#endif
+
+		public sealed class Class
+		{
+			private Class() { }
+
+			private static FieldInfo signersField;
+			private static FieldInfo pdField;
+			private static FieldInfo constantPoolField;
+			private static FieldInfo constantPoolOopField;
+
 			public static void registerNatives()
 			{
+#if !FIRST_PASS
+				signersField = typeof(jlClass).GetField("signers", BindingFlags.Instance | BindingFlags.NonPublic);
+				pdField = typeof(jlClass).GetField("pd", BindingFlags.Instance | BindingFlags.NonPublic);
+				constantPoolField = typeof(jlClass).GetField("constantPool", BindingFlags.Instance | BindingFlags.NonPublic);
+				constantPoolOopField = typeof(srConstantPool).GetField("constantPoolOop", BindingFlags.Instance | BindingFlags.NonPublic);
+#endif
 			}
 
 			public static object forName0(string name, bool initialize, object loader)
@@ -2576,7 +2525,7 @@ namespace IKVM.NativeCode.java
 					Type type = Type.GetType(name);
 					if (type != null)
 					{
-						tw = ClassLoaderWrapper.GetWrapperFromType(type);
+						tw = DotNetTypeWrapper.GetWrapperFromDotNetType(type);
 					}
 					if (tw == null)
 					{
@@ -2714,26 +2663,17 @@ namespace IKVM.NativeCode.java
 
 			public static int getModifiers(object thisClass)
 			{
-				// the 0x7FFF mask comes from JVM_ACC_WRITTEN_FLAGS in hotspot\src\share\vm\utilities\accessFlags.hpp
-				// masking out ACC_SUPER comes from instanceKlass::compute_modifier_flags() in hotspot\src\share\vm\oops\instanceKlass.cpp
-				const int mask = 0x7FFF & (int)~IKVM.Attributes.Modifiers.Super;
-				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers & mask;
+				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers;
 			}
 
 			public static object[] getSigners(object thisClass)
 			{
-#if FIRST_PASS
-				return null;
-#else
-				return ((jlClass)thisClass).signers;
-#endif
+				return (object[])signersField.GetValue(thisClass);
 			}
 
 			public static void setSigners(object thisClass, object[] signers)
 			{
-#if !FIRST_PASS
-				((jlClass)thisClass).signers = signers;
-#endif
+				signersField.SetValue(thisClass, signers);
 			}
 
 			public static object[] getEnclosingMethod0(object thisClass)
@@ -2783,15 +2723,12 @@ namespace IKVM.NativeCode.java
 
 			public static object getProtectionDomain0(object thisClass)
 			{
-#if FIRST_PASS
-				return null;
-#else
 				TypeWrapper wrapper = TypeWrapper.FromClass(thisClass);
 				while (wrapper.IsArray)
 				{
 					wrapper = wrapper.ElementTypeWrapper;
 				}
-				object pd = ((jlClass)wrapper.ClassObject).pd;
+				object pd = pdField.GetValue(wrapper.ClassObject);
 				if (pd == null)
 				{
 					// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
@@ -2803,14 +2740,11 @@ namespace IKVM.NativeCode.java
 					}
 				}
 				return pd;
-#endif
 			}
 
 			public static void setProtectionDomain0(object thisClass, object pd)
 			{
-#if !FIRST_PASS
-				((jlClass)thisClass).pd = (ProtectionDomain)pd;
-#endif
+				pdField.SetValue(thisClass, pd);
 			}
 
 			public static object getPrimitiveClass(string name)
@@ -2850,36 +2784,54 @@ namespace IKVM.NativeCode.java
 				return sig.Replace('.', '/');
 			}
 
-			internal static object AnnotationsToMap(object[] objAnn)
-			{
-#if FIRST_PASS
-				return null;
-#else
-				global::java.util.HashMap map = new global::java.util.HashMap();
-				if (objAnn != null)
-				{
-					foreach (object obj in objAnn)
-					{
-						Annotation a = obj as Annotation;
-						if (a != null)
-						{
-							global::ikvm.@internal.AnnotationAttributeBase.freeze(a);
-							map.put(a.annotationType(), a);
-						}
-					}
-				}
-				return map;
-#endif
-			}
-
-			public static object getDeclaredAnnotationsImpl(object thisClass)
+			public static byte[] getRawAnnotations(object thisClass)
 			{
 #if FIRST_PASS
 				return null;
 #else
 				TypeWrapper wrapper = TypeWrapper.FromClass(thisClass);
 				wrapper.Finish();
-				return AnnotationsToMap(wrapper.GetDeclaredAnnotations());
+				object[] objAnn = wrapper.GetDeclaredAnnotations();
+				if (objAnn == null)
+				{
+					return null;
+				}
+				ArrayList ann = new ArrayList();
+				foreach (object obj in objAnn)
+				{
+					if (obj is Annotation)
+					{
+						ann.Add(obj);
+					}
+				}
+				IConstantPoolWriter cp = (IConstantPoolWriter)constantPoolOopField.GetValue(getConstantPool(thisClass));
+				return StubGenerator.writeAnnotations(cp, (Annotation[])ann.ToArray(typeof(Annotation)));
+#endif
+			}
+
+#if !FIRST_PASS
+			internal static IConstantPoolWriter GetConstantPoolWriter(TypeWrapper wrapper)
+			{
+				return (IConstantPoolWriter)constantPoolOopField.GetValue(getConstantPool(wrapper.ClassObject));
+			}
+#endif
+
+			public static object getConstantPool(object thisClass)
+			{
+#if FIRST_PASS
+				return null;
+#else
+				lock (thisClass)
+				{
+					object cp = constantPoolField.GetValue(thisClass);
+					if (cp == null)
+					{
+						cp = new srConstantPool();
+						constantPoolOopField.SetValue(cp, new ConstantPoolWriter());
+						constantPoolField.SetValue(thisClass, cp);
+					}
+					return cp;
+				}
 #endif
 			}
 
@@ -2895,7 +2847,7 @@ namespace IKVM.NativeCode.java
 					// we need to finish the type otherwise all fields will not be in the field map yet
 					wrapper.Finish();
 					FieldWrapper[] fields = wrapper.GetFields();
-					List<jlrField> list = new List<jlrField>();
+					ArrayList list = new ArrayList();
 					for (int i = 0; i < fields.Length; i++)
 					{
 						if (fields[i].IsHideFromReflection)
@@ -2909,10 +2861,10 @@ namespace IKVM.NativeCode.java
 						else
 						{
 							fields[i].FieldTypeWrapper.EnsureLoadable(wrapper.GetClassLoader());
-							list.Add((jlrField)fields[i].ToField(false));
+							list.Add(fields[i].ToField(false));
 						}
 					}
-					return list.ToArray();
+					return (jlrField[])list.ToArray(typeof(jlrField));
 				}
 				catch (RetargetableJavaException x)
 				{
@@ -2948,7 +2900,7 @@ namespace IKVM.NativeCode.java
 					// we need to look through the array for unloadable types, because we may not let them
 					// escape into the 'wild'
 					MethodWrapper[] methods = wrapper.GetMethods();
-					List<jlrMethod> list = new List<jlrMethod>();
+					ArrayList list = new ArrayList();
 					for (int i = 0; i < methods.Length; i++)
 					{
 						// we don't want to expose "hideFromReflection" methods (one reason is that it would
@@ -2963,10 +2915,10 @@ namespace IKVM.NativeCode.java
 							{
 								args[j].EnsureLoadable(wrapper.GetClassLoader());
 							}
-							list.Add((jlrMethod)methods[i].ToMethodOrConstructor(false));
+							list.Add(methods[i].ToMethodOrConstructor(false));
 						}
 					}
-					return list.ToArray();
+					return (jlrMethod[])list.ToArray(typeof(jlrMethod));
 				}
 				catch (RetargetableJavaException x)
 				{
@@ -3002,7 +2954,7 @@ namespace IKVM.NativeCode.java
 					// we need to look through the array for unloadable types, because we may not let them
 					// escape into the 'wild'
 					MethodWrapper[] methods = wrapper.GetMethods();
-					List<jlrConstructor> list = new List<jlrConstructor>();
+					ArrayList list = new ArrayList();
 					for (int i = 0; i < methods.Length; i++)
 					{
 						// we don't want to expose "hideFromReflection" methods (one reason is that it would
@@ -3016,10 +2968,10 @@ namespace IKVM.NativeCode.java
 							{
 								args[j].EnsureLoadable(wrapper.GetClassLoader());
 							}
-							list.Add((jlrConstructor)methods[i].ToMethodOrConstructor(false));
+							list.Add(methods[i].ToMethodOrConstructor(false));
 						}
 					}
-					return list.ToArray();
+					return (jlrConstructor[])list.ToArray(typeof(jlrConstructor));
 				}
 				catch (RetargetableJavaException x)
 				{
@@ -3072,11 +3024,13 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class ClassLoader
+		public sealed class ClassLoader
 		{
 #if !FIRST_PASS
 			private static jlClassNotFoundException classNotFoundException;
 #endif
+
+			private ClassLoader() { }
 
 			public static void registerNatives()
 			{
@@ -3177,11 +3131,12 @@ namespace IKVM.NativeCode.java
 				return tw != null ? tw.ClassObject : null;
 			}
 
-			internal static class NativeLibrary
+			public sealed class NativeLibrary
 			{
+				private NativeLibrary() { }
+
 				public static void load(object thisNativeLibrary, string name)
 				{
-#if !FIRST_PASS
 					if (java.io.VirtualFileSystem.IsVirtualFS(name))
 					{
 						// we fake success for native libraries loaded from VFS
@@ -3189,22 +3144,13 @@ namespace IKVM.NativeCode.java
 					}
 					else
 					{
-						doLoad(thisNativeLibrary, name);
-					}
-#endif
-				}
-
-#if !FIRST_PASS
-				private static void doLoad(object thisNativeLibrary, string name)
-				{
-					object fromClass = thisNativeLibrary.GetType().GetField("fromClass", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(thisNativeLibrary);
-					if (IKVM.Runtime.JniHelper.LoadLibrary(name, TypeWrapper.FromClass(fromClass).GetClassLoader()) == 1)
-					{
-						SetHandle(thisNativeLibrary, -1);
+						object fromClass = thisNativeLibrary.GetType().GetField("fromClass", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(thisNativeLibrary);
+						if (IKVM.Runtime.JniHelper.LoadLibrary(name, TypeWrapper.FromClass(fromClass).GetClassLoader()) == 1)
+						{
+							SetHandle(thisNativeLibrary, -1);
+						}
 					}
 				}
-#endif
-
 
 				private static void SetHandle(object thisNativeLibrary, long handle)
 				{
@@ -3230,7 +3176,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Compiler
+		public sealed class Compiler
 		{
 			public static void initialize()
 			{
@@ -3264,7 +3210,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Double
+		public sealed class Double
 		{
 			public static long doubleToRawLongBits(double value)
 			{
@@ -3277,7 +3223,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Float
+		public sealed class Float
 		{
 			public static int floatToRawIntBits(float value)
 			{
@@ -3290,8 +3236,10 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Package
+		public sealed class Package
 		{
+			private Package() { }
+
 			public static string getSystemPackage0(string name)
 			{
 				// this method is not implemented because we redirect Package.getSystemPackage() to our implementation in LangHelper
@@ -3305,7 +3253,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class ProcessEnvironment
+		public sealed class ProcessEnvironment
 		{
 			public static string environmentBlock()
 			{
@@ -3323,7 +3271,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Runtime
+		public sealed class Runtime
 		{
 			public static int availableProcessors(object thisRuntime)
 			{
@@ -3381,18 +3329,14 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class SecurityManager
+		public sealed class SecurityManager
 		{
-			// this field is set by code in the JNI assembly itself,
-			// to prevent having to load the JNI assembly when it isn't used.
-			internal static volatile Assembly jniAssembly;
-
 			public static object getClassContext(object thisSecurityManager)
 			{
 #if FIRST_PASS
 				return null;
 #else
-				List<jlClass> stack = new List<jlClass>();
+				ArrayList stack = new ArrayList();
 				StackTrace trace = new StackTrace();
 				for (int i = 0; i < trace.FrameCount; i++)
 				{
@@ -3404,7 +3348,6 @@ namespace IKVM.NativeCode.java
 						|| type == null
 						|| type.Assembly == typeof(object).Assembly
 						|| type.Assembly == typeof(SecurityManager).Assembly
-						|| type.Assembly == jniAssembly
 						|| type == typeof(jlrConstructor)
 						|| type == typeof(jlrMethod))
 					{
@@ -3414,9 +3357,9 @@ namespace IKVM.NativeCode.java
 					{
 						continue;
 					}
-					stack.Add((jlClass)ClassLoaderWrapper.GetWrapperFromType(type).ClassObject);
+					stack.Add(ClassLoaderWrapper.GetWrapperFromType(type).ClassObject);
 				}
-				return stack.ToArray();
+				return stack.ToArray(typeof(jlClass));
 #endif
 			}
 
@@ -3446,7 +3389,17 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class StrictMath
+		public sealed class Shutdown
+		{
+			public static void halt0(int status)
+			{
+				Environment.Exit(status);
+			}
+
+			// runAllFinalizers() implementation lives in map.xml
+		}
+
+		public sealed class StrictMath
 		{
 			public static double sin(double d)
 			{
@@ -3597,7 +3550,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class System
+		public sealed class System
 		{
 			public static void arraycopy(object src, int srcPos, object dest, int destPos, int length)
 			{
@@ -3618,10 +3571,9 @@ namespace IKVM.NativeCode.java
 
 			public static long nanoTime()
 			{
-				const long NANOS_PER_SEC = 1000000000;
-				double current = global::System.Diagnostics.Stopwatch.GetTimestamp();
-				double freq = global::System.Diagnostics.Stopwatch.Frequency;
-				return (long)((current / freq) * NANOS_PER_SEC);
+				// Note that the epoch is undefined, but we use something similar to the JDK
+				const long epoch = 632785401332600000L;
+				return (DateTime.UtcNow.Ticks - epoch) * 100L;
 			}
 
 			public static string mapLibraryName(string libname)
@@ -3657,6 +3609,32 @@ namespace IKVM.NativeCode.java
 				Thread.Bootstrap();
 			}
 
+			public static void setIn0(object @in)
+			{
+				SetSystemField("in", @in);
+			}
+
+			public static void setOut0(object @out)
+			{
+				SetSystemField("out", @out);
+			}
+
+			public static void setErr0(object err)
+			{
+				SetSystemField("err", err);
+			}
+
+			private static void SetSystemField(string field, object obj)
+			{
+#if !FIRST_PASS
+				// MONOBUG due to a bug in mcs we currently prefix the backing fields with __<>
+				field = "__<>" + field;
+				typeof(jlSystem)
+					.GetField(field, BindingFlags.NonPublic | BindingFlags.Static)
+					.SetValue(null, obj);
+#endif
+			}
+
 			public static object initProperties(object props)
 			{
 #if !FIRST_PASS
@@ -3665,7 +3643,7 @@ namespace IKVM.NativeCode.java
 				p.put("gnu.classpath.version", "0.95");
 				p.put("java.home", io.VirtualFileSystem.RootPath.Substring(0, io.VirtualFileSystem.RootPath.Length - 1));
 				p.put("sun.boot.library.path", io.VirtualFileSystem.RootPath + "bin");
-				global::gnu.classpath.VMSystemProperties.initOpenJDK(p);
+				JVM.Library.initProperties(p);
 
 				// HACK this is an extremely gross hack, here we explicitly call the class initializer of a bunch of
 				// classes while their class initializers may already be running. All of their class initializers are
@@ -3676,22 +3654,30 @@ namespace IKVM.NativeCode.java
 				// invocation wouldn't normally result in the class initializer running again, by running them
 				// explicitly (and thus possibly twice), we make sure that subsequent code won't see an unexpected
 				// state.
-				jiFile._reinitHack();
-				jlrAccessibleObject._reinitHack();
-				jlrModifier._reinitHack();
-				jiConsole._reinitHack();
+				typeof(jiFile).TypeInitializer.Invoke(null, null);
+				typeof(jlrAccessibleObject).TypeInitializer.Invoke(null, null);
+				typeof(jlrModifier).TypeInitializer.Invoke(null, null);
+				typeof(jiConsole).TypeInitializer.Invoke(null, null);
 #endif
 				return props;
 			}
 		}
 
-		static class Thread
+		public sealed class Thread
 		{
 			[ThreadStatic]
 			private static VMThread vmThread;
 			[ThreadStatic]
 			private static object cleanup;
 			private static int nonDaemonCount;
+			private static readonly ConstructorInfo threadConstructor1;
+			private static readonly ConstructorInfo threadConstructor2;
+			private static readonly FieldInfo vmThreadField;
+			private static readonly MethodInfo threadGroupAddMethod;
+			private static readonly FieldInfo threadStatusField;
+			private static readonly FieldInfo daemonField;
+			private static readonly FieldInfo threadPriorityField;
+			private static readonly MethodInfo threadExitMethod;
 			private static readonly object mainThreadGroup;
 			// we don't really use the Thread.threadStatus field, but we have to set it to a non-zero value,
 			// so we use RUNNABLE (which the HotSpot also uses) and the value was taken from the
@@ -3703,12 +3689,11 @@ namespace IKVM.NativeCode.java
 			private const int RUNNABLE = JVMTI_THREAD_STATE_ALIVE + JVMTI_THREAD_STATE_RUNNABLE;
 			private const int TERMINATED = JVMTI_THREAD_STATE_TERMINATED;
 
-			// TODO move all these fields to jlThread and remove VMThread
-			internal sealed class VMThread
+			private sealed class VMThread
 			{
 				internal readonly SystemThreadingThread nativeThread;
 #if !FIRST_PASS
-				internal jlThread javaThread;
+				internal readonly jlThread javaThread;
 #endif
 				internal Exception stillborn;
 				internal bool running;
@@ -3906,31 +3891,27 @@ namespace IKVM.NativeCode.java
 #if !FIRST_PASS
 			static Thread()
 			{
-				jlThreadGroup systemThreadGroup = jlThreadGroup.createRootGroup();
+				threadConstructor1 = typeof(jlThread).GetConstructor(new Type[] { typeof(jlThreadGroup), typeof(string) });
+				threadConstructor2 = typeof(jlThread).GetConstructor(new Type[] { typeof(jlThreadGroup), typeof(jlRunnable) });
+				vmThreadField = typeof(jlThread).GetField("vmThread", BindingFlags.Instance | BindingFlags.NonPublic);
+				threadGroupAddMethod = typeof(jlThreadGroup).GetMethod("add", BindingFlags.Instance | BindingFlags.NonPublic, null, new Type[] { typeof(jlThread) }, null);
+				threadStatusField = typeof(jlThread).GetField("threadStatus", BindingFlags.Instance | BindingFlags.NonPublic);
+				daemonField = typeof(jlThread).GetField("daemon", BindingFlags.Instance | BindingFlags.NonPublic);
+				threadPriorityField = typeof(jlThread).GetField("priority", BindingFlags.Instance | BindingFlags.NonPublic);
+				threadExitMethod = typeof(jlThread).GetMethod("exit", BindingFlags.Instance | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+
+				jlThreadGroup systemThreadGroup = (jlThreadGroup)Activator.CreateInstance(typeof(jlThreadGroup), true);
 				mainThreadGroup = new jlThreadGroup(systemThreadGroup, "main");
 				AttachThread(null, false, null);
-				jlSystem.runInit();
+				typeof(jlSystem).GetMethod("initializeSystemClass", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, null);
 				// make sure the Launcher singleton is created on the main thread and allow it to install the security manager
 				smLauncher.getLauncher();
 				if (jlClassLoader.getSystemClassLoader() == null)
 				{
 					// HACK because of bootstrap issues (Launcher instantiates a URL and GNU Classpath's URL calls getSystemClassLoader) we have
 					// to set clear the sclSet flag here, to make sure the system class loader is constructed next time getSystemClassLoader is called
-					jlClassLoader.clearSclSet();
+					typeof(jlClassLoader).GetField("sclSet", BindingFlags.Static | BindingFlags.NonPublic).SetValue(null, false);
 				}
-				try
-				{
-					// AppDomain.ProcessExit has a LinkDemand, so we have to have a separate method
-					RegisterShutdownHook();
-				}
-				catch (global::System.Security.SecurityException)
-				{
-				}
-			}
-
-			private static void RegisterShutdownHook()
-			{
-				AppDomain.CurrentDomain.ProcessExit += delegate { global::java.lang.Shutdown.shutdown(); };
 			}
 #endif
 			internal static void Bootstrap()
@@ -3953,11 +3934,9 @@ namespace IKVM.NativeCode.java
 
 			internal static int GetThreadStatus(object javaThread)
 			{
-#if FIRST_PASS
-				return 0;
-#else
-				return ((jlThread)javaThread)._threadStatus();
-#endif
+				// this needs to be a volatile read, but note that we can't synchronize on javaThread
+				SystemThreadingThread.MemoryBarrier();
+				return (int)threadStatusField.GetValue(javaThread);
 			}
 
 			internal static void SetThreadStatus(object javaThread, int value)
@@ -3967,10 +3946,12 @@ namespace IKVM.NativeCode.java
 				{
 					// NOTE there might be a race condition here (when the thread's Cleanup object
 					// is finalized during AppDomain shutdown while the thread is also exiting on its own),
-					// but that doesn't matter because Thread.exit() is safe to call multiple times.
-					((jlThread)javaThread)._exit();
+					// but that doesn't matter because Thread.exit() is idempotent.
+					threadExitMethod.Invoke(javaThread, null);
 				}
-				((jlThread)javaThread)._threadStatus(value);
+				// this needs to be a volatile write, but note that we can't synchronize on javaThread
+				threadStatusField.SetValue(javaThread, value);
+				SystemThreadingThread.MemoryBarrier();
 				if (value == TERMINATED)
 				{
 					// NOTE locking javaThread here isn't ideal, because we might be invoked from
@@ -4000,31 +3981,7 @@ namespace IKVM.NativeCode.java
 
 			private static VMThread GetVMThread(object threadObj)
 			{
-#if FIRST_PASS
-				return null;
-#else
-				return ((jlThread)threadObj).vmThread;
-#endif
-			}
-
-			internal static object CurrentThreadFromInit(object newThread)
-			{
-#if FIRST_PASS
-				return null;
-#else
-				VMThread t = CurrentVMThread();
-				jlThread thread = t.javaThread;
-				if (thread == null)
-				{
-					thread = (jlThread)newThread;
-					t.javaThread = thread;
-					thread.vmThread = t;
-					// priority must be set before running the rest of Thread.init(),
-					// otherwise it will try to "copy" an illegal priority.
-					thread._priority(MapNativePriorityToJava(t.nativeThread.Priority));
-				}
-				return thread;
-#endif
+				return (VMThread)vmThreadField.GetValue(threadObj);
 			}
 
 			private static VMThread AttachThread(string name, bool addToGroup, object threadGroup)
@@ -4036,35 +3993,38 @@ namespace IKVM.NativeCode.java
 				{
 					threadGroup = mainThreadGroup;
 				}
-				VMThread t = new VMThread(null, SystemThreadingThread.CurrentThread);
+				// because the Thread constructor calls Thread.currentThread(), we have to have an instance before we
+				// run the constructor
+				jlThread thread = (jlThread)FormatterServices.GetUninitializedObject(typeof(jlThread));
+				VMThread t = new VMThread(thread, SystemThreadingThread.CurrentThread);
+				t.running = true;
+				vmThreadField.SetValue(thread, t);
+				vmThread = t;
+				cleanup = new Cleanup(thread);
+				threadPriorityField.SetValue(thread, MapNativePriorityToJava(t.nativeThread.Priority));
 				if (name == null)
 				{
 					// inherit the .NET name of the thread (if it has a name)
 					name = t.nativeThread.Name;
 				}
-				t.running = true;
-				vmThread = t;
-				jlThread thread;
 				if (name != null)
 				{
-					thread = new jlThread((jlThreadGroup)threadGroup, name);
+					threadConstructor1.Invoke(thread, new object[] { threadGroup, name });
 				}
 				else
 				{
-					thread = new jlThread((jlThreadGroup)threadGroup, (jlRunnable)null);
+					threadConstructor2.Invoke(thread, new object[] { threadGroup, null });
 				}
-				cleanup = new Cleanup(thread);
-				thread._priority(MapNativePriorityToJava(t.nativeThread.Priority));
 				bool daemon = t.nativeThread.IsBackground;
 				if (!daemon)
 				{
 					Interlocked.Increment(ref nonDaemonCount);
 				}
-				thread._deamon(daemon);
+				daemonField.SetValue(thread, daemon);
 				SetThreadStatus(thread, RUNNABLE);
 				if (addToGroup)
 				{
-					((jlThreadGroup)threadGroup).add(thread);
+					threadGroupAddMethod.Invoke(threadGroup, new object[] { thread });
 				}
 				return t;
 #endif
@@ -4158,18 +4118,18 @@ namespace IKVM.NativeCode.java
 #if !FIRST_PASS
 				// TODO on NET 2.0 set the stack size
 				VMThread t = new VMThread((jlThread)thisThread);
-				((jlThread)thisThread).vmThread = t;
+				vmThreadField.SetValue(thisThread, t);
 				t.nativeThread.Name = t.javaThread.getName();
 				t.nativeThread.IsBackground = t.javaThread.isDaemon();
 				t.nativeThread.Priority = MapJavaPriorityToNative(t.javaThread.getPriority());
 				string apartment = ((string)jsAccessController.doPrivileged(new ssaGetPropertyAction("ikvm.apartmentstate", ""))).ToLower();
 				if (apartment == "mta")
 				{
-					t.nativeThread.SetApartmentState(ApartmentState.MTA);
+					t.nativeThread.ApartmentState = ApartmentState.MTA;
 				}
 				else if (apartment == "sta")
 				{
-					t.nativeThread.SetApartmentState(ApartmentState.STA);
+					t.nativeThread.ApartmentState = ApartmentState.STA;
 				}
 				SetThreadStatus(thisThread, RUNNABLE);
 				t.nativeThread.Start();
@@ -4240,7 +4200,8 @@ namespace IKVM.NativeCode.java
 							bool suspended = false;
 							if ((t.nativeThread.ThreadState & ThreadState.Suspended) == 0 && t.nativeThread != SystemThreadingThread.CurrentThread)
 							{
-								SuspendThread(t.nativeThread);
+								t.nativeThread.Suspend();
+								suspended = true;
 							}
 							StackTrace stack;
 							try
@@ -4251,10 +4212,10 @@ namespace IKVM.NativeCode.java
 							{
 								if (suspended)
 								{
-									ResumeThread(t.nativeThread);
+									t.nativeThread.Resume();
 								}
 							}
-							stacks[i] = global::java.lang.ExceptionHelper.getStackTrace(stack, int.MaxValue);
+							stacks[i] = JVM.Library.getStackTrace(stack);
 						}
 						catch (ThreadStateException)
 						{
@@ -4264,22 +4225,6 @@ namespace IKVM.NativeCode.java
 				}
 				return stacks;
 #endif
-			}
-
-			private static void SuspendThread(SystemThreadingThread thread)
-			{
-#pragma warning disable 618
-				// Thread.Suspend() is obsolete, we know that. Warning disabled.
-				thread.Suspend();
-#pragma warning restore
-			}
-
-			private static void ResumeThread(SystemThreadingThread thread)
-			{
-#pragma warning disable 618
-				// Thread.Resume() is obsolete, we know that. Warning disabled.
-				thread.Resume();
-#pragma warning restore
 			}
 
 #if !FIRST_PASS
@@ -4359,7 +4304,7 @@ namespace IKVM.NativeCode.java
 							ThreadState suspend = ThreadState.Suspended | ThreadState.SuspendRequested;
 							while ((t.nativeThread.ThreadState & suspend) != 0)
 							{
-								ResumeThread(t.nativeThread);
+								t.nativeThread.Resume();
 							}
 						}
 						catch (ThreadStateException)
@@ -4381,7 +4326,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						SuspendThread(t.nativeThread);
+						t.nativeThread.Suspend();
 					}
 					catch (ThreadStateException)
 					{
@@ -4396,7 +4341,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						ResumeThread(t.nativeThread);
+						t.nativeThread.Resume();
 					}
 					catch (ThreadStateException)
 					{
@@ -4500,7 +4445,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class VMThread
+		public sealed class VMThread
 		{
 			// this method has the wrong name, it is only called by ikvm.runtime.Startup.exitMainThread()
 			public static void jniDetach()
@@ -4511,65 +4456,33 @@ namespace IKVM.NativeCode.java
 
 		namespace reflect
 		{
-			static class Proxy
+			public sealed class Proxy
 			{
+				private Proxy() { }
+
 				public static object defineClass0(object classLoader, string name, byte[] b, int off, int len)
 				{
 					return ClassLoader.defineClass1(classLoader, name, b, off, len, null, null);
 				}
 			}
 
-			static class Field
+			public sealed class Method
 			{
-				public static object getDeclaredAnnotationsImpl(object thisField)
-				{
-					FieldWrapper fw = FieldWrapper.FromField(thisField);
-					return Class.AnnotationsToMap(fw.DeclaringType.GetFieldAnnotations(fw));
-				}
-			}
+				private Method() { }
 
-			static class Method
-			{
-				public static object getDeclaredAnnotationsImpl(object methodOrConstructor)
+				public static byte[] getRawAnnotations(object thisMethod)
 				{
-					MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(methodOrConstructor);
-					return Class.AnnotationsToMap(mw.DeclaringType.GetMethodAnnotations(mw));
+					return MethodWrapper.FromMethodOrConstructor(thisMethod).GetRawAnnotations();
 				}
 
-				public static object[][] getParameterAnnotationsImpl(object methodOrConstructor)
+				public static byte[] getRawParameterAnnotations(object thisMethod)
 				{
-#if FIRST_PASS
-					return null;
-#else
-					MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(methodOrConstructor);
-					object[][] objAnn = mw.DeclaringType.GetParameterAnnotations(mw);
-					if (objAnn == null)
-					{
-						return null;
-					}
-					Annotation[][] ann = new Annotation[objAnn.Length][];
-					for (int i = 0; i < ann.Length; i++)
-					{
-						List<Annotation> list = new List<Annotation>();
-						foreach (object obj in objAnn[i])
-						{
-							Annotation a = obj as Annotation;
-							if (a != null)
-							{
-								global::ikvm.@internal.AnnotationAttributeBase.freeze(a);
-								list.Add(a);
-							}
-						}
-						ann[i] = list.ToArray();
-					}
-					return ann;
-#endif
+					return MethodWrapper.FromMethodOrConstructor(thisMethod).GetRawParameterAnnotations();
 				}
 
-				public static object getDefaultValue(object thisMethod)
+				public static byte[] getRawAnnotationDefault(object thisMethod)
 				{
-					MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(thisMethod);
-					return mw.DeclaringType.GetAnnotationDefault(mw);
+					return MethodWrapper.FromMethodOrConstructor(thisMethod).GetRawAnnotationDefault();
 				}
 			}
 		}
@@ -4577,21 +4490,21 @@ namespace IKVM.NativeCode.java
 
 	namespace net
 	{
-		static class DatagramPacket
+		public sealed class DatagramPacket
 		{
 			public static void init()
 			{
 			}
 		}
 
-		static class InetAddress
+		public sealed class InetAddress
 		{
 			public static void init()
 			{
 			}
 		}
 
-		static class InetAddressImplFactory
+		public sealed class InetAddressImplFactory
 		{
 			public static bool isIPv6Supported()
 			{
@@ -4600,14 +4513,14 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Inet4Address
+		public sealed class Inet4Address
 		{
 			public static void init()
 			{
 			}
 		}
 
-		static class Inet4AddressImpl
+		public sealed class Inet4AddressImpl
 		{
 			public static string getLocalHostName(object thisInet4AddressImpl)
 			{
@@ -4632,8 +4545,12 @@ namespace IKVM.NativeCode.java
 #else
 				try
 				{
+#if WHIDBEY
 					System.Net.IPAddress[] addr = System.Net.Dns.GetHostAddresses(hostname);
-					List<jnInetAddress> addresses = new List<jnInetAddress>();
+#else
+					System.Net.IPAddress[] addr = System.Net.Dns.Resolve(hostname).AddressList;
+#endif
+					ArrayList addresses = new ArrayList();
 					for (int i = 0; i < addr.Length; i++)
 					{
 						byte[] b = addr[i].GetAddressBytes();
@@ -4642,7 +4559,7 @@ namespace IKVM.NativeCode.java
 							addresses.Add(jnInetAddress.getByAddress(hostname, b));
 						}
 					}
-					return addresses.ToArray();
+					return (jnInetAddress[])addresses.ToArray(typeof(jnInetAddress));
 				}
 				catch (System.ArgumentException x)
 				{
@@ -4660,14 +4577,32 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return null;
 #else
+				string s;
 				try
 				{
-					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
+					s = System.Net.Dns.GetHostByAddress(string.Format("{0}.{1}.{2}.{3}", addr[0], addr[1], addr[2], addr[3])).HostName;
 				}
 				catch (System.Net.Sockets.SocketException x)
 				{
 					throw new jnUnknownHostException(x.Message);
 				}
+				try
+				{
+					System.Net.Dns.GetHostByName(s);
+				}
+				catch (System.Net.Sockets.SocketException)
+				{
+					// FXBUG .NET framework bug
+					// HACK if GetHostByAddress returns a netbios name, it appends the default DNS suffix, but if the
+					// machine's netbios name isn't the same as the DNS hostname, this might result in an unresolvable
+					// name, if that happens we chop off the DNS suffix.
+					int idx = s.IndexOf('.');
+					if (idx > 0)
+					{
+						return s.Substring(0, idx);
+					}
+				}
+				return s;
 #endif
 			}
 
@@ -4715,14 +4650,14 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class Inet6Address
+		public sealed class Inet6Address
 		{
 			public static void init()
 			{
 			}
 		}
 
-		static class Inet6AddressImpl
+		public sealed class Inet6AddressImpl
 		{
 			public static string getLocalHostName(object thisInet6AddressImpl)
 			{
@@ -4747,7 +4682,11 @@ namespace IKVM.NativeCode.java
 #else
 				try
 				{
+#if WHIDBEY
 					System.Net.IPAddress[] addr = System.Net.Dns.GetHostAddresses(hostname);
+#else
+					System.Net.IPAddress[] addr = System.Net.Dns.Resolve(hostname).AddressList;
+#endif
 					jnInetAddress[] addresses = new jnInetAddress[addr.Length];
 					for (int i = 0; i < addr.Length; i++)
 					{
@@ -4777,7 +4716,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class NetworkInterface
+		public sealed class NetworkInterface
 		{
 #if !FIRST_PASS
 			private static ConstructorInfo ni_ctor;
@@ -5014,7 +4953,7 @@ namespace IKVM.NativeCode.java
 	namespace nio
 	{
 		[System.Security.Permissions.SecurityPermission(System.Security.Permissions.SecurityAction.LinkDemand, UnmanagedCode = true)]
-		static class Bits
+		public sealed class Bits
 		{
 			public static void copyFromByteArray(object src, long srcPos, long dstAddr, long length)
 			{
@@ -5290,7 +5229,7 @@ namespace IKVM.NativeCode.java
 		}
 
 		[System.Security.Permissions.SecurityPermission(System.Security.Permissions.SecurityAction.LinkDemand, UnmanagedCode = true)]
-		static class MappedByteBuffer
+		public sealed class MappedByteBuffer
 		{
 			private static volatile int bogusField;
 
@@ -5312,7 +5251,6 @@ namespace IKVM.NativeCode.java
 				}
 				// do a volatile store of the sum of the bytes to make sure the reads don't get optimized out
 				bogusField = bogus;
-				GC.KeepAlive(thisMappedByteBuffer);
 				return 0;
 			}
 
@@ -5321,7 +5259,6 @@ namespace IKVM.NativeCode.java
 				if (JVM.IsUnix)
 				{
 					ikvm_msync((IntPtr)address, (int)length);
-					GC.KeepAlive(thisMappedByteBuffer);
 				}
 				else
 				{
@@ -5331,7 +5268,6 @@ namespace IKVM.NativeCode.java
 					{
 						if (FlushViewOfFile((IntPtr)address, (IntPtr)length) != 0)
 						{
-							GC.KeepAlive(thisMappedByteBuffer);
 							return;
 						}
 						const int ERROR_LOCK_VIOLATION = 33;
@@ -5356,7 +5292,7 @@ namespace IKVM.NativeCode.java
 
 	namespace security
 	{
-		static class AccessController
+		public sealed class AccessController
 		{
 			private static FieldInfo threadIaccField;
 			private static ConstructorInfo accessControlContextContructor;
@@ -5411,7 +5347,7 @@ namespace IKVM.NativeCode.java
 					}
 					catch (Exception x)
 					{
-						x = irUtil.mapException(x);
+						x = JVM.Library.mapException(x);
 						if (x is jlException && !(x is jlRuntimeException))
 						{
 							throw new jsPrivilegedActionException((jlException)x);
@@ -5444,7 +5380,7 @@ namespace IKVM.NativeCode.java
 				bool is_privileged = false;
 				object protection_domain = null;
 				StackTrace stack = new StackTrace(1);
-				List<ProtectionDomain> array = new List<ProtectionDomain>();
+				ArrayList array = new ArrayList();
 
 				for (int i = 0; i < stack.FrameCount; i++)
 				{
@@ -5465,7 +5401,7 @@ namespace IKVM.NativeCode.java
 					if (previous_protection_domain != protection_domain && protection_domain != null)
 					{
 						previous_protection_domain = protection_domain;
-						array.Add((ProtectionDomain)protection_domain);
+						array.Add(protection_domain);
 					}
 
 					if (is_privileged)
@@ -5484,7 +5420,9 @@ namespace IKVM.NativeCode.java
 					return CreateAccessControlContext(null, is_privileged, privileged_context);
 				}
 
-				return CreateAccessControlContext(array.ToArray(), is_privileged, privileged_context);
+				ProtectionDomain[] context = new ProtectionDomain[array.Count];
+				array.CopyTo(context);
+				return CreateAccessControlContext(context, is_privileged, privileged_context);
 #endif
 			}
 
@@ -5512,7 +5450,6 @@ namespace IKVM.NativeCode.java
 				if (type == null
 					|| type.Assembly == typeof(object).Assembly
 					|| type.Assembly == typeof(AccessController).Assembly
-					|| type.Assembly == java.lang.SecurityManager.jniAssembly
 					|| type.Assembly == typeof(jlThread).Assembly)
 				{
 					return null;
@@ -5543,7 +5480,7 @@ namespace IKVM.NativeCode.java
 
 	namespace sql
 	{
-		static class DriverManager
+		public sealed class DriverManager
 		{
 			public static object getCallerClassLoader()
 			{
@@ -5581,7 +5518,7 @@ namespace IKVM.NativeCode.java
 	{
 		namespace logging
 		{
-			static class FileHandler
+			public sealed class FileHandler
 			{
 				public static bool isSetUID()
 				{
@@ -5593,7 +5530,7 @@ namespace IKVM.NativeCode.java
 
 		namespace prefs
 		{
-			static class FileSystemPreferences
+			public sealed class FileSystemPreferences
 			{
 				public static int chmod(string filename, int permission)
 				{
@@ -5614,7 +5551,7 @@ namespace IKVM.NativeCode.java
 				}
 			}
 
-			static class WindowsPreferences
+			public sealed class WindowsPreferences
 			{
 				// HACK we currently support only 16 handles at a time
 				private static Microsoft.Win32.RegistryKey[] keys = new Microsoft.Win32.RegistryKey[16];
@@ -5871,7 +5808,7 @@ namespace IKVM.NativeCode.java
 
 		namespace jar
 		{
-			static class JarFile
+			public sealed class JarFile
 			{
 				public static string[] getMetaInfEntryNames(object thisJarFile)
 				{
@@ -5880,7 +5817,7 @@ namespace IKVM.NativeCode.java
 #else
 					juzZipFile zf = (juzZipFile)thisJarFile;
 					juEnumeration entries = zf.entries();
-					List<string> list = null;
+					ArrayList list = null;
 					while (entries.hasMoreElements())
 					{
 						juzZipEntry entry = (juzZipEntry)entries.nextElement();
@@ -5888,18 +5825,18 @@ namespace IKVM.NativeCode.java
 						{
 							if (list == null)
 							{
-								list = new List<string>();
+								list = new ArrayList();
 							}
 							list.Add(entry.getName());
 						}
 					}
-					return list == null ? null : list.ToArray();
+					return list == null ? null : (string[])list.ToArray(typeof(string));
 #endif
 				}
 			}
 		}
 
-		static class ResourceBundle
+		public sealed class ResourceBundle
 		{
 			public static object getClassContext()
 			{
@@ -5924,7 +5861,7 @@ namespace IKVM.NativeCode.java
 			}
 		}
 
-		static class TimeZone
+		public sealed class TimeZone
 		{
 			public static string getSystemTimeZoneID(string javaHome, string country)
 			{
@@ -6205,7 +6142,7 @@ namespace IKVM.NativeCode.java
 
 namespace IKVM.NativeCode.sun.java2d
 {
-	static class DefaultDisposerRecord
+	public sealed class DefaultDisposerRecord
 	{
 		public static void invokeNativeDispose(long disposerMethodPointer, long dataPointer)
 		{
@@ -6213,7 +6150,7 @@ namespace IKVM.NativeCode.sun.java2d
 		}
 	}
 
-	static class Disposer
+	public sealed class Disposer
 	{
 		public static void initIDs()
 		{
@@ -6223,7 +6160,7 @@ namespace IKVM.NativeCode.sun.java2d
 
 namespace IKVM.NativeCode.sun.misc
 {
-	static class GC
+	public sealed class GC
 	{
 		public static long maxObjectInspectionAge()
 		{
@@ -6231,7 +6168,7 @@ namespace IKVM.NativeCode.sun.misc
 		}
 	}
 
-	static class MessageUtils
+	public sealed class MessageUtils
 	{
 		public static void toStderr(string msg)
 		{
@@ -6244,19 +6181,15 @@ namespace IKVM.NativeCode.sun.misc
 		}
 	}
 
-	static class MiscHelper
+	public sealed class MiscHelper
 	{
-		public static object getAssemblyClassLoader(Assembly asm, object extcl)
+		public static object getAssemblyClassLoader(Assembly asm)
 		{
-			if (extcl == null || asm.IsDefined(typeof(IKVM.Attributes.CustomAssemblyClassLoaderAttribute), false))
-			{
-				return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
-			}
-			return null;
+			return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
 		}
 	}
 
-	static class Signal
+	public sealed class Signal
 	{
 		public static int findSignal(string sigName)
 		{
@@ -6274,7 +6207,7 @@ namespace IKVM.NativeCode.sun.misc
 		}
 	}
 
-	static class NativeSignalHandler
+	public sealed class NativeSignalHandler
 	{
 		public static void handle0(int number, long handler)
 		{
@@ -6282,7 +6215,7 @@ namespace IKVM.NativeCode.sun.misc
 		}
 	}
 
-	static class Perf
+	public sealed class Perf
 	{
 		public static object attach(object thisPerf, string user, int lvmid, int mode)
 		{
@@ -6320,8 +6253,10 @@ namespace IKVM.NativeCode.sun.misc
 	}
 
 	[System.Security.Permissions.SecurityPermission(System.Security.Permissions.SecurityAction.LinkDemand, UnmanagedCode = true)]
-	static class Unsafe
+	public sealed unsafe class Unsafe
 	{
+		private Unsafe() { }
+
 		public static void throwException(object thisUnsafe, Exception x)
 		{
 			throw x;
@@ -6353,72 +6288,75 @@ namespace IKVM.NativeCode.sun.misc
 
 		public static void setMemory(long address, long bytes, byte value)
 		{
+			byte* p = (byte*)address;
 			while (bytes-- > 0)
 			{
-				putByte(address++, value);
+				*p++ = value;
 			}
 		}
 
 		public static void copyMemory(long srcAddress, long destAddress, long bytes)
 		{
+			byte* psrc = (byte*)srcAddress;
+			byte* pdst = (byte*)destAddress;
 			while (bytes-- > 0)
 			{
-				putByte(destAddress++, getByte(srcAddress++));
+				*pdst++ = *psrc++;
 			}
 		}
 
 		public static byte getByte(long address)
 		{
-			return System.Runtime.InteropServices.Marshal.ReadByte((IntPtr)address);
+			return *(byte*)address;
 		}
 
 		public static void putByte(long address, byte x)
 		{
-			System.Runtime.InteropServices.Marshal.WriteByte((IntPtr)address, x);
+			*(byte*)address = x;
 		}
 
 		public static short getShort(long address)
 		{
-			return System.Runtime.InteropServices.Marshal.ReadInt16((IntPtr)address);
+			return *(short*)address;
 		}
 
 		public static void putShort(long address, short x)
 		{
-			System.Runtime.InteropServices.Marshal.WriteInt16((IntPtr)address, x);
+			*(short*)address = x;
 		}
 
 		public static char getChar(long address)
 		{
-			return (char)System.Runtime.InteropServices.Marshal.ReadInt16((IntPtr)address);
+			return *(char*)address;
 		}
 
 		public static void putChar(long address, char x)
 		{
-			System.Runtime.InteropServices.Marshal.WriteInt16((IntPtr)address, x);
+			*(char*)address = x;
 		}
 
 		public static int getInt(long address)
 		{
-			return System.Runtime.InteropServices.Marshal.ReadInt32((IntPtr)address);
+			return *(int*)address;
 		}
 
 		public static void putInt(long address, int x)
 		{
-			System.Runtime.InteropServices.Marshal.WriteInt32((IntPtr)address, x);
+			*(int*)address = x;
 		}
 
 		public static long getLong(long address)
 		{
-			return System.Runtime.InteropServices.Marshal.ReadInt64((IntPtr)address);
+			return *(long*)address;
 		}
 
 		public static void putLong(long address, long x)
 		{
-			System.Runtime.InteropServices.Marshal.WriteInt64((IntPtr)address, x);
+			*(long*)address = x;
 		}
 	}
 
-	static class Version
+	public sealed class Version
 	{
 		public static string getJvmSpecialVersion()
 		{
@@ -6441,8 +6379,10 @@ namespace IKVM.NativeCode.sun.misc
 		}
 	}
 
-	static class VM
+	public sealed class VM
 	{
+		private VM() { }
+
 		public static void getThreadStateValues(int[][] vmThreadStateValues, string[][] vmThreadStateNames)
 		{
 			// TODO
@@ -6453,7 +6393,7 @@ namespace IKVM.NativeCode.sun.misc
 		}
 	}
 
-	static class VMSupport
+	public sealed class VMSupport
 	{
 		public static object initAgentProperties(object props)
 		{
@@ -6464,7 +6404,7 @@ namespace IKVM.NativeCode.sun.misc
 
 namespace IKVM.NativeCode.sun.net.dns
 {
-	static class ResolverConfigurationImpl
+	public sealed class ResolverConfigurationImpl
 	{
 		public static void init0()
 		{
@@ -6523,7 +6463,7 @@ namespace IKVM.NativeCode.sun.net.dns
 
 namespace IKVM.NativeCode.sun.net.spi
 {
-	static class DefaultProxySelector
+	public sealed class DefaultProxySelector
 	{
 		public static bool init()
 		{
@@ -6540,45 +6480,23 @@ namespace IKVM.NativeCode.sun.net.spi
 
 namespace IKVM.NativeCode.sun.reflect
 {
-	static class Reflection
+	public sealed class Reflection
 	{
-		private static readonly Dictionary<RuntimeMethodHandle, bool> isHideFromJavaCache = new Dictionary<RuntimeMethodHandle, bool>();
+		private static readonly Hashtable isHideFromJavaCache = Hashtable.Synchronized(new Hashtable());
+
+		private Reflection() { }
 
 		internal static bool IsHideFromJava(MethodBase mb)
 		{
-			if (mb.Name.StartsWith("__<", StringComparison.Ordinal))
+			// TODO on .NET 2.0 isHideFromJavaCache should be a Dictionary<RuntimeMethodHandle, bool>
+			object cached = isHideFromJavaCache[mb];
+			if (cached == null)
 			{
-				return true;
+				cached = mb.IsDefined(typeof(IKVM.Attributes.HideFromJavaAttribute), false)
+					|| mb.IsDefined(typeof(IKVM.Attributes.HideFromReflectionAttribute), false);
+				isHideFromJavaCache[mb] = cached;
 			}
-			RuntimeMethodHandle handle;
-			try
-			{
-				handle = mb.MethodHandle;
-			}
-			catch (InvalidOperationException)
-			{
-				// DynamicMethods don't have a RuntimeMethodHandle and we always want to hide them anyway
-				return true;
-			}
-			catch (NotSupportedException)
-			{
-				// DynamicMethods don't have a RuntimeMethodHandle and we always want to hide them anyway
-				return true;
-			}
-			lock (isHideFromJavaCache)
-			{
-				bool cached;
-				if (isHideFromJavaCache.TryGetValue(handle, out cached))
-				{
-					return cached;
-				}
-			}
-			bool isHide = mb.IsDefined(typeof(IKVM.Attributes.HideFromJavaAttribute), false) || mb.IsDefined(typeof(IKVM.Attributes.HideFromReflectionAttribute), false);
-			lock (isHideFromJavaCache)
-			{
-				isHideFromJavaCache[handle] = isHide;
-			}
-			return isHide;
+			return (bool)cached;
 		}
 
 		// NOTE this method is hooked up explicitly through map.xml to prevent inlining of the native stub
@@ -6608,7 +6526,6 @@ namespace IKVM.NativeCode.sun.reflect
 					|| type == null
 					|| type.Assembly == typeof(object).Assembly
 					|| type.Assembly == typeof(Reflection).Assembly
-					|| type.Assembly == java.lang.SecurityManager.jniAssembly
 					|| type == typeof(jlrMethod)
 					|| type == typeof(jlrConstructor))
 				{
@@ -6631,12 +6548,14 @@ namespace IKVM.NativeCode.sun.reflect
 		{
 			TypeWrapper current = TypeWrapper.FromClass(currentClass);
 			TypeWrapper member = TypeWrapper.FromClass(memberClass);
-			return member.IsInternal && member.GetClassLoader().InternalsVisibleTo(current.GetClassLoader());
+			return member.IsInternal && member.GetClassLoader() == current.GetClassLoader();
 		}
 	}
 
-	static class ReflectionFactory
+	public sealed class ReflectionFactory
 	{
+		private ReflectionFactory() { }
+
 #if !FIRST_PASS
 		private static object[] ConvertArgs(TypeWrapper[] argumentTypes, object[] args)
 		{
@@ -6653,7 +6572,7 @@ namespace IKVM.NativeCode.sun.reflect
 					{
 						throw new jlIllegalArgumentException("primitive wrapper null");
 					}
-					nargs[i] = JVM.Unbox(args[i]);
+					nargs[i] = JVM.Library.unbox(args[i]);
 					// NOTE we depend on the fact that the .NET reflection parameter type
 					// widening rules are the same as in Java, but to have this work for byte
 					// we need to convert byte to sbyte.
@@ -6713,7 +6632,7 @@ namespace IKVM.NativeCode.sun.reflect
 				}
 				if (mw.ReturnType.IsPrimitive && mw.ReturnType != PrimitiveTypeWrapper.VOID)
 				{
-					retval = JVM.Box(retval);
+					retval = JVM.Library.box(retval);
 				}
 				return retval;
 			}
@@ -6780,7 +6699,7 @@ namespace IKVM.NativeCode.sun.reflect
 				[IKVM.Attributes.HideFromJava]
 				internal object invoke(object obj, object[] args)
 				{
-					// FXBUG pre-SP1 a DynamicMethod that calls a static method doesn't trigger the cctor, so we do that explicitly.
+					// FXBUG a DynamicMethod that calls a static method doesn't trigger the cctor, so we do that explicitly.
 					tw.RunClassInit();
 					outer.invoker = invoker;
 					return invoker(obj, args);
@@ -6860,6 +6779,15 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.BeginCatchBlock(typeof(NullReferenceException));
 				EmitHelper.Throw(ilgen, "java.lang.IllegalArgumentException");
 				ilgen.EndExceptionBlock();
+
+				if (mw.DeclaringType.IsInterface && mw.DeclaringType.HasStaticInitializer)
+				{
+					// NOTE since Everett doesn't support adding static methods to interfaces,
+					// EmitRunClassConstructor doesn't work for interface, so we do it manually.
+					// TODO once we're on Whidbey, this won't be necessary anymore.
+					ilgen.Emit(OpCodes.Ldtoken, mw.DeclaringType.TypeAsBaseType);
+					ilgen.Emit(OpCodes.Call, typeof(System.Runtime.CompilerServices.RuntimeHelpers).GetMethod("RunClassConstructor"));
+				}
 
 				// this is the actual call
 				ilgen.BeginExceptionBlock();
@@ -7118,7 +7046,7 @@ namespace IKVM.NativeCode.sun.reflect
 				MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(constructor);
 				mw.DeclaringType.Finish();
 				mw.ResolveMethod();
-				DynamicMethod dm = new DynamicMethod("__<Invoker>", typeof(object), new Type[] { typeof(object[]) }, mw.DeclaringType.TypeAsTBD);
+				DynamicMethod dm = new DynamicMethod("__<Invoker>", typeof(object), new Type[] { typeof(object), typeof(object[]) }, mw.DeclaringType.TypeAsTBD);
 				CountingILGenerator ilgen = dm.GetILGenerator();
 				LocalBuilder ret = ilgen.DeclareLocal(typeof(object));
 
@@ -7127,10 +7055,10 @@ namespace IKVM.NativeCode.sun.reflect
 				if (mw.GetParameters().Length == 0)
 				{
 					// zero length array may be null
-					ilgen.Emit(OpCodes.Ldarg_0);
+					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Brfalse_S, argsLengthOK);
 				}
-				ilgen.Emit(OpCodes.Ldarg_0);
+				ilgen.Emit(OpCodes.Ldarg_1);
 				ilgen.Emit(OpCodes.Ldlen);
 				ilgen.Emit(OpCodes.Ldc_I4, mw.GetParameters().Length);
 				ilgen.Emit(OpCodes.Beq_S, argsLengthOK);
@@ -7146,7 +7074,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.BeginExceptionBlock();
 				for (int i = 0; i < args.Length; i++)
 				{
-					ilgen.Emit(OpCodes.Ldarg_0);
+					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Ldc_I4, i);
 					ilgen.Emit(OpCodes.Ldelem_Ref);
 					TypeWrapper tw = mw.GetParameters()[i];
@@ -8524,9 +8452,8 @@ namespace IKVM.NativeCode.sun.reflect
 			jlrMethod m = (jlrMethod)method;
 			if (DynamicMethodSupport.Enabled)
 			{
-				MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(method);
 				TypeWrapper tw = TypeWrapper.FromClass(m.getDeclaringClass());
-				if (!mw.IsDynamicOnly && !tw.IsRemapped)
+				if (!tw.IsDynamicOnly && !tw.IsRemapped)
 				{
 					return new FastMethodAccessorImpl(m);
 				}
@@ -8542,7 +8469,7 @@ namespace IKVM.NativeCode.sun.reflect
 #else
 			jlrConstructor cons = (jlrConstructor)constructor;
 			if (DynamicMethodSupport.Enabled
-				&& !MethodWrapper.FromMethodOrConstructor(constructor).IsDynamicOnly)
+				&& !TypeWrapper.FromClass(cons.getDeclaringClass()).IsDynamicOnly)
 			{
 				return new FastConstructorAccessorImpl(cons);
 			}
@@ -8561,7 +8488,8 @@ namespace IKVM.NativeCode.sun.reflect
 			jlrConstructor cons = (jlrConstructor)constructorToCall;
 			if (DynamicMethodSupport.Enabled
 				&& cons.getParameterTypes().Length == 0
-				&& !MethodWrapper.FromMethodOrConstructor(constructorToCall).IsDynamicOnly)
+				&& !TypeWrapper.FromClass(cons.getDeclaringClass()).IsDynamicOnly
+				&& !TypeWrapper.FromClass(classToInstantiate).IsDynamicOnly)
 			{
 				return new FastSerializationConstructorAccessorImpl(cons, (jlClass)classToInstantiate);
 			}
@@ -8573,8 +8501,10 @@ namespace IKVM.NativeCode.sun.reflect
 		}
 	}
 
-	static class ConstantPool
+	public sealed class ConstantPool
 	{
+		private ConstantPool() { }
+
 		public static int getSize0(object thisConstantPool, object constantPoolOop)
 		{
 			throw new NotImplementedException();
@@ -8617,22 +8547,38 @@ namespace IKVM.NativeCode.sun.reflect
 
 		public static int getIntAt0(object thisConstantPool, object constantPoolOop, int index)
 		{
-			throw new NotImplementedException();
+#if FIRST_PASS
+			return 0;
+#else
+			return ((IKVM.NativeCode.java.lang.ConstantPoolWriter)constantPoolOop).GetInt(index);
+#endif
 		}
 
 		public static long getLongAt0(object thisConstantPool, object constantPoolOop, int index)
 		{
-			throw new NotImplementedException();
+#if FIRST_PASS
+			return 0;
+#else
+			return ((IKVM.NativeCode.java.lang.ConstantPoolWriter)constantPoolOop).GetLong(index);
+#endif
 		}
 
 		public static float getFloatAt0(object thisConstantPool, object constantPoolOop, int index)
 		{
-			throw new NotImplementedException();
+#if FIRST_PASS
+			return 0;
+#else
+			return ((IKVM.NativeCode.java.lang.ConstantPoolWriter)constantPoolOop).GetFloat(index);
+#endif
 		}
 
 		public static double getDoubleAt0(object thisConstantPool, object constantPoolOop, int index)
 		{
-			throw new NotImplementedException();
+#if FIRST_PASS
+			return 0;
+#else
+			return ((IKVM.NativeCode.java.lang.ConstantPoolWriter)constantPoolOop).GetDouble(index);
+#endif
 		}
 
 		public static string getStringAt0(object thisConstantPool, object constantPoolOop, int index)
@@ -8642,14 +8588,18 @@ namespace IKVM.NativeCode.sun.reflect
 
 		public static string getUTF8At0(object thisConstantPool, object constantPoolOop, int index)
 		{
-			throw new NotImplementedException();
+#if FIRST_PASS
+			return null;
+#else
+			return ((IKVM.NativeCode.java.lang.ConstantPoolWriter)constantPoolOop).GetUtf8(index);
+#endif
 		}
 	}
 }
 
 namespace IKVM.NativeCode.sun.rmi.server
 {
-	static class MarshalInputStream
+	public sealed class MarshalInputStream
 	{
 		public static object latestUserDefinedLoader()
 		{
@@ -8660,7 +8610,7 @@ namespace IKVM.NativeCode.sun.rmi.server
 
 namespace IKVM.NativeCode.sun.security.krb5
 {
-	static class Credentials
+	public sealed class Credentials
 	{
 		public static object acquireDefaultNativeCreds()
 		{
@@ -8669,7 +8619,7 @@ namespace IKVM.NativeCode.sun.security.krb5
 		}
 	}
 
-	static class Config
+	public sealed class Config
 	{
 		public static string getWindowsDirectory()
 		{
@@ -8680,7 +8630,7 @@ namespace IKVM.NativeCode.sun.security.krb5
 
 namespace IKVM.NativeCode.sun.security.provider
 {
-	static class NativeSeedGenerator
+	public sealed class NativeSeedGenerator
 	{
 		public static bool nativeGenerateSeed(byte[] result)
 		{
@@ -8700,7 +8650,7 @@ namespace IKVM.NativeCode.sun.security.provider
 
 namespace IKVM.NativeCode.com.sun.java.util.jar.pack
 {
-	static class NativeUnpack
+	public sealed class NativeUnpack
 	{
 		public static void initIDs()
 		{
@@ -8740,7 +8690,7 @@ namespace IKVM.NativeCode.com.sun.java.util.jar.pack
 
 namespace IKVM.NativeCode.com.sun.security.auth.module
 {
-	static class NTSystem
+	public sealed class NTSystem
 	{
 		public static void getCurrent(object thisObj, bool debug)
 		{
@@ -8748,7 +8698,7 @@ namespace IKVM.NativeCode.com.sun.security.auth.module
 		}
 	}
 
-	static class SolarisSystem
+	public sealed class SolarisSystem
 	{
 		public static void getSolarisInfo(object thisObj)
 		{
@@ -8756,7 +8706,7 @@ namespace IKVM.NativeCode.com.sun.security.auth.module
 		}
 	}
 
-	static class UnixSystem
+	public sealed class UnixSystem
 	{
 		public static void getUnixInfo(object thisObj)
 		{
@@ -8764,3 +8714,34 @@ namespace IKVM.NativeCode.com.sun.security.auth.module
 		}
 	}
 }
+
+#if FIRST_PASS
+namespace ikvm.@internal
+{
+	public interface LibraryVMInterface
+	{
+		object newClass(object wrapper, object protectionDomain, object classLoader);
+		object getWrapperFromClass(object clazz);
+
+		object getWrapperFromClassLoader(object classLoader);
+		void setWrapperForClassLoader(object classLoader, object wrapper);
+
+		object box(object val);
+		object unbox(object val);
+
+		Exception mapException(Exception t);
+
+		IntPtr getDirectBufferAddress(object buffer);
+		int getDirectBufferCapacity(object buffer);
+
+		void setProperties(System.Collections.Hashtable props);
+
+		bool runFinalizersOnExit();
+
+		object newAnnotation(object classLoader, object definition);
+		object newAnnotationElementValue(object classLoader, object expectedClass, object definition);
+
+		object newAssemblyClassLoader(Assembly asm);
+	}
+}
+#endif // !FIRST_PASS

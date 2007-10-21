@@ -26,7 +26,6 @@ using System.Reflection;
 
 namespace IKVM.Attributes
 {
-	[AttributeUsage(AttributeTargets.Module | AttributeTargets.Class | AttributeTargets.Interface | AttributeTargets.Struct | AttributeTargets.Delegate)]
 	public sealed class SourceFileAttribute : Attribute
 	{
 		private string file;
@@ -45,7 +44,6 @@ namespace IKVM.Attributes
 		}
 	}
 
-	[AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor)]
 	public sealed class LineNumberTableAttribute : Attribute
 	{
 		private byte[] table;
@@ -369,7 +367,7 @@ namespace IKVM.Attributes
 		}
 	}
 
-	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Delegate | AttributeTargets.Enum | AttributeTargets.Assembly)]
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Assembly)]
 	public sealed class NoPackagePrefixAttribute : Attribute
 	{
 	}
