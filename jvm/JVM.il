@@ -21,6 +21,10 @@
   jeroen@frijters.net
   
 */
+.assembly JVM
+{
+  .ver 0:37:0:0
+}
 .module JVM.DLL
 
 .method public static int32 JNI_CreateJavaVM(void* ppvm, void* ppenv, void* args)
@@ -30,7 +34,7 @@
   ldarg.0
   ldarg.1
   ldarg.2
-  call int32 [IKVM.Runtime.JNI]IKVM.Runtime.JNI::CreateJavaVM(void*, void*, void*)
+  call int32 [IKVM.Runtime]IKVM.Runtime.JNI::CreateJavaVM(void*, void*, void*)
   ret
 }
 
@@ -39,7 +43,7 @@
   .vtentry 1:2
   .export [2] as JNI_GetDefaultJavaVMInitArgs
   ldarg.0
-  call int32 [IKVM.Runtime.JNI]IKVM.Runtime.JNI::GetDefaultJavaVMInitArgs(void*)
+  call int32 [IKVM.Runtime]IKVM.Runtime.JNI::GetDefaultJavaVMInitArgs(void*)
   ret
 }
 
@@ -50,6 +54,6 @@
   ldarg.0
   ldarg.1
   ldarg.2
-  call int32 [IKVM.Runtime.JNI]IKVM.Runtime.JNI::GetCreatedJavaVMs(void*, int32, int32*)
+  call int32 [IKVM.Runtime]IKVM.Runtime.JNI::GetCreatedJavaVMs(void*, int32, int32*)
   ret
 }

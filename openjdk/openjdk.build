@@ -1,123 +1,82 @@
 <?xml version="1.0"?>
-<project name="ClassLibrary" default="all">
+<project name="IKVM.OpenJDK.ClassLibrary.dll" default="IKVM.OpenJDK.ClassLibrary.dll">
     <property name="pathsep" value=":" />
     <property overwrite="false" name="signoption" value="" />
     <property name="Classpath.dir" value="${project::get-base-directory()}/../../classpath-0.95" />
-    <property name="OpenJDK.dir" value="${project::get-base-directory()}/../../openjdk6-b12" />
+    <property name="OpenJDK.dir" value="${project::get-base-directory()}/../../openjdk-b13" />
     <if test="${platform::is-win32()}">
         <property name="pathsep" value=";" />
     </if>
 
-    <target name="all" depends="classes vfs core">
-    </target>
-
     <target name="classes">
         <delete>
-            <fileset basedir="${Classpath.dir}">
-                <include name="**.class"/>
-            </fileset>
-        </delete>
+		<fileset basedir="${Classpath.dir}">
+			<include name="**.class"/>
+		</fileset>
+	</delete>
+	<delete>
+		<fileset basedir="../classpath">
+			<include name="**.class"/>
+		</fileset>
+	</delete>
         <delete>
-            <fileset basedir="../classpath">
-                <include name="**.class"/>
-            </fileset>
-        </delete>
-        <delete>
-            <fileset basedir="${OpenJDK.dir}">
-                <include name="jdk/src/share/classes/**.class"/>
-                <include name="jdk/src/solaris/classes/**.class"/>
-                <include name="jdk/src/windows/classes/**.class"/>
-                <include name="control/build/linux-amd64/gensrc/**.class"/>
-                <include name="control/build/linux-amd64/impsrc/**.class"/>
-            </fileset>
-        </delete>
-        <delete>
-            <fileset basedir=".">
-                <include name="**.class"/>
-            </fileset>
-        </delete>
-        <property name="IKVM.Runtime" value="IKVM.Runtime" />
-        <if test="${signoption != ''}">
-            <loadfile file="../tools/pubkey.txt" property="publickey" />
-            <property name="IKVM.Runtime" value="IKVM.Runtime, PublicKey=${publickey}" />
-        </if>
-        <copy file="AssemblyInfo.java.in" tofile="AssemblyInfo.java" outputencoding="ascii" overwrite="true">
-            <filterchain>
-                <replacetokens>
-                    <token key="RUNTIME" value="${IKVM.Runtime}" />
-                </replacetokens>
-            </filterchain>
-        </copy>
-        <copy file="Configuration.java.in" tofile="Configuration.java" outputencoding="ascii" overwrite="true">
-            <filterchain>
-                <replacetokens>
-                    <token key="AWTASSEMBLY" value="${string::replace(assemblyname::get-full-name(assemblyname::get-assembly-name(path::combine(project::get-base-directory(), '../bin/IKVM.Runtime.dll'))), 'IKVM.Runtime', 'IKVM.AWT.WinForms')}" />
-                </replacetokens>
-            </filterchain>
-        </copy>
-        <exec program="javac" commandline="-J-Xmx1536M -g -nowarn -bootclasspath ../classpath/mscorlib.jar${pathsep}../classpath/System.jar${pathsep}../classpath/System.Core.jar${pathsep}../classpath/IKVM.Runtime.jar @allsources.lst" useruntimeengine="false" />
+		<fileset basedir="${OpenJDK.dir}">
+			<include name="j2se/src/**.class"/>
+			<include name="control/build/linux-i586/gensrc/**.class"/>
+		</fileset>
+	</delete>
+	<delete>
+		<fileset basedir=".">
+			<include name="**.class"/>
+		</fileset>
+	</delete>
+        <exec program="javac" commandline="-J-Xmx1024M -g -nowarn -bootclasspath ../classpath/mscorlib.jar${pathsep}../classpath/System.jar @allsources.lst" useruntimeengine="false" />
     </target>
 
     <target name="vfs">
-        <!-- This file is generated here, but it is added as a resource to IKVM.Runtime.dll, because Ref.Emit on .NET 1.1 doesn't support adding a raw resource. -->
-        <zip zipfile="vfs.zip">
-            <fileset basedir="${OpenJDK.dir}/control/build/linux-amd64/j2re-image">
-                <include name="lib/zi/**/*" />
-                <include name="lib/currency.data" />
-                <include name="lib/logging.properties" />
-                <include name="lib/security/java.policy" />
-                <include name="lib/security/java.security" />
-                <include name="lib/security/local_policy.jar" />
-                <include name="lib/security/US_export_policy.jar" />
-            </fileset>
-        </zip>
+      <!-- This file is generated here, but it is added as a resource to IKVM.Runtime.dll, because Ref.Emit on .NET 1.1 doesn't support adding a raw resource. -->
+      <zip zipfile="vfs.zip">
+          <fileset basedir="${OpenJDK.dir}/control/build/linux-i586/j2re-image">
+               <include name="lib/zi/**/*" />
+               <include name="lib/logging.properties" />
+               <include name="lib/security/java.policy" />
+          </fileset>
+          <fileset basedir=".">
+               <include name="lib/**/*" />
+          </fileset>
+      </zip>
     </target>
 
-    <target name="core">
-        <property name="VERSION" value="${assemblyname::get-version(assemblyname::get-assembly-name(path::combine(project::get-base-directory(), '../bin/IKVM.Runtime.dll')))}" />
+    <target name="IKVM.OpenJDK.ClassLibrary.dll" depends="classes vfs">
         <exec program="${project::get-base-directory()}/../bin/ikvmc.exe" useruntimeengine="true">
-            <arg value="-version:${VERSION}" />
-            <arg value="${signoption}" />
-            <arg value="-compressresources" />
-            <arg value="-opt:fields" />
-            <arg value="-strictfinalfieldsemantics" />
-            <arg value="-removeassertions" />
-            <arg value="-out:IKVM.OpenJDK.ClassLibrary.dll" />
-            <arg value="-remap:map.xml" />
-            <arg value="-exclude:exclude.lst" />
-            <arg value="-target:library" />
-            <arg value="-recurse:./*.class" />
-            <arg value="-recurse:../classpath/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/jdk/src/share/classes/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/jdk/src/solaris/classes/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/jdk/src/windows/classes/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/gensrc/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/impsrc/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/classes/*_Stub.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/classes/*_Tie.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/classes/*_Skel.class" />
-            <arg value="-recurse:${Classpath.dir}/*.class" />
-            <arg value="-r:mscorlib" />
-            <arg value="-r:IKVM.Runtime" />
-            <!-- Instead of using -r:System.Core we add System.Core.jar
-                 (containing only System.Runtime.CompilerServices.ExtensionAttribute).
-                 This allows compilation to succeed (though with warnings) when System.Core.dll is not available.
-                 It also prevents accidentally taking additional dependencies on System.Core.dll.
-            -->
-            <arg value="../classpath/System.Core.jar" />
-            <arg value="-r:${framework::get-assembly-directory(framework::get-target-framework())}/System.dll" />
-            <arg value="${OpenJDK.dir}/control/build/linux-amd64/j2re-image/lib/resources.jar" />
-            <!-- this resource is somehow missing from OpenJDK6 b12's resources.jar -->
-            <arg value="-resource:com/sun/org/apache/xml/internal/serialize/HTMLEntities.res=${OpenJDK.dir}/control/build/linux-amd64/impsrc/com/sun/org/apache/xml/internal/serialize/HTMLEntities.res" />
-            <!-- we already know that the JNI assembly is not available, so suppress the warning -->
-            <arg value="-nowarn:110" />
+          <arg value="-version:0.37.*" />
+          <arg value="${signoption}" />
+          <arg value="-compressresources" />
+          <arg value="-opt:fields" />
+          <arg value="-strictfinalfieldsemantics" />
+          <arg value="-out:IKVM.OpenJDK.ClassLibrary.dll" />
+          <arg value="-remap:map.xml" />
+          <arg value="-exclude:exclude.lst" />
+          <arg value="-target:library" />
+          <arg value="-recurse:./*.class" />
+          <arg value="-recurse:../classpath/*.class" />
+          <arg value="-recurse:${OpenJDK.dir}/j2se/src/*.class" />
+          <arg value="-recurse:${OpenJDK.dir}/control/build/linux-i586/gensrc/*.class" />
+          <arg value="-recurse:${OpenJDK.dir}/control/build/linux-i586/classes/*_Stub.class" />
+          <arg value="-recurse:${OpenJDK.dir}/control/build/linux-i586/classes/*_Tie.class" />
+          <arg value="-recurse:${OpenJDK.dir}/control/build/linux-i586/classes/*_Skel.class" />
+          <arg value="-recurse:${Classpath.dir}/*.class" />
+          <arg value="-r:mscorlib" />
+          <arg value="-r:${framework::get-assembly-directory(framework::get-target-framework())}/System.dll" />
+          <arg value="-resource:META-INF/MANIFEST.MF=MANIFEST.MF" />
+          <arg value="${OpenJDK.dir}/control/build/linux-i586/j2re-image/lib/resources.jar" />
         </exec>
         <copy file="IKVM.OpenJDK.ClassLibrary.dll" tofile="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
         <if test="${platform::is-win32()}">
-            <exec program="peverify" commandline="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
+          <exec program="peverify" commandline="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
         </if>
         <copy file="IKVM.OpenJDK.ClassLibrary.dll" todir="../bin" />
-        <delete file="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
+	<delete file="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
     </target>
 
 </project>
