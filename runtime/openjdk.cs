@@ -2663,7 +2663,10 @@ namespace IKVM.NativeCode.java
 
 			public static int getModifiers(object thisClass)
 			{
-				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers;
+				// the 0x7FFF mask comes from JVM_ACC_WRITTEN_FLAGS in hotspot\src\share\vm\utilities\accessFlags.hpp
+				// masking out ACC_SUPER comes from instanceKlass::compute_modifier_flags() in hotspot\src\share\vm\oops\instanceKlass.cpp
+				const int mask = 0x7FFF & (int)~IKVM.Attributes.Modifiers.Super;
+				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers & mask;
 			}
 
 			public static object[] getSigners(object thisClass)
@@ -2729,19 +2732,14 @@ namespace IKVM.NativeCode.java
 					wrapper = wrapper.ElementTypeWrapper;
 				}
 				object pd = pdField.GetValue(wrapper.ClassObject);
-				if (pd == null && wrapper.GetClassLoader() is AssemblyClassLoader)
+				if (pd == null)
 				{
-					object loader = wrapper.GetClassLoader().GetJavaClassLoader();
-					if (loader != null)
+					// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
+					// to work around boot strap issues.
+					AssemblyClassLoader acl = wrapper.GetClassLoader() as AssemblyClassLoader;
+					if (acl != null)
 					{
-						// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
-						// to work around boot strap issues.
-						// TODO this should be done more efficiently
-						MethodInfo method = loader.GetType().GetMethod("getProtectionDomain", BindingFlags.Public | BindingFlags.Instance);
-						if (method != null)
-						{
-							pd = method.Invoke(loader, null);
-						}
+						pd = acl.GetProtectionDomain();
 					}
 				}
 				return pd;
