@@ -4128,11 +4128,11 @@ namespace IKVM.NativeCode.java
 				string apartment = ((string)jsAccessController.doPrivileged(new ssaGetPropertyAction("ikvm.apartmentstate", ""))).ToLower();
 				if (apartment == "mta")
 				{
-					t.nativeThread.SetApartmentState(ApartmentState.MTA);
+					t.nativeThread.ApartmentState = ApartmentState.MTA;
 				}
 				else if (apartment == "sta")
 				{
-					t.nativeThread.SetApartmentState(ApartmentState.STA);
+					t.nativeThread.ApartmentState = ApartmentState.STA;
 				}
 				SetThreadStatus(thisThread, RUNNABLE);
 				t.nativeThread.Start();
@@ -4203,7 +4203,8 @@ namespace IKVM.NativeCode.java
 							bool suspended = false;
 							if ((t.nativeThread.ThreadState & ThreadState.Suspended) == 0 && t.nativeThread != SystemThreadingThread.CurrentThread)
 							{
-								SuspendThread(t.nativeThread);
+								t.nativeThread.Suspend();
+								suspended = true;
 							}
 							StackTrace stack;
 							try
@@ -4214,7 +4215,7 @@ namespace IKVM.NativeCode.java
 							{
 								if (suspended)
 								{
-									ResumeThread(t.nativeThread);
+									t.nativeThread.Resume();
 								}
 							}
 							stacks[i] = JVM.Library.getStackTrace(stack);
@@ -4227,22 +4228,6 @@ namespace IKVM.NativeCode.java
 				}
 				return stacks;
 #endif
-			}
-
-			private static void SuspendThread(SystemThreadingThread thread)
-			{
-#pragma warning disable 618
-				// Thread.Suspend() is obsolete, we know that. Warning disabled.
-				thread.Suspend();
-#pragma warning restore
-			}
-
-			private static void ResumeThread(SystemThreadingThread thread)
-			{
-#pragma warning disable 618
-				// Thread.Resume() is obsolete, we know that. Warning disabled.
-				thread.Resume();
-#pragma warning restore
 			}
 
 #if !FIRST_PASS
@@ -4322,7 +4307,7 @@ namespace IKVM.NativeCode.java
 							ThreadState suspend = ThreadState.Suspended | ThreadState.SuspendRequested;
 							while ((t.nativeThread.ThreadState & suspend) != 0)
 							{
-								ResumeThread(t.nativeThread);
+								t.nativeThread.Resume();
 							}
 						}
 						catch (ThreadStateException)
@@ -4344,7 +4329,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						SuspendThread(t.nativeThread);
+						t.nativeThread.Suspend();
 					}
 					catch (ThreadStateException)
 					{
@@ -4359,7 +4344,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						ResumeThread(t.nativeThread);
+						t.nativeThread.Resume();
 					}
 					catch (ThreadStateException)
 					{
@@ -4595,14 +4580,32 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return null;
 #else
+				string s;
 				try
 				{
-					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
+					s = System.Net.Dns.GetHostByAddress(string.Format("{0}.{1}.{2}.{3}", addr[0], addr[1], addr[2], addr[3])).HostName;
 				}
 				catch (System.Net.Sockets.SocketException x)
 				{
 					throw new jnUnknownHostException(x.Message);
 				}
+				try
+				{
+					System.Net.Dns.GetHostByName(s);
+				}
+				catch (System.Net.Sockets.SocketException)
+				{
+					// FXBUG .NET framework bug
+					// HACK if GetHostByAddress returns a netbios name, it appends the default DNS suffix, but if the
+					// machine's netbios name isn't the same as the DNS hostname, this might result in an unresolvable
+					// name, if that happens we chop off the DNS suffix.
+					int idx = s.IndexOf('.');
+					if (idx > 0)
+					{
+						return s.Substring(0, idx);
+					}
+				}
+				return s;
 #endif
 			}
 
