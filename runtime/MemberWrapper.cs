@@ -1551,7 +1551,7 @@ namespace IKVM.Internal
 
 		private FieldInfo TokenBasedLookup(BindingFlags bindings, int token)
 		{
-			ModuleBuilder module = (ModuleBuilder)DeclaringType.TypeAsTBD.Module;
+			ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
 			foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
 			{
 				if(module.GetFieldToken(f).Token == token)
@@ -1597,7 +1597,7 @@ namespace IKVM.Internal
 				{
 					FieldInfo fi = DeclaringType.TypeAsTBD.GetField(field.Name, bindings);
 					// now check that we've got the right field by comparing the tokens
-					ModuleBuilder module = (ModuleBuilder)DeclaringType.TypeAsTBD.Module;
+					ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
 					if(module.GetFieldToken(fi).Token != fb.GetToken().Token)
 					{
 						fi = TokenBasedLookup(bindings, fb.GetToken().Token);
@@ -1829,7 +1829,6 @@ namespace IKVM.Internal
 
 		protected override void EmitSetImpl(ILGenerator ilgen)
 		{
-			FieldInfo fi = GetField();
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
 				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
@@ -1837,7 +1836,19 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
 			}
-			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			FieldInfo fi = GetField();
+			if(fi != null)
+			{
+				// common case (we're in a DynamicTypeWrapper and the caller is too)
+				ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			}
+			else
+			{
+				// this means that we are an instance on a CompiledTypeWrapper and we're being called
+				// from DynamicMethod based reflection, so we can safely emit a call to the private
+				// setter, because the DynamicMethod is allowed to access our private members.
+				ilgen.Emit(OpCodes.Call, prop.GetSetMethod(true));
+			}
 		}
 #endif
 	}
