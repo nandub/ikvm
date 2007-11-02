@@ -435,15 +435,14 @@ namespace IKVM.NativeCode.ikvm.runtime
 				else if(assembly != null)
 				{
 					AssemblyClassLoader_ acl = ClassLoaderWrapper.GetAssemblyClassLoader(assembly);
-					// HACK we need to support generic type instantiations here, because we may not have gone
-					// through LoadClassByDottedNameFastImpl.
-					if(name.EndsWith("_$$$$_") && name.IndexOf("_$$$_") > 0)
+					tw = acl.GetLoadedClass(name);
+					if(tw == null)
 					{
 						tw = acl.LoadGenericClass(name);
 					}
 					if(tw == null)
 					{
-						tw = acl.LoadClass(name);
+						tw = acl.LoadReferenced(name);
 					}
 					if(tw == null)
 					{
@@ -536,12 +535,30 @@ namespace IKVM.NativeCode.ikvm.runtime
 	{
 		public static object loadClassFromAssembly(Assembly asm, string className)
 		{
+			if(asm is System.Reflection.Emit.AssemblyBuilder)
+			{
+				return null;
+			}
+			if(asm.Equals(DynamicClassLoader.Instance.ModuleBuilder.Assembly))
+			{
+				// this can happen on Orcas, where an AssemblyBuilder has a corresponding Assembly
+				return null;
+			}
 			TypeWrapper tw = ClassLoaderWrapper.GetAssemblyClassLoader(asm).DoLoad(className);
 			return tw != null ? tw.ClassObject : null;
 		}
 
 		public static bool findResourceInAssembly(Assembly asm, string resourceName)
 		{
+			if(asm is System.Reflection.Emit.AssemblyBuilder)
+			{
+				return false;
+			}
+			if(asm.Equals(DynamicClassLoader.Instance.ModuleBuilder.Assembly))
+			{
+				// this can happen on Orcas, where an AssemblyBuilder has a corresponding Assembly
+				return false;
+			}
 			return asm.GetManifestResourceInfo(JVM.MangleResourceName(resourceName)) != null;
 		}
 	}
