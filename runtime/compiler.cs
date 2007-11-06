@@ -29,6 +29,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Diagnostics;
 using System.Diagnostics.SymbolStore;
+using IKVM.Runtime;
 using IKVM.Attributes;
 using IKVM.Internal;
 
@@ -81,7 +82,7 @@ class ByteCodeHelperMethods
 #if STATIC_COMPILER
 		Type typeofByteCodeHelper = StaticCompiler.GetType("IKVM.Runtime.ByteCodeHelper");
 #else
-		Type typeofByteCodeHelper = typeof(IKVM.Runtime.ByteCodeHelper);
+		Type typeofByteCodeHelper = typeof(ByteCodeHelper);
 #endif
 		GetClassFromTypeHandle = typeofByteCodeHelper.GetMethod("GetClassFromTypeHandle");
 		multianewarray = typeofByteCodeHelper.GetMethod("multianewarray");
@@ -1819,10 +1820,6 @@ class Compiler
 							break;
 						}
 					}
-					if(AtomicReferenceFieldUpdaterEmitter.Emit(clazz, ilGenerator, classFile, cpi, i, code))
-					{
-						break;
-					}
 					MethodWrapper method = GetMethodCallEmitter(cpi, instr.NormalizedOpCode);
 					// if the stack values don't match the argument types (for interface argument types)
 					// we must emit code to cast the stack value to the interface type
@@ -3364,7 +3361,10 @@ class Compiler
 		}
 		if(type == null
 			|| !type.IsValueType
-			|| type.StructLayoutAttribute.Pack != 1 || type.StructLayoutAttribute.Size != length)
+#if WHIDBEY
+			|| type.StructLayoutAttribute.Pack != 1 || type.StructLayoutAttribute.Size != length
+#endif
+			)
 		{
 			// the type that we found doesn't match (must mean we've compiled a Java type with that name),
 			// so we fall back to the string approach
