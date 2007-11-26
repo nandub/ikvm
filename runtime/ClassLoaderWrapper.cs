@@ -31,7 +31,6 @@ using System.Collections;
 using System.Diagnostics;
 using System.Threading;
 using IKVM.Attributes;
-using IKVM.Runtime;
 
 namespace IKVM.Internal
 {
@@ -446,7 +445,7 @@ namespace IKVM.Internal
 				return null;
 			}
 			Type type = GetType(DotNetTypeWrapper.DemangleTypeName(name.Substring(0, pos)));
-			if(type == null || !Whidbey.IsGenericTypeDefinition(type))
+			if(type == null || !type.IsGenericTypeDefinition)
 			{
 				return null;
 			}
@@ -558,7 +557,7 @@ namespace IKVM.Internal
 			}
 			try
 			{
-				type = Whidbey.MakeGenericType(type, typeArguments);
+				type = type.MakeGenericType(typeArguments);
 			}
 			catch(ArgumentException)
 			{
@@ -810,7 +809,7 @@ namespace IKVM.Internal
 		{
 			//Tracer.Info(Tracer.Runtime, "GetWrapperFromType: {0}", type.AssemblyQualifiedName);
 			TypeWrapper.AssertFinished(type);
-			Debug.Assert(!Whidbey.ContainsGenericParameters(type));
+			Debug.Assert(!type.ContainsGenericParameters);
 			Debug.Assert(!type.IsPointer);
 			Debug.Assert(!type.IsByRef);
 			TypeWrapper wrapper = (TypeWrapper)typeToTypeWrapper[type];
@@ -862,12 +861,12 @@ namespace IKVM.Internal
 		internal static ClassLoaderWrapper GetGenericClassLoader(TypeWrapper wrapper)
 		{
 			Type type = wrapper.TypeAsTBD;
-			Debug.Assert(Whidbey.IsGenericType(type));
-			Debug.Assert(!Whidbey.ContainsGenericParameters(type));
+			Debug.Assert(type.IsGenericType);
+			Debug.Assert(!type.ContainsGenericParameters);
 
 			ArrayList list = new ArrayList();
 			list.Add(GetAssemblyClassLoader(type.Assembly));
-			foreach(Type arg in Whidbey.GetGenericArguments(type))
+			foreach(Type arg in type.GetGenericArguments())
 			{
 				ClassLoaderWrapper loader = GetWrapperFromType(arg).GetClassLoader();
 				if(!list.Contains(loader))
@@ -958,7 +957,7 @@ namespace IKVM.Internal
 			{
 				return GetGenericClassLoaderByName(name);
 			}
-#if WHIDBEY && STATIC_COMPILER
+#if STATIC_COMPILER
 			return ClassLoaderWrapper.GetAssemblyClassLoader(Assembly.ReflectionOnlyLoad(name));
 #else
 			return ClassLoaderWrapper.GetAssemblyClassLoader(Assembly.Load(name));
@@ -1001,7 +1000,7 @@ namespace IKVM.Internal
 					{
 						return GetBootstrapClassLoader();
 					}
-					if(!Whidbey.ReflectionOnly(assembly))
+					if(!assembly.ReflectionOnly)
 					{
 						Type customClassLoaderClass = null;
 						LoadCustomClassLoaderRedirects();
@@ -1124,7 +1123,7 @@ namespace IKVM.Internal
 							{
 								customClassLoaderRedirects = new Hashtable();
 							}
-							customClassLoaderRedirects[key.Substring(prefix.Length)] = System.Configuration.ConfigurationSettings.AppSettings.Get(key);
+							customClassLoaderRedirects[key.Substring(prefix.Length)] = System.Configuration.ConfigurationManager.AppSettings.Get(key);
 						}
 					}
 				}
@@ -1303,15 +1302,15 @@ namespace IKVM.Internal
 		private Assembly assembly;
 		private AssemblyName[] references;
 		private AssemblyClassLoader[] delegates;
-#if WHIDBEY
 		private bool isReflectionOnly;
-#endif // WHIDBEY
 		private bool[] isJavaModule;
 		private Module[] modules;
 		private Hashtable nameMap;
+#if !STATIC_COMPILER
 		private Thread initializerThread;
-		private bool hasDotNetModule;
 		private volatile object protectionDomain;
+#endif
+		private bool hasDotNetModule;
 		private bool hasCustomClassLoader;
 
 		internal AssemblyClassLoader(Assembly assembly, object javaClassLoader, bool hasCustomClassLoader)
@@ -1321,9 +1320,7 @@ namespace IKVM.Internal
 			modules = assembly.GetModules(false);
 			isJavaModule = new bool[modules.Length];
 			this.hasCustomClassLoader = hasCustomClassLoader;
-#if WHIDBEY
 			isReflectionOnly = assembly.ReflectionOnly;
-#endif // WHIDBEY
 			for(int i = 0; i < modules.Length; i++)
 			{
 				object[] attr = AttributeHelper.GetJavaModuleAttributes(modules[i]);
@@ -1612,13 +1609,11 @@ namespace IKVM.Internal
 					try
 					{
 						// TODO consider throttling the Load attempts (or caching failure)
-#if WHIDBEY
 						if(isReflectionOnly)
 						{
 							asm = Assembly.ReflectionOnlyLoad(references[i].FullName);
 						}
 						else
-#endif
 						{
 							asm = Assembly.Load(references[i]);
 						}
@@ -1678,13 +1673,11 @@ namespace IKVM.Internal
 					try
 					{
 						// TODO consider throttling the Load attempts (or caching failure)
-#if WHIDBEY
 						if(isReflectionOnly)
 						{
 							asm = Assembly.ReflectionOnlyLoad(references[i].FullName);
 						}
 						else
-#endif
 					{
 						asm = Assembly.Load(references[i]);
 					}
@@ -1779,9 +1772,11 @@ namespace IKVM.Internal
 
 		internal virtual object GetProtectionDomain()
 		{
+#if STATIC_COMPILER || FIRST_PASS
+			return null;
+#else
 			if(protectionDomain == null)
 			{
-#if !STATIC_COMPILER && !FIRST_PASS
 				java.net.URL codebase;
 				try
 				{
@@ -1801,9 +1796,9 @@ namespace IKVM.Internal
 						protectionDomain = pd;
 					}
 				}
-#endif
 			}
 			return protectionDomain;
+#endif
 		}
 
 		protected override void CheckDefineClassAllowed(string className)

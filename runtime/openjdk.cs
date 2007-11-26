@@ -121,56 +121,11 @@ using ssaGetPropertyAction = sun.security.action.GetPropertyAction;
 using sndResolverConfigurationImpl = sun.net.dns.ResolverConfigurationImpl;
 #endif
 
-#if WHIDBEY
 sealed class DynamicMethodSupport
 {
 	// MONOBUG as of Mono 1.2.5.1, DynamicMethod is too broken to be used
 	internal static readonly bool Enabled = Type.GetType("Mono.Runtime") == null;
 }
-#else
-sealed class DynamicMethodSupport
-{
-	internal static readonly bool Enabled = Environment.Version.Major >= 2 && Type.GetType("Mono.Runtime") == null;
-}
-
-sealed class DynamicMethod
-{
-	private static ConstructorInfo ctor1;
-	private static ConstructorInfo ctor2;
-	private static MethodInfo createMethod;
-	private static MethodInfo getILGenMethod;
-	private object dm;
-
-	static DynamicMethod()
-	{
-		Type type = Type.GetType("System.Reflection.Emit.DynamicMethod", true);
-		ctor1 = type.GetConstructor(new Type[] { typeof(string), typeof(MethodAttributes), typeof(CallingConventions), typeof(Type), typeof(Type[]), typeof(Module), typeof(bool) });
-		ctor2 = type.GetConstructor(new Type[] { typeof(string), typeof(Type), typeof(Type[]), typeof(Type) });
-		createMethod = type.GetMethod("CreateDelegate", new Type[] { typeof(Type) });
-		getILGenMethod = type.GetMethod("GetILGenerator", new Type[0]);
-	}
-
-	internal DynamicMethod(string name, MethodAttributes attributes, CallingConventions callingConvention, Type returnType, Type[] parameterTypes, Module owner, bool skipVisibility)
-	{
-		dm = ctor1.Invoke(new object[] { name, attributes, callingConvention, returnType, parameterTypes, owner, skipVisibility });
-	}
-
-	internal DynamicMethod(string name, Type returnType, Type[] parameterTypes, Type owner)
-	{
-		dm = ctor2.Invoke(new object[] { name, returnType, parameterTypes, owner });
-	}
-
-	internal ILGenerator GetILGenerator()
-	{
-		return (ILGenerator)getILGenMethod.Invoke(dm, null);
-	}
-
-	internal Delegate CreateDelegate(Type delegateType)
-	{
-		return (Delegate)createMethod.Invoke(dm, new object[] { delegateType });
-	}
-}
-#endif
 
 namespace IKVM.Runtime
 {
@@ -838,8 +793,7 @@ namespace IKVM.NativeCode.java
 			}
 
 #if !FIRST_PASS
-			// TODO on WHIDBEY this variable can be typed juzZipFile (because Interlocked.CompareExchange<>() is availble there)
-			private static object zipFile;
+			private static juzZipFile zipFile;
 
 			private class VfsEntry : juzZipEntry
 			{
@@ -2663,7 +2617,10 @@ namespace IKVM.NativeCode.java
 
 			public static int getModifiers(object thisClass)
 			{
-				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers;
+				// the 0x7FFF mask comes from JVM_ACC_WRITTEN_FLAGS in hotspot\src\share\vm\utilities\accessFlags.hpp
+				// masking out ACC_SUPER comes from instanceKlass::compute_modifier_flags() in hotspot\src\share\vm\oops\instanceKlass.cpp
+				const int mask = 0x7FFF & (int)~IKVM.Attributes.Modifiers.Super;
+				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers & mask;
 			}
 
 			public static object[] getSigners(object thisClass)
@@ -4125,11 +4082,11 @@ namespace IKVM.NativeCode.java
 				string apartment = ((string)jsAccessController.doPrivileged(new ssaGetPropertyAction("ikvm.apartmentstate", ""))).ToLower();
 				if (apartment == "mta")
 				{
-					t.nativeThread.ApartmentState = ApartmentState.MTA;
+					t.nativeThread.SetApartmentState(ApartmentState.MTA);
 				}
 				else if (apartment == "sta")
 				{
-					t.nativeThread.ApartmentState = ApartmentState.STA;
+					t.nativeThread.SetApartmentState(ApartmentState.STA);
 				}
 				SetThreadStatus(thisThread, RUNNABLE);
 				t.nativeThread.Start();
@@ -4200,8 +4157,7 @@ namespace IKVM.NativeCode.java
 							bool suspended = false;
 							if ((t.nativeThread.ThreadState & ThreadState.Suspended) == 0 && t.nativeThread != SystemThreadingThread.CurrentThread)
 							{
-								t.nativeThread.Suspend();
-								suspended = true;
+								SuspendThread(t.nativeThread);
 							}
 							StackTrace stack;
 							try
@@ -4212,7 +4168,7 @@ namespace IKVM.NativeCode.java
 							{
 								if (suspended)
 								{
-									t.nativeThread.Resume();
+									ResumeThread(t.nativeThread);
 								}
 							}
 							stacks[i] = JVM.Library.getStackTrace(stack);
@@ -4225,6 +4181,22 @@ namespace IKVM.NativeCode.java
 				}
 				return stacks;
 #endif
+			}
+
+			private static void SuspendThread(SystemThreadingThread thread)
+			{
+#pragma warning disable 618
+				// Thread.Suspend() is obsolete, we know that. Warning disabled.
+				thread.Suspend();
+#pragma warning restore
+			}
+
+			private static void ResumeThread(SystemThreadingThread thread)
+			{
+#pragma warning disable 618
+				// Thread.Resume() is obsolete, we know that. Warning disabled.
+				thread.Resume();
+#pragma warning restore
 			}
 
 #if !FIRST_PASS
@@ -4304,7 +4276,7 @@ namespace IKVM.NativeCode.java
 							ThreadState suspend = ThreadState.Suspended | ThreadState.SuspendRequested;
 							while ((t.nativeThread.ThreadState & suspend) != 0)
 							{
-								t.nativeThread.Resume();
+								ResumeThread(t.nativeThread);
 							}
 						}
 						catch (ThreadStateException)
@@ -4326,7 +4298,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						t.nativeThread.Suspend();
+						SuspendThread(t.nativeThread);
 					}
 					catch (ThreadStateException)
 					{
@@ -4341,7 +4313,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						t.nativeThread.Resume();
+						ResumeThread(t.nativeThread);
 					}
 					catch (ThreadStateException)
 					{
@@ -4545,11 +4517,7 @@ namespace IKVM.NativeCode.java
 #else
 				try
 				{
-#if WHIDBEY
 					System.Net.IPAddress[] addr = System.Net.Dns.GetHostAddresses(hostname);
-#else
-					System.Net.IPAddress[] addr = System.Net.Dns.Resolve(hostname).AddressList;
-#endif
 					ArrayList addresses = new ArrayList();
 					for (int i = 0; i < addr.Length; i++)
 					{
@@ -4577,32 +4545,14 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return null;
 #else
-				string s;
 				try
 				{
-					s = System.Net.Dns.GetHostByAddress(string.Format("{0}.{1}.{2}.{3}", addr[0], addr[1], addr[2], addr[3])).HostName;
+					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
 				}
 				catch (System.Net.Sockets.SocketException x)
 				{
 					throw new jnUnknownHostException(x.Message);
 				}
-				try
-				{
-					System.Net.Dns.GetHostByName(s);
-				}
-				catch (System.Net.Sockets.SocketException)
-				{
-					// FXBUG .NET framework bug
-					// HACK if GetHostByAddress returns a netbios name, it appends the default DNS suffix, but if the
-					// machine's netbios name isn't the same as the DNS hostname, this might result in an unresolvable
-					// name, if that happens we chop off the DNS suffix.
-					int idx = s.IndexOf('.');
-					if (idx > 0)
-					{
-						return s.Substring(0, idx);
-					}
-				}
-				return s;
 #endif
 			}
 
@@ -4682,11 +4632,7 @@ namespace IKVM.NativeCode.java
 #else
 				try
 				{
-#if WHIDBEY
 					System.Net.IPAddress[] addr = System.Net.Dns.GetHostAddresses(hostname);
-#else
-					System.Net.IPAddress[] addr = System.Net.Dns.Resolve(hostname).AddressList;
-#endif
 					jnInetAddress[] addresses = new jnInetAddress[addr.Length];
 					for (int i = 0; i < addr.Length; i++)
 					{
@@ -6183,9 +6129,13 @@ namespace IKVM.NativeCode.sun.misc
 
 	public sealed class MiscHelper
 	{
-		public static object getAssemblyClassLoader(Assembly asm)
+		public static object getAssemblyClassLoader(Assembly asm, object extcl)
 		{
-			return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
+			if (extcl == null || asm.IsDefined(typeof(IKVM.Attributes.CustomAssemblyClassLoaderAttribute), false))
+			{
+				return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
+			}
+			return null;
 		}
 	}
 

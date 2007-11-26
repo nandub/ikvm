@@ -23,9 +23,7 @@
 */
 using System;
 using System.Collections;
-#if WHIDBEY
 using System.Collections.Generic;
-#endif
 using System.Reflection;
 #if !COMPACT_FRAMEWORK
 using System.Reflection.Emit;
@@ -35,7 +33,6 @@ using Label = IKVM.Internal.CountingLabel;
 using System.Diagnostics;
 using System.Security;
 using System.Security.Permissions;
-using IKVM.Runtime;
 using IKVM.Attributes;
 
 
@@ -184,7 +181,6 @@ namespace IKVM.Internal
 			}
 			else if(tw.TypeAsTBD.IsEnum)
 			{
-#if WHIDBEY
 				if(tw.TypeAsTBD.Assembly.ReflectionOnly)
 				{
 					// TODO implement full parsing semantics
@@ -195,7 +191,6 @@ namespace IKVM.Internal
 					}
 					return field.GetRawConstantValue();
 				}
-#endif
 				return Enum.Parse(tw.TypeAsTBD, val);
 			}
 			else if(tw.TypeAsTBD == typeof(Type))
@@ -756,7 +751,7 @@ namespace IKVM.Internal
 			return IsDefined(type, typeofExceptionIsUnsafeForMappingAttribute);
 		}
 
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 		// this method compares t1 and t2 by name
 		// if the type name and assembly name (ignoring the version and strong name) match
 		// the type are considered the same
@@ -769,7 +764,7 @@ namespace IKVM.Internal
 
 		internal static object GetConstantValue(FieldInfo field)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || field.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(field))
@@ -794,7 +789,7 @@ namespace IKVM.Internal
 
 		internal static ModifiersAttribute GetModifiersAttribute(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -818,7 +813,7 @@ namespace IKVM.Internal
 
 		internal static ExModifiers GetModifiers(MethodBase mb, bool assemblyIsPrivate)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || mb.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(mb))
@@ -899,7 +894,7 @@ namespace IKVM.Internal
 
 		internal static ExModifiers GetModifiers(FieldInfo fi, bool assemblyIsPrivate)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || fi.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(fi))
@@ -954,12 +949,10 @@ namespace IKVM.Internal
 			{
 				modifiers |= Modifiers.Static;
 			}
-#if WHIDBEY
 			if(Array.IndexOf(fi.GetRequiredCustomModifiers(), typeof(System.Runtime.CompilerServices.IsVolatile)) != -1)
 			{
 				modifiers |= Modifiers.Volatile;
 			}
-#endif
 			return new ExModifiers(modifiers, false);
 		}
 
@@ -1164,7 +1157,7 @@ namespace IKVM.Internal
 
 		internal static NameSigAttribute GetNameSig(FieldInfo field)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || field.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(field))
@@ -1184,7 +1177,7 @@ namespace IKVM.Internal
 
 		internal static NameSigAttribute GetNameSig(MethodBase method)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || method.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(method))
@@ -1202,7 +1195,7 @@ namespace IKVM.Internal
 			return attr.Length == 1 ? (NameSigAttribute)attr[0] : null;
 		}
 
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 		internal static T[] DecodeArray<T>(CustomAttributeTypedArgument arg)
 		{
 			IList<CustomAttributeTypedArgument> elems = (IList<CustomAttributeTypedArgument>)arg.Value;
@@ -1217,7 +1210,7 @@ namespace IKVM.Internal
 
 		internal static ImplementsAttribute GetImplements(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -1237,7 +1230,7 @@ namespace IKVM.Internal
 
 		internal static ThrowsAttribute GetThrows(MethodBase mb)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || mb.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(mb))
@@ -1257,7 +1250,7 @@ namespace IKVM.Internal
 
 		internal static string[] GetNonNestedInnerClasses(Type t)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || t.Assembly.ReflectionOnly)
 			{
 				List<string> list = new List<string>();
@@ -1283,7 +1276,7 @@ namespace IKVM.Internal
 
 		internal static string GetNonNestedOuterClasses(Type t)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || t.Assembly.ReflectionOnly)
 			{
 				List<string> list = new List<string>();
@@ -1304,7 +1297,7 @@ namespace IKVM.Internal
 
 		internal static SignatureAttribute GetSignature(MethodBase mb)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || mb.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(mb))
@@ -1324,7 +1317,7 @@ namespace IKVM.Internal
 
 		internal static SignatureAttribute GetSignature(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -1346,7 +1339,7 @@ namespace IKVM.Internal
 
 		internal static SignatureAttribute GetSignature(FieldInfo fi)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || fi.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(fi))
@@ -1366,7 +1359,7 @@ namespace IKVM.Internal
 
 		internal static InnerClassAttribute GetInnerClass(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -1386,7 +1379,7 @@ namespace IKVM.Internal
 
 		internal static RemappedInterfaceMethodAttribute[] GetRemappedInterfaceMethods(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				List<RemappedInterfaceMethodAttribute> attrs = new List<RemappedInterfaceMethodAttribute>();
@@ -1409,7 +1402,7 @@ namespace IKVM.Internal
 
 		internal static RemappedTypeAttribute GetRemappedType(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -1429,7 +1422,7 @@ namespace IKVM.Internal
 
 		internal static RemappedClassAttribute[] GetRemappedClasses(Assembly coreAssembly)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || coreAssembly.ReflectionOnly)
 			{
 				List<RemappedClassAttribute> attrs = new List<RemappedClassAttribute>();
@@ -1452,7 +1445,7 @@ namespace IKVM.Internal
 
 		internal static string GetAnnotationAttributeType(Type type)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -1475,7 +1468,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(Module mod, Type attribute)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || mod.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(mod))
@@ -1494,7 +1487,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(Assembly asm, Type attribute)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || asm.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(asm))
@@ -1512,7 +1505,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(Type type, Type attribute)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || type.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(type))
@@ -1531,7 +1524,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(ParameterInfo pi, Type attribute)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || pi.Member.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(pi))
@@ -1550,7 +1543,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(MemberInfo member, Type attribute)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || member.DeclaringType.Assembly.ReflectionOnly)
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(member))
@@ -1574,7 +1567,7 @@ namespace IKVM.Internal
 
 		internal static object[] GetJavaModuleAttributes(Module mod)
 		{
-#if WHIDBEY && !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK
 			if(JVM.IsStaticCompiler || mod.Assembly.ReflectionOnly)
 			{
 				ArrayList attrs = new ArrayList();
@@ -2898,7 +2891,7 @@ namespace IKVM.Internal
 			{
 				ilgen.Emit(OpCodes.Dup);
 				// TODO make sure we get the right "Cast" method and cache it
-				// NOTE for dynamic ghosts we don't end up here because DynamicTypeWrapper overrides this method,
+				// NOTE for dynamic ghosts we don't end up here because AotTypeWrapper overrides this method,
 				// so we're safe to call GetMethod on TypeAsTBD (because it has to be a compiled type, if we're here)
 				ilgen.Emit(OpCodes.Call, TypeAsTBD.GetMethod("Cast"));
 				ilgen.Emit(OpCodes.Pop);
@@ -2907,7 +2900,7 @@ namespace IKVM.Internal
 			{
 				ilgen.Emit(OpCodes.Dup);
 				// TODO make sure we get the right "CastArray" method and cache it
-				// NOTE for dynamic ghosts we don't end up here because DynamicTypeWrapper overrides this method,
+				// NOTE for dynamic ghosts we don't end up here because AotTypeWrapper overrides this method,
 				// so we're safe to call GetMethod on TypeAsTBD (because it has to be a compiled type, if we're here)
 				TypeWrapper tw = this;
 				int rank = 0;
@@ -2918,6 +2911,7 @@ namespace IKVM.Internal
 				}
 				ilgen.Emit(OpCodes.Ldc_I4, rank);
 				ilgen.Emit(OpCodes.Call, tw.TypeAsTBD.GetMethod("CastArray"));
+				ilgen.Emit(OpCodes.Castclass, ArrayTypeWrapper.MakeArrayType(typeof(object), rank));
 			}
 			else if(IsDynamicOnly)
 			{
@@ -3030,13 +3024,11 @@ namespace IKVM.Internal
 			MethodBase mb = mw.GetMethod();
 			if(mb != null)
 			{
-#if WHIDBEY
 				if(mb.DeclaringType.Assembly.ReflectionOnly)
 				{
 					// TODO
 					return null;
 				}
-#endif // WHIDBEY
 				object[] attr = mb.GetCustomAttributes(typeof(AnnotationDefaultAttribute), false);
 				if(attr.Length == 1)
 				{
@@ -3303,104 +3295,6 @@ namespace IKVM.Internal
 	}
 
 #if !COMPACT_FRAMEWORK
-	class BakedTypeCleanupHack
-	{
-		private static readonly FieldInfo m_methodBuilder = typeof(ConstructorBuilder).GetField("m_methodBuilder", BindingFlags.Instance | BindingFlags.NonPublic);
-		private static readonly FieldInfo[] methodBuilderFields = GetFieldList(typeof(MethodBuilder), new string[]
-			{
-				"m_ilGenerator",
-				"m_ubBody",
-				"m_RVAFixups",
-				"mm_mdMethodFixups",
-				"m_localSignature",
-				"m_localSymInfo",
-				"m_exceptions",
-				"m_parameterTypes",
-				"m_retParam",
-				"m_returnType",
-				"m_signature"
-			});
-		private static readonly FieldInfo[] fieldBuilderFields = GetFieldList(typeof(FieldBuilder), new string[]
-			{
-				"m_data",
-				"m_fieldType",
-		});
-
-		private static bool IsSupportedVersion
-		{
-			get
-			{
-				return Environment.Version.Major == 1 && Environment.Version.Minor == 1 && Environment.Version.Build == 4322;
-			}
-		}
-
-		private static FieldInfo[] GetFieldList(Type type, string[] list)
-		{
-			if(JVM.SafeGetEnvironmentVariable("IKVM_DISABLE_TYPEBUILDER_HACK") != null || !IsSupportedVersion)
-			{
-				return null;
-			}
-			if(!SecurityManager.IsGranted(new SecurityPermission(SecurityPermissionFlag.Assertion)) ||
-				!SecurityManager.IsGranted(new ReflectionPermission(ReflectionPermissionFlag.MemberAccess)))
-			{
-				return null;
-			}
-			FieldInfo[] fields = new FieldInfo[list.Length];
-			for(int i = 0; i < list.Length; i++)
-			{
-				fields[i] = type.GetField(list[i], BindingFlags.Instance | BindingFlags.NonPublic);
-				if(fields[i] == null)
-				{
-					return null;
-				}
-			}
-			return fields;
-		}
-
-		internal static void Process(DynamicTypeWrapper wrapper)
-		{
-			if(m_methodBuilder != null && methodBuilderFields != null && fieldBuilderFields != null)
-			{
-				foreach(MethodWrapper mw in wrapper.GetMethods())
-				{
-					MethodBuilder mb = mw.GetMethod() as MethodBuilder;
-					if(mb == null)
-					{
-						ConstructorBuilder cb = mw.GetMethod() as ConstructorBuilder;
-						if(cb != null)
-						{
-							new ReflectionPermission(ReflectionPermissionFlag.MemberAccess).Assert();
-							mb = (MethodBuilder)m_methodBuilder.GetValue(cb);
-							CodeAccessPermission.RevertAssert();
-						}
-					}
-					if(mb != null)
-					{
-						new ReflectionPermission(ReflectionPermissionFlag.MemberAccess).Assert();
-						foreach(FieldInfo fi in methodBuilderFields)
-						{
-							fi.SetValue(mb, null);
-						}
-						CodeAccessPermission.RevertAssert();
-					}
-				}
-				foreach(FieldWrapper fw in wrapper.GetFields())
-				{
-					FieldBuilder fb = fw.GetField() as FieldBuilder;
-					if(fb != null)
-					{
-						new ReflectionPermission(ReflectionPermissionFlag.MemberAccess).Assert();
-						foreach(FieldInfo fi in fieldBuilderFields)
-						{
-							fi.SetValue(fb, null);
-						}
-						CodeAccessPermission.RevertAssert();
-					}
-				}
-			}
-		}
-	}
-
 #if STATIC_COMPILER
 	abstract class DynamicTypeWrapper : TypeWrapper
 #else
@@ -4614,31 +4508,21 @@ namespace IKVM.Internal
 #endif
 						}
 					}
-#if WHIDBEY
 					Type[] modreq = Type.EmptyTypes;
 					if(fld.IsVolatile)
 					{
 						modreq = new Type[] { typeof(System.Runtime.CompilerServices.IsVolatile) };
 					}
-					field = typeBuilder.DefineField(isWrappedFinal ? "__<>" + fieldName : fieldName, type, modreq, Type.EmptyTypes, attribs);
-#else // WHIDBEY
 					// MONOBUG the __<> prefix for wrapped final fields is to work around a bug in mcs 1.1.17
 					// it crashes when it tries to lookup the property with the same name as the privatescope field
 					// http://bugzilla.ximian.com/show_bug.cgi?id=79451
-					field = typeBuilder.DefineField(isWrappedFinal ? "__<>" + fieldName : fieldName, type, attribs);
-#endif // WHIDBEY
+					field = typeBuilder.DefineField(isWrappedFinal ? "__<>" + fieldName : fieldName, type, modreq, Type.EmptyTypes, attribs);
 					if(fld.IsTransient)
 					{
 						CustomAttributeBuilder transientAttrib = new CustomAttributeBuilder(typeof(NonSerializedAttribute).GetConstructor(Type.EmptyTypes), new object[0]);
 						field.SetCustomAttribute(transientAttrib);
 					}
 #if STATIC_COMPILER
-#if !WHIDBEY
-					if(fld.IsVolatile)
-					{
-						setModifiers = true;
-					}
-#endif // !WHIDBEY
 					// Instance fields can also have a ConstantValue attribute (and are inlined by the compiler),
 					// and ikvmstub has to export them, so we have to add a custom attribute.
 					if(constantValue != null)
@@ -5396,7 +5280,6 @@ namespace IKVM.Internal
 #if STATIC_COMPILER
 					wrapper.FinishGhostStep2();
 #endif
-					BakedTypeCleanupHack.Process(wrapper);
 					finishedType = new FinishedTypeImpl(type, innerClassesTypeWrappers, declaringTypeWrapper, this.ReflectiveModifiers, Metadata.Create(classFile)
 #if STATIC_COMPILER
 						, annotationBuilder, enumBuilder
@@ -6109,7 +5992,11 @@ namespace IKVM.Internal
 
 			private class JniBuilder
 			{
+#if STATIC_COMPILER
+				private static readonly Type localRefStructType = StaticCompiler.GetType("IKVM.Runtime.JNI.Frame");
+#else
 				private static readonly Type localRefStructType = JVM.LoadType(typeof(IKVM.Runtime.JNI.Frame));
+#endif
 				private static readonly MethodInfo jniFuncPtrMethod = localRefStructType.GetMethod("GetFuncPtr");
 				private static readonly MethodInfo enterLocalRefStruct = localRefStructType.GetMethod("Enter");
 				private static readonly MethodInfo leaveLocalRefStruct = localRefStructType.GetMethod("Leave");
@@ -6960,9 +6847,7 @@ namespace IKVM.Internal
 						{
 							AttributeHelper.SetEditorBrowsableNever((MethodBuilder)method);
 						}
-#if WHIDBEY
-						// TODO apply CompilerGeneratedAttribute
-#endif
+						// TODO on WHIDBEY apply CompilerGeneratedAttribute
 					}
 					if(m.DeprecatedAttribute)
 					{
@@ -7981,7 +7866,7 @@ namespace IKVM.Internal
 			{
 				ArrayList methods = new ArrayList();
 				ArrayList fields = new ArrayList();
-				MemberInfo[] members = FilterDuplicates(type.GetMembers(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance));
+				MemberInfo[] members = type.GetMembers(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
 				foreach(MemberInfo m in members)
 				{
 					if(!AttributeHelper.IsHideFromJava(m))
@@ -8487,40 +8372,12 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static MemberInfo[] FilterDuplicates(MemberInfo[] members)
-		{
-#if !WHIDBEY
-			// FXBUG on .NET 1.1 methods that explicitly override another method are returned twice, so we filter them here
-			for(int i = 1; i < members.Length; i++)
-			{
-				MethodBase m1 = members[i] as MethodBase;
-				if(m1 != null)
-				{
-					for(int j = 0; j < i; j++)
-					{
-						MethodBase m2 = members[j] as MethodBase;
-						if(m2 != null && m1.MethodHandle.Value == m2.MethodHandle.Value)
-						{
-							MemberInfo[] newArray = new MemberInfo[members.Length - 1];
-							Array.Copy(members, newArray, i);
-							Array.Copy(members, i + 1, newArray, i, newArray.Length - i);
-							members = newArray;
-							i--;
-							break;
-						}
-					}
-				}
-			}
-#endif
-			return members;
-		}
-
 		protected override void LazyPublishMembers()
 		{
 			clinitMethod = type.GetMethod("__<clinit>", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
 			ArrayList methods = new ArrayList();
 			ArrayList fields = new ArrayList();
-			MemberInfo[] members = FilterDuplicates(type.GetMembers(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance));
+			MemberInfo[] members = type.GetMembers(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
 			foreach(MemberInfo m in members)
 			{
 				if(!AttributeHelper.IsHideFromJava(m))
@@ -8848,39 +8705,33 @@ namespace IKVM.Internal
 
 		internal override object[] GetDeclaredAnnotations()
 		{
-#if WHIDBEY
 			if(type.Assembly.ReflectionOnly)
 			{
-				// TODO
+				// TODO on Whidbey this must be implemented
 				return null;
 			}
-#endif // WHIDBEY
 			return type.GetCustomAttributes(false);
 		}
 
 		internal override object[] GetMethodAnnotations(MethodWrapper mw)
 		{
 			MethodBase mb = mw.GetMethod();
-#if WHIDBEY
 			if(mb.DeclaringType.Assembly.ReflectionOnly)
 			{
-				// TODO
+				// TODO on Whidbey this must be implemented
 				return null;
 			}
-#endif // WHIDBEY
 			return mb.GetCustomAttributes(false);
 		}
 
 		internal override object[][] GetParameterAnnotations(MethodWrapper mw)
 		{
 			MethodBase mb = mw.GetMethod();
-#if WHIDBEY
 			if(mb.DeclaringType.Assembly.ReflectionOnly)
 			{
-				// TODO
+				// TODO on Whidbey this must be implemented
 				return null;
 			}
-#endif // WHIDBEY
 			ParameterInfo[] parameters = mb.GetParameters();
 			int skip = 0;
 			if(mb.IsStatic && !mw.IsStatic && mw.Name != "<init>")
@@ -8900,25 +8751,21 @@ namespace IKVM.Internal
 			FieldInfo field = fw.GetField();
 			if(field != null)
 			{
-#if WHIDBEY
 				if (field.DeclaringType.Assembly.ReflectionOnly)
 				{
-					// TODO
+					// TODO on Whidbey this must be implemented
 					return null;
 				}
-#endif // WHIDBEY
 				return field.GetCustomAttributes(false);
 			}
 			GetterFieldWrapper getter = fw as GetterFieldWrapper;
 			if(getter != null)
 			{
-#if WHIDBEY
 				if (getter.GetGetter().DeclaringType.Assembly.ReflectionOnly)
 				{
-					// TODO
+					// TODO on Whidbey this must be implemented
 					return null;
 				}
-#endif // WHIDBEY
 				return getter.GetGetter().GetCustomAttributes(false);
 			}
 			return new object[0];
@@ -9021,115 +8868,6 @@ namespace IKVM.Internal
 #endif
 	}
 
-	sealed class Whidbey
-	{
-		private static readonly object[] noargs = new object[0];
-		private static readonly MethodInfo get_IsGenericTypeDefinition = typeof(Type).GetMethod("get_IsGenericTypeDefinition");
-		private static readonly MethodInfo get_ContainsGenericParameters = typeof(Type).GetMethod("get_ContainsGenericParameters");
-		private static readonly MethodInfo get_IsGenericMethodDefinition = typeof(MethodBase).GetMethod("get_IsGenericMethodDefinition");
-		private static readonly MethodInfo get_IsGenericType = typeof(Type).GetMethod("get_IsGenericType");
-		private static readonly MethodInfo get_ReflectionOnly = typeof(Assembly).GetMethod("get_ReflectionOnly");
-		private static readonly MethodInfo method_GetGenericTypeDefinition = typeof(Type).GetMethod("GetGenericTypeDefinition");
-		private static readonly MethodInfo method_GetGenericArguments = typeof(Type).GetMethod("GetGenericArguments");
-		private static readonly MethodInfo method_MakeGenericType = typeof(Type).GetMethod("MakeGenericType");
-
-		internal static bool IsGenericTypeDefinition(Type type)
-		{
-			try
-			{
-				return get_IsGenericTypeDefinition != null && (bool)get_IsGenericTypeDefinition.Invoke(type, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static bool ContainsGenericParameters(Type type)
-		{
-			try
-			{
-				return get_ContainsGenericParameters != null && (bool)get_ContainsGenericParameters.Invoke(type, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static bool IsGenericMethodDefinition(MethodBase mb)
-		{
-			try
-			{
-				return get_IsGenericMethodDefinition != null && (bool)get_IsGenericMethodDefinition.Invoke(mb, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static bool IsGenericType(Type type)
-		{
-			try
-			{
-				return get_IsGenericType != null && (bool)get_IsGenericType.Invoke(type, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static Type GetGenericTypeDefinition(Type type)
-		{
-			try
-			{
-				return method_GetGenericTypeDefinition == null ? null : (Type)method_GetGenericTypeDefinition.Invoke(type, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static Type[] GetGenericArguments(Type type)
-		{
-			try
-			{
-				return method_GetGenericArguments == null ? Type.EmptyTypes : (Type[])method_GetGenericArguments.Invoke(type, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static Type MakeGenericType(Type type, Type[] typeArguments)
-		{
-			try
-			{
-				return (Type)method_MakeGenericType.Invoke(type, new object[] { typeArguments });
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-
-		internal static bool ReflectionOnly(Assembly asm)
-		{
-			try
-			{
-				return get_ReflectionOnly != null && (bool)get_ReflectionOnly.Invoke(asm, noargs);
-			}
-			catch(TargetInvocationException x)
-			{
-				throw x.InnerException;
-			}
-		}
-	}
-
 	sealed class DotNetTypeWrapper : TypeWrapper
 	{
 		private const string NamePrefix = "cli.";
@@ -9200,18 +8938,18 @@ namespace IKVM.Internal
 				return null;
 			}
 
-			if(Whidbey.ContainsGenericParameters(type))
+			if(type.ContainsGenericParameters)
 			{
 				// open generic types are not visible
 				return null;
 			}
-			if(Whidbey.IsGenericType(type))
+			if(type.IsGenericType)
 			{
 				System.Text.StringBuilder sb = new System.Text.StringBuilder();
-				sb.Append(MangleTypeName(Whidbey.GetGenericTypeDefinition(type).FullName));
+				sb.Append(MangleTypeName(type.GetGenericTypeDefinition().FullName));
 				sb.Append("_$$$_");
 				string sep = "";
-				foreach(Type t1 in Whidbey.GetGenericArguments(type))
+				foreach(Type t1 in type.GetGenericArguments())
 				{
 					Type t = t1;
 					sb.Append(sep);
@@ -9362,7 +9100,7 @@ namespace IKVM.Internal
 			{
 				return false;
 			}
-			if(Whidbey.ContainsGenericParameters(type))
+			if(type.ContainsGenericParameters)
 			{
 				return false;
 			}
@@ -10291,7 +10029,6 @@ namespace IKVM.Internal
 
 			private AttributeUsageAttribute GetAttributeUsage()
 			{
-#if WHIDBEY
 				AttributeTargets validOn = AttributeTargets.All;
 				bool allowMultiple = false;
 				bool inherited = true;
@@ -10320,14 +10057,6 @@ namespace IKVM.Internal
 				attr.AllowMultiple = allowMultiple;
 				attr.Inherited = inherited;
 				return attr;
-#else // WHIDBEY
-				object[] attr = attributeType.GetCustomAttributes(typeof(AttributeUsageAttribute), false);
-				if(attr.Length == 1)
-				{
-					return (AttributeUsageAttribute)attr[0];
-				}
-				return new AttributeUsageAttribute(AttributeTargets.All);
-#endif // WHIDBEY
 			}
 
 #if !STATIC_COMPILER
@@ -10577,7 +10306,7 @@ namespace IKVM.Internal
 
 		internal override ClassLoaderWrapper GetClassLoader()
 		{
-			if(Whidbey.IsGenericType(type))
+			if(type.IsGenericType)
 			{
 				return ClassLoaderWrapper.GetGenericClassLoader(this);
 			}
@@ -10968,11 +10697,7 @@ namespace IKVM.Internal
 						{
 							name = "_" + name;
 						}
-#if WHIDBEY
 						object val = EnumValueFieldWrapper.GetEnumPrimitiveValue(underlyingType, fields[i].GetRawConstantValue());
-#else
-						object val = EnumValueFieldWrapper.GetEnumPrimitiveValue(fields[i].GetValue(null));
-#endif
 						fieldsList.Add(new ConstantFieldWrapper(this, fieldType, name, fieldType.SigName, Modifiers.Public | Modifiers.Static | Modifiers.Final, fields[i], val, MemberFlags.None));
 					}
 				}
@@ -11222,7 +10947,7 @@ namespace IKVM.Internal
 
 		private bool MakeMethodDescriptor(MethodBase mb, out string name, out string sig, out TypeWrapper[] args, out TypeWrapper ret)
 		{
-			if(Whidbey.IsGenericMethodDefinition(mb))
+			if(mb.IsGenericMethodDefinition)
 			{
 				name = null;
 				sig = null;
@@ -11397,7 +11122,7 @@ namespace IKVM.Internal
 						ArrayList list = new ArrayList(nestedTypes.Length);
 						for(int i = 0; i < nestedTypes.Length; i++)
 						{
-							if(!Whidbey.IsGenericTypeDefinition(nestedTypes[i]))
+							if (!nestedTypes[i].IsGenericTypeDefinition)
 							{
 								list.Add(ClassLoaderWrapper.GetWrapperFromType(nestedTypes[i]));
 							}
@@ -11600,31 +11325,29 @@ namespace IKVM.Internal
 
 		internal override object[] GetDeclaredAnnotations()
 		{
-#if WHIDBEY
 			if(type.Assembly.ReflectionOnly)
 			{
-				// TODO
+				// TODO on Whidbey this must be implemented
 				return null;
 			}
-#endif
 			return type.GetCustomAttributes(false);
 		}
 
 		internal override object[] GetFieldAnnotations(FieldWrapper fw)
 		{
-			// TODO
+			// TODO on Whidbey this must be implemented
 			return null;
 		}
 
 		internal override object[] GetMethodAnnotations(MethodWrapper mw)
 		{
-			// TODO
+			// TODO on Whidbey this must be implemented
 			return null;
 		}
 
 		internal override object[][] GetParameterAnnotations(MethodWrapper mw)
 		{
-			// TODO
+			// TODO on Whidbey this must be implemented
 			return null;
 		}
 	}
@@ -11765,7 +11488,6 @@ namespace IKVM.Internal
 
 		internal static Type MakeArrayType(Type type, int dims)
 		{
-#if WHIDBEY
 			// NOTE this is not just an optimization, but it is also required to
 			// make sure that ReflectionOnly types stay ReflectionOnly types
 			// (in particular instantiations of generic types from mscorlib that
@@ -11775,39 +11497,6 @@ namespace IKVM.Internal
 				type = type.MakeArrayType();
 			}
 			return type;
-#else // WHIDBEY
-			string name = type.FullName + "[]";
-			for(int i = 1; i < dims; i++)
-			{
-				name += "[]";
-			}
-#if !COMPACT_FRAMEWORK
-			ModuleBuilder mb = type.Module as ModuleBuilder;
-			if(mb != null)
-			{
-				// FXBUG ModuleBuilder.GetType() is broken on .NET 1.1, it fires a TypeResolveEvent when
-				// you try to construct an array type from an unfinished type. I don't think it should
-				// do that. We have to work around that by setting a global flag (yuck) to prevent us
-				// from responding to the TypeResolveEvent.
-				lock(DynamicClassLoader.arrayConstructionLock)
-				{
-					DynamicClassLoader.arrayConstructionHack = true;
-					try
-					{
-						return mb.GetType(name);
-					}
-					finally
-					{
-						DynamicClassLoader.arrayConstructionHack = false;
-					}
-				}
-			}
-			else
-#endif // !COMPACT_FRAMEWORK
-			{
-				return type.Assembly.GetType(name, true);
-			}
-#endif // WHIDBEY
 		}
 	}
 }
