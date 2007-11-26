@@ -61,7 +61,7 @@ class IkvmcCompiler
 		return arglist;
 	}
 
-	static void Main(string[] args)
+	static int Main(string[] args)
 	{
 		DateTime start = DateTime.Now;
 		int rc = RealMain(args);
@@ -70,9 +70,7 @@ class IkvmcCompiler
 			Console.WriteLine("Total cpu time: {0}", System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime);
 			Console.WriteLine("Total wall clock time: {0}", DateTime.Now - start);
 		}
-		// FXBUG if we run a static initializer that starts a thread, we would never end,
-		// so we force an exit here
-		Environment.Exit(rc);
+		return rc;
 	}
 
 	static string GetVersionAndCopyrightInfo()
@@ -96,11 +94,7 @@ class IkvmcCompiler
 
 	static int RealMain(string[] args)
 	{
-#if WHIDBEY
 		AppDomain.CurrentDomain.ReflectionOnlyAssemblyResolve += new ResolveEventHandler(CurrentDomain_AssemblyResolve);
-#else
-		AppDomain.CurrentDomain.AssemblyResolve += new ResolveEventHandler(CurrentDomain_AssemblyResolve);
-#endif
 		System.Threading.Thread.CurrentThread.Name = "compiler";
 		Tracer.EnableTraceForDebug();
 		CompilerOptions options = new CompilerOptions();
@@ -273,7 +267,10 @@ class IkvmcCompiler
 					string[] files = Directory.GetFiles(path == "" ? "." : path, Path.GetFileName(r));
 					if(files.Length == 0)
 					{
+#pragma warning disable 618
+						// Assembly.LoadWithPartialName is obsolete
 						Assembly asm = Assembly.LoadWithPartialName(r);
+#pragma warning restore
 						if(asm == null)
 						{
 							Console.Error.WriteLine("Error: reference not found: {0}", r);
@@ -784,205 +781,13 @@ class IkvmcCompiler
 	{
 		// make sure all the referenced assemblies are visible (they are loaded with LoadFrom, so
 		// they end up in the LoadFrom context [unless they happen to be available in one of the probe paths])
-#if WHIDBEY
 		foreach(Assembly a in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
-#else
-		foreach(Assembly a in AppDomain.CurrentDomain.GetAssemblies())
-#endif
 		{
 			if(args.Name.StartsWith(a.GetName().Name + ", "))
 			{
 				return a;
 			}
 		}
-#if WHIDBEY
 		return Assembly.ReflectionOnlyLoad(args.Name);
-#else
-		return null;
-#endif
-	}
-}
-
-sealed class LZOutputStream : Stream 
-{
-	private static readonly int[] hashSize = { 499, 997, 2179, 4297 };
-	private int[] codes;
-	private int[] values;
-	private int table_size;
-	private int count;
-	private int bitOffset;
-	private int bitBuffer;
-	private int prev = -1;
-	private int bits;
-	private Stream s;
-
-	public LZOutputStream(Stream s)
-	{
-		this.s = s;
-		bitOffset = 0;
-		count = 0;
-		table_size = 256;
-		bits = 9;
-		codes = new int[hashSize[0]];
-		values = new int[hashSize[0]];
-	}
-
-	public override void WriteByte(byte b)
-	{
-		if (prev != -1) 
-		{
-			int c;
-			int p = (prev << 8) + b;
-			c = p % codes.Length;
-			while (true) 
-			{
-				int e = codes[c];
-				if (e == 0) 
-				{
-					break;
-				}
-				if (e == p) 
-				{
-					prev = values[c];
-					return;
-				}
-				c++;
-				if(c == codes.Length)
-				{
-					c = 0;
-				}
-			}
-			outcode(prev);
-			if (count < table_size) 
-			{
-				codes[c] = p;
-				values[c] = count + 256;
-				count++;
-			} 
-			else 
-			{
-				// table is full. Flush and rebuild
-				if (bits == 12)
-				{
-					table_size = 256;
-					bits = 9;
-				}
-				else 
-				{
-					bits++;
-					table_size = (1 << bits) - 256;
-				}
-				count = 0;
-				int newsize = hashSize[bits - 9];
-				if(codes.Length >= newsize)
-				{
-					Array.Clear(codes, 0, codes.Length);
-				}
-				else
-				{
-					codes = new int[newsize];
-					values = new int[newsize];
-				}
-			}
-		}
-		prev = b;
-	}
-
-	public override void Flush() 
-	{
-		bitBuffer |= prev << bitOffset;
-		bitOffset += bits + 7;
-		while (bitOffset >= 8) 
-		{
-			s.WriteByte((byte)bitBuffer);
-			bitBuffer >>= 8;
-			bitOffset -= 8;
-		}
-		prev = -1;
-		s.Flush();
-	}
-
-	private void outcode(int c) 
-	{
-		bitBuffer |= c << bitOffset;
-		bitOffset += bits;
-		while (bitOffset >= 8) 
-		{
-			s.WriteByte((byte)bitBuffer);
-			bitBuffer >>= 8;
-			bitOffset -= 8;
-		}
-	}
-
-	public override void Write(byte[] buffer, int off, int len)
-	{
-		while(--len >= 0)
-		{
-			WriteByte(buffer[off++]);
-		}
-	}
-
-	public override bool CanRead
-	{
-		get
-		{
-			return false;
-		}
-	}
-
-	public override bool CanSeek
-	{
-		get
-		{
-			return false;
-		}
-	}
-
-	public override bool CanWrite
-	{
-		get
-		{
-			return true;
-		}
-	}
-
-	public override long Length
-	{
-		get
-		{
-			throw new NotSupportedException();
-		}
-	}
-
-	public override long Position
-	{
-		get
-		{
-			throw new NotSupportedException();
-		}
-		set
-		{
-			throw new NotSupportedException();
-		}
-	}
-
-	public override long Seek(long offset, SeekOrigin origin)
-	{
-		throw new NotSupportedException();
-	}
-
-	public override void SetLength(long value)
-	{
-		throw new NotSupportedException();
-	}
-
-	public override int Read(byte[] buffer, int offset, int count)
-	{
-		throw new NotSupportedException();
-	}
-
-	public override void Close()
-	{
-		s.Close();
 	}
 }
