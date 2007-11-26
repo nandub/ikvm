@@ -30,7 +30,7 @@ using System.Configuration;
 
 namespace IKVM.Internal
 {
-	public static class Tracer
+	public class Tracer
 	{
 #if !COMPACT_FRAMEWORK
 		public readonly static TraceSwitch Compiler = new TraceSwitch("compiler", "Static Compiler");

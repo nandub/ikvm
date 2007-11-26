@@ -29,7 +29,6 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Diagnostics;
 using System.Diagnostics.SymbolStore;
-using IKVM.Runtime;
 using IKVM.Attributes;
 using IKVM.Internal;
 
@@ -82,7 +81,7 @@ class ByteCodeHelperMethods
 #if STATIC_COMPILER
 		Type typeofByteCodeHelper = StaticCompiler.GetType("IKVM.Runtime.ByteCodeHelper");
 #else
-		Type typeofByteCodeHelper = typeof(ByteCodeHelper);
+		Type typeofByteCodeHelper = typeof(IKVM.Runtime.ByteCodeHelper);
 #endif
 		GetClassFromTypeHandle = typeofByteCodeHelper.GetMethod("GetClassFromTypeHandle");
 		multianewarray = typeofByteCodeHelper.GetMethod("multianewarray");
@@ -1909,7 +1908,16 @@ class Compiler
 						methodArgs.CopyTo(args, 1);
 						if(instr.NormalizedOpCode == NormalizedByteCode.__invokeinterface)
 						{
-							args[0] = cpi.GetClassType();
+							if(method.DeclaringType.IsGhost)
+							{
+								// if we're calling a ghost interface method, we need to make sure that CastInterfaceArgs knows
+								// (cpi.GetClassType() could be an interface that extends the ghost interface)
+								args[0] = method.DeclaringType;
+							}
+							else
+							{
+								args[0] = cpi.GetClassType();
+							}
 						}
 						else
 						{
@@ -3352,10 +3360,7 @@ class Compiler
 		}
 		if(type == null
 			|| !type.IsValueType
-#if WHIDBEY
-			|| type.StructLayoutAttribute.Pack != 1 || type.StructLayoutAttribute.Size != length
-#endif
-			)
+			|| type.StructLayoutAttribute.Pack != 1 || type.StructLayoutAttribute.Size != length)
 		{
 			// the type that we found doesn't match (must mean we've compiled a Java type with that name),
 			// so we fall back to the string approach

@@ -30,7 +30,7 @@ using IKVM.Internal;
 
 namespace IKVM.Runtime
 {
-	public static class ByteCodeHelper
+	public class ByteCodeHelper
 	{
 		[DebuggerStepThroughAttribute]
 		public static object multianewarray(RuntimeTypeHandle typeHandle, int[] lengths)

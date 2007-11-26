@@ -26,6 +26,7 @@ using System.Reflection;
 
 namespace IKVM.Attributes
 {
+	[AttributeUsage(AttributeTargets.Module | AttributeTargets.Class | AttributeTargets.Interface | AttributeTargets.Struct | AttributeTargets.Delegate)]
 	public sealed class SourceFileAttribute : Attribute
 	{
 		private string file;
@@ -44,6 +45,7 @@ namespace IKVM.Attributes
 		}
 	}
 
+	[AttributeUsage(AttributeTargets.Method | AttributeTargets.Constructor)]
 	public sealed class LineNumberTableAttribute : Attribute
 	{
 		private byte[] table;
@@ -367,7 +369,7 @@ namespace IKVM.Attributes
 		}
 	}
 
-	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Assembly)]
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Interface | AttributeTargets.Delegate | AttributeTargets.Enum | AttributeTargets.Assembly)]
 	public sealed class NoPackagePrefixAttribute : Attribute
 	{
 	}
@@ -584,6 +586,25 @@ namespace IKVM.Attributes
 			get
 			{
 				return outerClassName;
+			}
+		}
+	}
+
+	[AttributeUsage(AttributeTargets.Assembly)]
+	public sealed class CustomAssemblyClassLoaderAttribute : Attribute
+	{
+		private Type type;
+
+		public CustomAssemblyClassLoaderAttribute(Type type)
+		{
+			this.type = type;
+		}
+
+		public Type Type
+		{
+			get
+			{
+				return type;
 			}
 		}
 	}
