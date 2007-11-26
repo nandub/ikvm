@@ -124,12 +124,13 @@ using sndResolverConfigurationImpl = sun.net.dns.ResolverConfigurationImpl;
 #if WHIDBEY
 sealed class DynamicMethodSupport
 {
-	internal const bool Enabled = true;
+	// MONOBUG as of Mono 1.2.5.1, DynamicMethod is too broken to be used
+	internal static readonly bool Enabled = Type.GetType("Mono.Runtime") == null;
 }
 #else
 sealed class DynamicMethodSupport
 {
-	internal static readonly bool Enabled = Environment.Version.Major >= 2;
+	internal static readonly bool Enabled = Environment.Version.Major >= 2 && Type.GetType("Mono.Runtime") == null;
 }
 
 sealed class DynamicMethod
@@ -2662,7 +2663,10 @@ namespace IKVM.NativeCode.java
 
 			public static int getModifiers(object thisClass)
 			{
-				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers;
+				// the 0x7FFF mask comes from JVM_ACC_WRITTEN_FLAGS in hotspot\src\share\vm\utilities\accessFlags.hpp
+				// masking out ACC_SUPER comes from instanceKlass::compute_modifier_flags() in hotspot\src\share\vm\oops\instanceKlass.cpp
+				const int mask = 0x7FFF & (int)~IKVM.Attributes.Modifiers.Super;
+				return (int)TypeWrapper.FromClass(thisClass).ReflectiveModifiers & mask;
 			}
 
 			public static object[] getSigners(object thisClass)
@@ -2728,19 +2732,14 @@ namespace IKVM.NativeCode.java
 					wrapper = wrapper.ElementTypeWrapper;
 				}
 				object pd = pdField.GetValue(wrapper.ClassObject);
-				if (pd == null && wrapper.GetClassLoader() is AssemblyClassLoader)
+				if (pd == null)
 				{
-					object loader = wrapper.GetClassLoader().GetJavaClassLoader();
-					if (loader != null)
+					// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
+					// to work around boot strap issues.
+					AssemblyClassLoader acl = wrapper.GetClassLoader() as AssemblyClassLoader;
+					if (acl != null)
 					{
-						// The protection domain for statically compiled code is created lazily (not at java.lang.Class creation time),
-						// to work around boot strap issues.
-						// TODO this should be done more efficiently
-						MethodInfo method = loader.GetType().GetMethod("getProtectionDomain", BindingFlags.Public | BindingFlags.Instance);
-						if (method != null)
-						{
-							pd = method.Invoke(loader, null);
-						}
+						pd = acl.GetProtectionDomain();
 					}
 				}
 				return pd;
@@ -4129,11 +4128,11 @@ namespace IKVM.NativeCode.java
 				string apartment = ((string)jsAccessController.doPrivileged(new ssaGetPropertyAction("ikvm.apartmentstate", ""))).ToLower();
 				if (apartment == "mta")
 				{
-					t.nativeThread.ApartmentState = ApartmentState.MTA;
+					t.nativeThread.SetApartmentState(ApartmentState.MTA);
 				}
 				else if (apartment == "sta")
 				{
-					t.nativeThread.ApartmentState = ApartmentState.STA;
+					t.nativeThread.SetApartmentState(ApartmentState.STA);
 				}
 				SetThreadStatus(thisThread, RUNNABLE);
 				t.nativeThread.Start();
@@ -4204,8 +4203,7 @@ namespace IKVM.NativeCode.java
 							bool suspended = false;
 							if ((t.nativeThread.ThreadState & ThreadState.Suspended) == 0 && t.nativeThread != SystemThreadingThread.CurrentThread)
 							{
-								t.nativeThread.Suspend();
-								suspended = true;
+								SuspendThread(t.nativeThread);
 							}
 							StackTrace stack;
 							try
@@ -4216,7 +4214,7 @@ namespace IKVM.NativeCode.java
 							{
 								if (suspended)
 								{
-									t.nativeThread.Resume();
+									ResumeThread(t.nativeThread);
 								}
 							}
 							stacks[i] = JVM.Library.getStackTrace(stack);
@@ -4229,6 +4227,22 @@ namespace IKVM.NativeCode.java
 				}
 				return stacks;
 #endif
+			}
+
+			private static void SuspendThread(SystemThreadingThread thread)
+			{
+#pragma warning disable 618
+				// Thread.Suspend() is obsolete, we know that. Warning disabled.
+				thread.Suspend();
+#pragma warning restore
+			}
+
+			private static void ResumeThread(SystemThreadingThread thread)
+			{
+#pragma warning disable 618
+				// Thread.Resume() is obsolete, we know that. Warning disabled.
+				thread.Resume();
+#pragma warning restore
 			}
 
 #if !FIRST_PASS
@@ -4308,7 +4322,7 @@ namespace IKVM.NativeCode.java
 							ThreadState suspend = ThreadState.Suspended | ThreadState.SuspendRequested;
 							while ((t.nativeThread.ThreadState & suspend) != 0)
 							{
-								t.nativeThread.Resume();
+								ResumeThread(t.nativeThread);
 							}
 						}
 						catch (ThreadStateException)
@@ -4330,7 +4344,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						t.nativeThread.Suspend();
+						SuspendThread(t.nativeThread);
 					}
 					catch (ThreadStateException)
 					{
@@ -4345,7 +4359,7 @@ namespace IKVM.NativeCode.java
 				{
 					try
 					{
-						t.nativeThread.Resume();
+						ResumeThread(t.nativeThread);
 					}
 					catch (ThreadStateException)
 					{
@@ -4581,32 +4595,14 @@ namespace IKVM.NativeCode.java
 #if FIRST_PASS
 				return null;
 #else
-				string s;
 				try
 				{
-					s = System.Net.Dns.GetHostByAddress(string.Format("{0}.{1}.{2}.{3}", addr[0], addr[1], addr[2], addr[3])).HostName;
+					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
 				}
 				catch (System.Net.Sockets.SocketException x)
 				{
 					throw new jnUnknownHostException(x.Message);
 				}
-				try
-				{
-					System.Net.Dns.GetHostByName(s);
-				}
-				catch (System.Net.Sockets.SocketException)
-				{
-					// FXBUG .NET framework bug
-					// HACK if GetHostByAddress returns a netbios name, it appends the default DNS suffix, but if the
-					// machine's netbios name isn't the same as the DNS hostname, this might result in an unresolvable
-					// name, if that happens we chop off the DNS suffix.
-					int idx = s.IndexOf('.');
-					if (idx > 0)
-					{
-						return s.Substring(0, idx);
-					}
-				}
-				return s;
 #endif
 			}
 
@@ -6187,9 +6183,13 @@ namespace IKVM.NativeCode.sun.misc
 
 	public sealed class MiscHelper
 	{
-		public static object getAssemblyClassLoader(Assembly asm)
+		public static object getAssemblyClassLoader(Assembly asm, object extcl)
 		{
-			return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
+			if (extcl == null || asm.IsDefined(typeof(IKVM.Attributes.CustomAssemblyClassLoaderAttribute), false))
+			{
+				return ClassLoaderWrapper.GetAssemblyClassLoader(asm).GetJavaClassLoader();
+			}
+			return null;
 		}
 	}
 
@@ -6587,6 +6587,10 @@ namespace IKVM.NativeCode.sun.reflect
 				}
 				else
 				{
+					if (args[i] != null && !argumentTypes[i].IsInstance(args[i]))
+					{
+						throw new jlIllegalArgumentException();
+					}
 					nargs[i] = args[i];
 				}
 			}
@@ -6658,7 +6662,7 @@ namespace IKVM.NativeCode.sun.reflect
 			private static readonly MethodInfo doubleValue;
 			internal static readonly ConstructorInfo invocationTargetExceptionCtor;
 			private delegate object Invoker(object obj, object[] args);
-			private readonly Invoker invoker;
+			private Invoker invoker;
 
 			static FastMethodAccessorImpl()
 			{
@@ -6681,6 +6685,29 @@ namespace IKVM.NativeCode.sun.reflect
 				doubleValue = typeof(jlDouble).GetMethod("doubleValue", Type.EmptyTypes);
 
 				invocationTargetExceptionCtor = typeof(jlrInvocationTargetException).GetConstructor(new Type[] { typeof(Exception) });
+			}
+
+			private sealed class RunClassInit
+			{
+				private FastMethodAccessorImpl outer;
+				private TypeWrapper tw;
+				private Invoker invoker;
+
+				internal RunClassInit(FastMethodAccessorImpl outer, TypeWrapper tw, Invoker invoker)
+				{
+					this.outer = outer;
+					this.tw = tw;
+					this.invoker = invoker;
+				}
+
+				[IKVM.Attributes.HideFromJava]
+				internal object invoke(object obj, object[] args)
+				{
+					// FXBUG a DynamicMethod that calls a static method doesn't trigger the cctor, so we do that explicitly.
+					tw.RunClassInit();
+					outer.invoker = invoker;
+					return invoker(obj, args);
+				}
 			}
 
 			internal FastMethodAccessorImpl(jlrMethod method)
@@ -6800,6 +6827,11 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.Emit(OpCodes.Ldloc, ret);
 				ilgen.Emit(OpCodes.Ret);
 				invoker = (Invoker)dm.CreateDelegate(typeof(Invoker));
+
+				if (mw.IsStatic)
+				{
+					invoker = new Invoker(new RunClassInit(this, mw.DeclaringType, invoker).invoke);
+				}
 			}
 
 			private static void Expand(CountingILGenerator ilgen, TypeWrapper type)
@@ -7822,6 +7854,7 @@ namespace IKVM.NativeCode.sun.reflect
 				if (fw.IsStatic)
 				{
 					fw.EmitGet(ilgen);
+					fw.FieldTypeWrapper.EmitConvSignatureTypeToStackType(ilgen);
 				}
 				else
 				{
