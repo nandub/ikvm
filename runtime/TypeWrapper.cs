@@ -6275,12 +6275,6 @@ namespace IKVM.Internal
 
 			private ConstructorBuilder DefineClassInitializer()
 			{
-				if(typeBuilder.IsInterface)
-				{
-					// LAMESPEC the ECMA spec says (part. I, sect. 8.5.3.2) that all interface members must be public, so we make
-					// the class constructor public
-					return typeBuilder.DefineConstructor(MethodAttributes.Static | MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
-				}
 				// NOTE we don't need to record the modifiers here, because they aren't visible from Java reflection
 				return typeBuilder.DefineTypeInitializer();
 			}
@@ -10697,7 +10691,17 @@ namespace IKVM.Internal
 						{
 							name = "_" + name;
 						}
-						object val = EnumValueFieldWrapper.GetEnumPrimitiveValue(underlyingType, fields[i].GetRawConstantValue());
+						object rawval;
+						try
+						{
+							rawval = fields[i].GetRawConstantValue();
+						}
+						catch(NotSupportedException)
+						{
+							// MONOBUG GetRawConstantValue() is not implemented on Mono 1.2.6
+							rawval = fields[i].GetValue(null);
+						}
+						object val = EnumValueFieldWrapper.GetEnumPrimitiveValue(underlyingType, rawval);
 						fieldsList.Add(new ConstantFieldWrapper(this, fieldType, name, fieldType.SigName, Modifiers.Public | Modifiers.Static | Modifiers.Final, fields[i], val, MemberFlags.None));
 					}
 				}
