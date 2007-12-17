@@ -30,7 +30,6 @@ using ILGenerator = IKVM.Internal.CountingILGenerator;
 #endif
 using System.Diagnostics;
 using IKVM.Attributes;
-using IKVM.Runtime;
 
 namespace IKVM.Internal
 {
@@ -138,8 +137,8 @@ namespace IKVM.Internal
 				return IsPublic ||
 					caller == DeclaringType ||
 					(IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller))) ||
-					(IsInternal && caller.GetClassLoader() == DeclaringType.GetClassLoader()) ||
-					(!IsPrivate && caller.IsInSamePackageAs(DeclaringType));
+					(IsInternal && DeclaringType.GetClassLoader().InternalsVisibleTo(caller.GetClassLoader())) ||
+					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller));
 			}
 			return false;
 		}
@@ -737,41 +736,11 @@ namespace IKVM.Internal
 			// if we've still got the builder object, we need to replace it with the real thing before we can call it
 			if(method is MethodBuilder)
 			{
-				bool found = false;
-				int token = ((MethodBuilder)method).GetToken().Token;
-				ModuleBuilder module = (ModuleBuilder)((MethodBuilder)method).GetModule();
-				foreach(MethodInfo mi in this.DeclaringType.TypeAsTBD.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
-				{
-					if(module.GetMethodToken(mi).Token == token)
-					{
-						found = true;
-						method = mi;
-						break;
-					}
-				}
-				if(!found)
-				{
-					throw new InvalidOperationException("Failed to fixate method: " + this.DeclaringType.Name + "." + this.Name + this.Signature);
-				}
+				method = method.Module.ResolveMethod(((MethodBuilder)method).GetToken().Token);
 			}
 			if(method is ConstructorBuilder)
 			{
-				bool found = false;
-				int token = ((ConstructorBuilder)method).GetToken().Token;
-				ModuleBuilder module = (ModuleBuilder)((ConstructorBuilder)method).GetModule();
-				foreach(ConstructorInfo ci in this.DeclaringType.TypeAsTBD.GetConstructors(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-				{
-					if(module.GetConstructorToken(ci).Token == token)
-					{
-						found = true;
-						method = ci;
-						break;
-					}
-				}
-				if(!found)
-				{
-					throw new InvalidOperationException("Failed to fixate constructor: " + this.DeclaringType.Name + "." + this.Name + this.Signature);
-				}
+				method = method.Module.ResolveMethod(((ConstructorBuilder)method).GetToken().Token);
 			}
 #endif // !COMPACT_FRAMEWORK
 		}
@@ -904,12 +873,7 @@ namespace IKVM.Internal
 			private static Hashtable cache;
 			private static ModuleBuilder module;
 
-			private class KeyGen :
-#if WHIDBEY
-				IEqualityComparer
-#else
-				IHashCodeProvider, IComparer
-#endif
+			private class KeyGen : IEqualityComparer
 			{
 				public int GetHashCode(object o)
 				{
@@ -949,11 +913,7 @@ namespace IKVM.Internal
 			static NonvirtualInvokeHelper()
 			{
 				KeyGen keygen = new KeyGen();
-#if WHIDBEY
 				cache = new Hashtable(keygen);
-#else
-				cache = new Hashtable(keygen, keygen);
-#endif
 				AssemblyName name = new AssemblyName();
 				name.Name = "NonvirtualInvoker";
 				AssemblyBuilder ab = AppDomain.CurrentDomain.DefineDynamicAssembly(name, JVM.IsSaveDebugImage ? AssemblyBuilderAccess.RunAndSave : AssemblyBuilderAccess.Run);
@@ -1255,62 +1215,6 @@ namespace IKVM.Internal
 #endif
 	}
 
-	// This class tests if reflection on a constant field triggers the class constructor to run
-	// (it shouldn't run, but on .NET 1.0 & 1.1 it does)
-	sealed class ReflectionOnConstant
-	{
-		private static bool isBroken;
-		private static System.Collections.Hashtable warnOnce;
-
-		static ReflectionOnConstant()
-		{
-			typeof(Helper).GetField("foo", BindingFlags.NonPublic | BindingFlags.Static).GetValue(null);
-		}
-
-		internal static bool IsBroken
-		{
-			get
-			{
-				return isBroken;
-			}
-		}
-
-		internal static void IssueWarning(FieldInfo field)
-		{
-#if !COMPACT_FRAMEWORK
-			// FXBUG .NET (1.0 & 1.1)
-			// FieldInfo.GetValue() on a literal causes the type initializer to run and
-			// we don't want that.
-			// TODO may need to find a workaround, for now we just spit out a warning
-			if(ReflectionOnConstant.IsBroken && field.DeclaringType.TypeInitializer != null)
-			{
-				if(Tracer.FxBug.TraceWarning)
-				{
-					if(warnOnce == null)
-					{
-						warnOnce = new System.Collections.Hashtable();
-					}
-					if(!warnOnce.ContainsKey(field.DeclaringType.FullName))
-					{
-						warnOnce.Add(field.DeclaringType.FullName, null);
-						Tracer.Warning(Tracer.FxBug, "Running type initializer for {0} due to CLR bug", field.DeclaringType.FullName);
-					}
-				}
-			}
-#endif // !COMPACT_FRAMEWORK
-		}
-
-		private class Helper
-		{
-			internal const int foo = 1;
-
-			static Helper()
-			{
-				isBroken = true;
-			}
-		}
-	}
-
 	abstract class FieldWrapper : MemberWrapper
 	{
 #if OPENJDK && !FIRST_PASS
@@ -1365,19 +1269,7 @@ namespace IKVM.Internal
 				object val = null;
 				if(field.IsLiteral)
 				{
-					ReflectionOnConstant.IssueWarning(field);
-#if WHIDBEY
 					val = field.GetRawConstantValue();
-#else
-					try
-					{
-						val = field.GetValue(null);
-					}
-					catch(TargetInvocationException x)
-					{
-						throw x.InnerException;
-					}
-#endif
 					if(field.FieldType.IsEnum)
 					{
 						val = DotNetTypeWrapper.EnumValueFieldWrapper.GetEnumPrimitiveValue(Enum.GetUnderlyingType(field.FieldType), val);
@@ -1549,68 +1441,12 @@ namespace IKVM.Internal
 			return new SimpleFieldWrapper(declaringType, fieldType, fi, name, sig, modifiers);
 		}
 
-		private FieldInfo TokenBasedLookup(BindingFlags bindings, int token)
-		{
-			ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
-			foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
-			{
-				if(module.GetFieldToken(f).Token == token)
-				{
-					return f;
-				}
-			}
-			if(Type.GetType("Mono.Runtime") != null)
-			{
-				// MONOBUG token based lookup doesn't work on Mono 1.1.17,
-				// so we'll try again but now do a name/type based comparison
-				// (note that this is not water tight, because of erased types)
-				foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
-				{
-					if(f.Name == field.Name && f.FieldType.Equals(field.FieldType))
-					{
-						return f;
-					}
-				}
-			}
-			throw new InvalidOperationException();
-		}
-
 		internal void ResolveField()
 		{
 			FieldBuilder fb = field as FieldBuilder;
 			if(fb != null)
 			{
-#if WHIDBEY
-				field = DeclaringType.TypeAsTBD.Module.ResolveField(fb.GetToken().Token);
-#else
-				// first do a name based lookup as that is much faster than doing a token based lookup
-				BindingFlags bindings = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
-				if(this.IsStatic)
-				{
-					bindings |= BindingFlags.Static;
-				}
-				else
-				{
-					bindings |= BindingFlags.Instance;
-				}
-				try
-				{
-					FieldInfo fi = DeclaringType.TypeAsTBD.GetField(field.Name, bindings);
-					// now check that we've got the right field by comparing the tokens
-					ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
-					if(module.GetFieldToken(fi).Token != fb.GetToken().Token)
-					{
-						fi = TokenBasedLookup(bindings, fb.GetToken().Token);
-					}
-					field = fi;
-				}
-				catch(AmbiguousMatchException)
-				{
-					// .NET 2.0 will throw this exception if there are multiple fields
-					// with the same name (.NET 1.1 will simply return one of them)
-					field = TokenBasedLookup(bindings, fb.GetToken().Token);
-				}
-#endif
+				field = field.Module.ResolveField(fb.GetToken().Token);
 			}
 		}
 
@@ -1829,7 +1665,6 @@ namespace IKVM.Internal
 
 		protected override void EmitSetImpl(ILGenerator ilgen)
 		{
-			FieldInfo fi = GetField();
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
 				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
@@ -1837,7 +1672,19 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
 			}
-			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			FieldInfo fi = GetField();
+			if(fi != null)
+			{
+				// common case (we're in a DynamicTypeWrapper and the caller is too)
+				ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			}
+			else
+			{
+				// this means that we are an instance on a CompiledTypeWrapper and we're being called
+				// from DynamicMethod based reflection, so we can safely emit a call to the private
+				// setter, because the DynamicMethod is allowed to access our private members.
+				ilgen.Emit(OpCodes.Call, prop.GetSetMethod(true));
+			}
 		}
 #endif
 	}
@@ -1858,21 +1705,7 @@ namespace IKVM.Internal
 		{
 			// Reading a field should trigger the cctor, but since we're inlining the value
 			// we have to trigger it explicitly
-			if(DeclaringType.IsInterface)
-			{
-				if(DeclaringType.HasStaticInitializer)
-				{
-					// NOTE since Everett doesn't support adding static methods to interfaces,
-					// EmitRunClassConstructor doesn't work for interface, so we do it manually.
-					// TODO once we're on Whidbey, this won't be necessary anymore.
-					ilgen.Emit(OpCodes.Ldtoken, DeclaringType.TypeAsBaseType);
-					ilgen.Emit(OpCodes.Call, typeof(System.Runtime.CompilerServices.RuntimeHelpers).GetMethod("RunClassConstructor"));
-				}
-			}
-			else
-			{
-				DeclaringType.EmitRunClassConstructor(ilgen);
-			}
+			DeclaringType.EmitRunClassConstructor(ilgen);
 
 			// NOTE even though you're not supposed to access a constant static final (the compiler is supposed
 			// to inline them), we have to support it (because it does happen, e.g. if the field becomes final
@@ -1945,7 +1778,6 @@ namespace IKVM.Internal
 		{
 			if(constant == null)
 			{
-#if WHIDBEY
 				FieldInfo field = GetField();
 #if !STATIC_COMPILER
 				if(field.FieldType.IsEnum && !field.DeclaringType.IsEnum)
@@ -1961,9 +1793,6 @@ namespace IKVM.Internal
 				{
 					constant = field.GetRawConstantValue();
 				}
-#else // WHIDBEY
-				constant = GetField().GetValue(null);
-#endif // WHIDBEY
 			}
 			return constant;
 		}
