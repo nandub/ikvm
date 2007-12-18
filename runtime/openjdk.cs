@@ -292,22 +292,82 @@ namespace IKVM.NativeCode.java
 		{
 			public static string encoding()
 			{
-				// TODO
-				return "IBM437";
+				int cp = 437;
+				try
+				{
+					cp = global::System.Console.InputEncoding.CodePage;
+				}
+				catch
+				{
+				}
+				if (cp >= 874 && cp <= 950)
+				{
+					return "ms" + cp;
+				}
+				return "cp" + cp;
 			}
+
+			private const int STD_INPUT_HANDLE = -10;
+			private const int ENABLE_ECHO_INPUT = 0x0004;
+
+			[System.Runtime.InteropServices.DllImport("kernel32")]
+			private static extern IntPtr GetStdHandle(int nStdHandle);
+
+			[System.Runtime.InteropServices.DllImport("kernel32")]
+			private static extern int GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
+
+			[System.Runtime.InteropServices.DllImport("kernel32")]
+			private static extern int SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
 
 			public static bool echo(bool on)
 			{
-				// TODO
-				return false;
+#if !FIRST_PASS
+				// HACK the only way to get this to work is by p/invoking the Win32 APIs
+				if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+				{
+					IntPtr hStdIn = GetStdHandle(STD_INPUT_HANDLE);
+					if (hStdIn.ToInt64() == 0 || hStdIn.ToInt64() == -1)
+					{
+						throw new global::java.io.IOException("The handle is invalid");
+					}
+					int fdwMode;
+					if (GetConsoleMode(hStdIn, out fdwMode) == 0)
+					{
+						throw new global::java.io.IOException("GetConsoleMode failed");
+					}
+					bool old = (fdwMode & ENABLE_ECHO_INPUT) != 0;
+					if (on)
+					{
+						fdwMode |= ENABLE_ECHO_INPUT;
+					}
+					else
+					{
+						fdwMode &= ~ENABLE_ECHO_INPUT;
+					}
+					if (SetConsoleMode(hStdIn, fdwMode) == 0)
+					{
+						throw new global::java.io.IOException("SetConsoleMode failed");
+					}
+					return old;
+				}
+#endif
+				return true;
 			}
 
 			public static bool istty()
 			{
-				// the JDK returns false here if stdin or stdout is redirected (not stderr)
-				// or if there is no console associated with the current process
-				// TODO figure out if there is a managed way to detect redirection or console presence
-				return true;
+				// The JDK returns false here if stdin or stdout (not stderr) is redirected to a file
+				// or if there is no console associated with the current process.
+				// The best we can do is to look at the KeyAvailable property, which
+				// will throw an InvalidOperationException if stdin is redirected or not available
+				try
+				{
+					return global::System.Console.KeyAvailable || true;
+				}
+				catch (InvalidOperationException)
+				{
+					return false;
+				}
 			}
 		}
 
@@ -915,8 +975,8 @@ namespace IKVM.NativeCode.java
 
 				internal override System.IO.Stream Open()
 				{
-					return new System.IO.FileStream("c:\\ikvm\\openjdk\\vfs.zip", System.IO.FileMode.Open);
-					//return Assembly.GetExecutingAssembly().GetManifestResourceStream("vfs.zip");
+					//return new System.IO.FileStream("c:\\ikvm\\openjdk\\vfs.zip", System.IO.FileMode.Open);
+					return Assembly.GetExecutingAssembly().GetManifestResourceStream("vfs.zip");
 				}
 			}
 
@@ -1566,22 +1626,6 @@ namespace IKVM.NativeCode.java
 				}
 				catch (System.IO.IOException)
 				{
-					if (Environment.Version.Major == 1 && fileInfo is System.IO.DirectoryInfo)
-					{
-						// FXBUG on .NET 1.1 DirectoryInfo.Delete() can throw an exception even on success,
-						// because it checks GetLastWin32Error() even if RemoveDirectory() succeeded.
-						try
-						{
-							fileInfo.Refresh();
-						}
-						catch (System.ArgumentException)
-						{
-						}
-						catch (System.IO.IOException)
-						{
-						}
-						return !fileInfo.Exists;
-					}
 				}
 				catch (System.NotSupportedException)
 				{
@@ -3185,6 +3229,7 @@ namespace IKVM.NativeCode.java
 
 				public static void load(object thisNativeLibrary, string name)
 				{
+#if !FIRST_PASS
 					if (java.io.VirtualFileSystem.IsVirtualFS(name))
 					{
 						// we fake success for native libraries loaded from VFS
@@ -3198,6 +3243,7 @@ namespace IKVM.NativeCode.java
 							SetHandle(thisNativeLibrary, -1);
 						}
 					}
+#endif
 				}
 
 				private static void SetHandle(object thisNativeLibrary, long handle)
@@ -3396,6 +3442,7 @@ namespace IKVM.NativeCode.java
 						|| type == null
 						|| type.Assembly == typeof(object).Assembly
 						|| type.Assembly == typeof(SecurityManager).Assembly
+						|| type.Assembly == typeof(IKVM.Runtime.JNI).Assembly
 						|| type == typeof(jlrConstructor)
 						|| type == typeof(jlrMethod))
 					{
@@ -5488,6 +5535,7 @@ namespace IKVM.NativeCode.java
 				if (type == null
 					|| type.Assembly == typeof(object).Assembly
 					|| type.Assembly == typeof(AccessController).Assembly
+					|| type.Assembly == typeof(IKVM.Runtime.JNI).Assembly
 					|| type.Assembly == typeof(jlThread).Assembly)
 				{
 					return null;
@@ -6295,7 +6343,7 @@ namespace IKVM.NativeCode.sun.misc
 	}
 
 	[System.Security.Permissions.SecurityPermission(System.Security.Permissions.SecurityAction.LinkDemand, UnmanagedCode = true)]
-	public sealed unsafe class Unsafe
+	public sealed class Unsafe
 	{
 		private Unsafe() { }
 
@@ -6330,71 +6378,68 @@ namespace IKVM.NativeCode.sun.misc
 
 		public static void setMemory(long address, long bytes, byte value)
 		{
-			byte* p = (byte*)address;
 			while (bytes-- > 0)
 			{
-				*p++ = value;
+				putByte(address++, value);
 			}
 		}
 
 		public static void copyMemory(long srcAddress, long destAddress, long bytes)
 		{
-			byte* psrc = (byte*)srcAddress;
-			byte* pdst = (byte*)destAddress;
 			while (bytes-- > 0)
 			{
-				*pdst++ = *psrc++;
+				putByte(destAddress++, getByte(srcAddress++));
 			}
 		}
 
 		public static byte getByte(long address)
 		{
-			return *(byte*)address;
+			return System.Runtime.InteropServices.Marshal.ReadByte((IntPtr)address);
 		}
 
 		public static void putByte(long address, byte x)
 		{
-			*(byte*)address = x;
+			System.Runtime.InteropServices.Marshal.WriteByte((IntPtr)address, x);
 		}
 
 		public static short getShort(long address)
 		{
-			return *(short*)address;
+			return System.Runtime.InteropServices.Marshal.ReadInt16((IntPtr)address);
 		}
 
 		public static void putShort(long address, short x)
 		{
-			*(short*)address = x;
+			System.Runtime.InteropServices.Marshal.WriteInt16((IntPtr)address, x);
 		}
 
 		public static char getChar(long address)
 		{
-			return *(char*)address;
+			return (char)System.Runtime.InteropServices.Marshal.ReadInt16((IntPtr)address);
 		}
 
 		public static void putChar(long address, char x)
 		{
-			*(char*)address = x;
+			System.Runtime.InteropServices.Marshal.WriteInt16((IntPtr)address, x);
 		}
 
 		public static int getInt(long address)
 		{
-			return *(int*)address;
+			return System.Runtime.InteropServices.Marshal.ReadInt32((IntPtr)address);
 		}
 
 		public static void putInt(long address, int x)
 		{
-			*(int*)address = x;
+			System.Runtime.InteropServices.Marshal.WriteInt32((IntPtr)address, x);
 		}
 
 		public static long getLong(long address)
 		{
-			return *(long*)address;
+			return System.Runtime.InteropServices.Marshal.ReadInt64((IntPtr)address);
 		}
 
 		public static void putLong(long address, long x)
 		{
-			*(long*)address = x;
+			System.Runtime.InteropServices.Marshal.WriteInt64((IntPtr)address, x);
 		}
 	}
 
@@ -6592,6 +6637,7 @@ namespace IKVM.NativeCode.sun.reflect
 					|| type == null
 					|| type.Assembly == typeof(object).Assembly
 					|| type.Assembly == typeof(Reflection).Assembly
+					|| type.Assembly == typeof(IKVM.Runtime.JNI).Assembly
 					|| type == typeof(jlrMethod)
 					|| type == typeof(jlrConstructor))
 				{
@@ -6614,7 +6660,7 @@ namespace IKVM.NativeCode.sun.reflect
 		{
 			TypeWrapper current = TypeWrapper.FromClass(currentClass);
 			TypeWrapper member = TypeWrapper.FromClass(memberClass);
-			return member.IsInternal && member.GetClassLoader() == current.GetClassLoader();
+			return member.IsInternal && member.GetClassLoader().InternalsVisibleTo(current.GetClassLoader());
 		}
 	}
 
@@ -7103,7 +7149,7 @@ namespace IKVM.NativeCode.sun.reflect
 				MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(constructor);
 				mw.DeclaringType.Finish();
 				mw.ResolveMethod();
-				DynamicMethod dm = new DynamicMethod("__<Invoker>", typeof(object), new Type[] { typeof(object), typeof(object[]) }, mw.DeclaringType.TypeAsTBD);
+				DynamicMethod dm = new DynamicMethod("__<Invoker>", typeof(object), new Type[] { typeof(object[]) }, mw.DeclaringType.TypeAsTBD);
 				CountingILGenerator ilgen = dm.GetILGenerator();
 				LocalBuilder ret = ilgen.DeclareLocal(typeof(object));
 
@@ -7112,10 +7158,10 @@ namespace IKVM.NativeCode.sun.reflect
 				if (mw.GetParameters().Length == 0)
 				{
 					// zero length array may be null
-					ilgen.Emit(OpCodes.Ldarg_1);
+					ilgen.Emit(OpCodes.Ldarg_0);
 					ilgen.Emit(OpCodes.Brfalse_S, argsLengthOK);
 				}
-				ilgen.Emit(OpCodes.Ldarg_1);
+				ilgen.Emit(OpCodes.Ldarg_0);
 				ilgen.Emit(OpCodes.Ldlen);
 				ilgen.Emit(OpCodes.Ldc_I4, mw.GetParameters().Length);
 				ilgen.Emit(OpCodes.Beq_S, argsLengthOK);
@@ -7131,7 +7177,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.BeginExceptionBlock();
 				for (int i = 0; i < args.Length; i++)
 				{
-					ilgen.Emit(OpCodes.Ldarg_1);
+					ilgen.Emit(OpCodes.Ldarg_0);
 					ilgen.Emit(OpCodes.Ldc_I4, i);
 					ilgen.Emit(OpCodes.Ldelem_Ref);
 					TypeWrapper tw = mw.GetParameters()[i];
