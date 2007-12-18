@@ -27,13 +27,10 @@ using System.Diagnostics;
 using System.Collections;
 using System.Text.RegularExpressions;
 using System.Configuration;
-#if WHIDBEY
-using ConfigurationSettings = System.Configuration.ConfigurationManager;
-#endif
 
 namespace IKVM.Internal
 {
-	public class Tracer
+	public static class Tracer
 	{
 #if !COMPACT_FRAMEWORK
 		public readonly static TraceSwitch Compiler = new TraceSwitch("compiler", "Static Compiler");
@@ -83,7 +80,7 @@ namespace IKVM.Internal
 				Trace.AutoFlush = true;
 				Trace.Listeners.Add(new MyTextWriterTraceListener(Console.Error));
 				/* If the app config file gives some method trace - add it */
-				string trace = ConfigurationSettings.AppSettings["Traced Methods"];
+				string trace = ConfigurationManager.AppSettings["Traced Methods"];
 				if(trace != null)
 				{
 					methodtraces.Add(trace);
