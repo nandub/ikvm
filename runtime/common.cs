@@ -48,7 +48,7 @@ using jlrField = java.lang.reflect.Field;
 
 namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 {
-	public class Handler
+	static class Handler
 	{
 		public static Stream ReadResourceFromAssemblyImpl(Assembly asm, string resource)
 		{
@@ -108,7 +108,7 @@ namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 
 namespace IKVM.NativeCode.gnu.classpath
 {
-	public class VMSystemProperties
+	static class VMSystemProperties
 	{
 		public static string getVersion()
 		{
@@ -128,7 +128,7 @@ namespace IKVM.NativeCode.ikvm.@internal
 {
 	namespace stubgen
 	{
-		public class StubGenerator
+		static class StubGenerator
 		{
 			public static string getAssemblyName(object c)
 			{
@@ -185,7 +185,7 @@ namespace IKVM.NativeCode.ikvm.@internal
 
 namespace IKVM.NativeCode.ikvm.runtime
 {
-	public class AssemblyClassLoader
+	static class AssemblyClassLoader
 	{
 		public static object LoadClass(object classLoader, Assembly assembly, string name)
 		{
@@ -272,11 +272,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 
 		public static bool IsReflectionOnly(Assembly asm)
 		{
-#if WHIDBEY
 			return asm.ReflectionOnly;
-#else
-			return false;
-#endif
 		}
 
 		public static int GetGenericClassLoaderId(object classLoader)
@@ -295,7 +291,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 		}
 	}
 
-	public class AppDomainAssemblyClassLoader
+	static class AppDomainAssemblyClassLoader
 	{
 		public static object loadClassFromAssembly(Assembly asm, string className)
 		{
@@ -327,7 +323,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 		}
 	}
 
-	public class Util
+	static class Util
 	{
 		private static Type enumEnumType = JVM.CoreAssembly.GetType("ikvm.internal.EnumEnum");
 		private static FieldInfo enumEnumTypeField = enumEnumType.GetField("typeWrapper", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -361,7 +357,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 			{
 				return DotNetTypeWrapper.GetWrapperFromDotNetType(t).ClassObject;
 			}
-			if(Whidbey.ContainsGenericParameters(t))
+			if(t.ContainsGenericParameters)
 			{
 				return null;
 			}
@@ -375,7 +371,7 @@ namespace IKVM.NativeCode.ikvm.runtime
 
 		public static object getFriendlyClassFromType(Type type)
 		{
-			if(Whidbey.ContainsGenericParameters(type))
+			if(type.ContainsGenericParameters)
 			{
 				return null;
 			}
