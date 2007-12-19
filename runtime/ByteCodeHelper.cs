@@ -30,7 +30,7 @@ using IKVM.Internal;
 
 namespace IKVM.Runtime
 {
-	public class ByteCodeHelper
+	public static class ByteCodeHelper
 	{
 		[DebuggerStepThroughAttribute]
 		public static object multianewarray(RuntimeTypeHandle typeHandle, int[] lengths)
@@ -593,8 +593,10 @@ namespace IKVM.Runtime
 
 		public static bool SkipFinalizer()
 		{
-#if COMPACT_FRAMEWORK
+#if COMPACT_FRAMEWORK || FIRST_PASS
 			return false;
+#elif OPENJDK
+			return Environment.HasShutdownStarted && !java.lang.Shutdown.runFinalizersOnExit;
 #else
 			return Environment.HasShutdownStarted && !IKVM.Internal.JVM.Library.runFinalizersOnExit();
 #endif

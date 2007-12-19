@@ -1466,6 +1466,26 @@ namespace IKVM.Internal
 			return null;
 		}
 
+		internal static AssemblyName[] GetInternalsVisibleToAttributes(Assembly assembly)
+		{
+			List<AssemblyName> list = new List<AssemblyName>();
+			foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(assembly))
+			{
+				if(MatchTypes(cad.Constructor.DeclaringType, typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute)))
+				{
+					try
+					{
+						list.Add(new AssemblyName((string)cad.ConstructorArguments[0].Value));
+					}
+					catch
+					{
+						// HACK since there is no list of exception that the AssemblyName constructor can throw, we simply catch all
+					}
+				}
+			}
+			return list.ToArray();
+		}
+
 		internal static bool IsDefined(Module mod, Type attribute)
 		{
 #if !COMPACT_FRAMEWORK
@@ -1783,7 +1803,14 @@ namespace IKVM.Internal
 						// DynamicTypeWrapper should haved already had SetClassObject explicitly
 						Debug.Assert(!(this is DynamicTypeWrapper));
 #endif // !COMPACT_FRAMEWORK
+#if FIRST_PASS
+#elif OPENJDK
+						java.lang.Class clazz = java.lang.Class.newClass();
+						clazz.typeWrapper = this;
+						classObject = clazz;
+#else
 						classObject = JVM.Library.newClass(this, null, GetClassLoader().GetJavaClassLoader());
+#endif
 					}
 				}
 				return classObject;
@@ -1792,7 +1819,13 @@ namespace IKVM.Internal
 
 		internal static TypeWrapper FromClass(object classObject)
 		{
+#if FIRST_PASS
+			return null;
+#elif OPENJDK
+			return ((java.lang.Class)classObject).typeWrapper;
+#else
 			return (TypeWrapper)JVM.Library.getWrapperFromClass(classObject);
+#endif
 		}
 #endif // !STATIC_COMPILER
 
@@ -2299,13 +2332,13 @@ namespace IKVM.Internal
 		internal bool IsAccessibleFrom(TypeWrapper wrapper)
 		{
 			return IsPublic
-				|| (IsInternal && GetClassLoader() == wrapper.GetClassLoader())
-				|| IsInSamePackageAs(wrapper);
+				|| (IsInternal && GetClassLoader().InternalsVisibleTo(wrapper.GetClassLoader()))
+				|| IsPackageAccessibleFrom(wrapper);
 		}
 
-		internal bool IsInSamePackageAs(TypeWrapper wrapper)
+		internal bool IsPackageAccessibleFrom(TypeWrapper wrapper)
 		{
-			if(GetClassLoader() == wrapper.GetClassLoader())
+			if(GetClassLoader().InternalsVisibleTo(wrapper.GetClassLoader()))
 			{
 				int index1 = name.LastIndexOf('.');
 				int index2 = wrapper.name.LastIndexOf('.');
@@ -3032,7 +3065,7 @@ namespace IKVM.Internal
 				object[] attr = mb.GetCustomAttributes(typeof(AnnotationDefaultAttribute), false);
 				if(attr.Length == 1)
 				{
-					return JVM.Library.newAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, ((AnnotationDefaultAttribute)attr[0]).Value);
+					return JVM.NewAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, ((AnnotationDefaultAttribute)attr[0]).Value);
 				}
 			}
 			return null;
@@ -4753,7 +4786,7 @@ namespace IKVM.Internal
 									else
 									{
 										MethodWrapper fmw = wrapper.GetMethodWrapper(mw.Name, mw.Signature, true);
-										while(fmw != mw && (fmw.IsStatic || fmw.IsPrivate || !fmw.DeclaringType.IsInSamePackageAs(mw.DeclaringType)))
+										while(fmw != mw && (fmw.IsStatic || fmw.IsPrivate || !fmw.DeclaringType.IsPackageAccessibleFrom(mw.DeclaringType)))
 										{
 											needRename = true;
 											fmw = fmw.DeclaringType.BaseTypeWrapper.GetMethodWrapper(mw.Name, mw.Signature, true);
@@ -5994,6 +6027,8 @@ namespace IKVM.Internal
 			{
 #if STATIC_COMPILER
 				private static readonly Type localRefStructType = StaticCompiler.GetType("IKVM.Runtime.JNI.Frame");
+#elif FIRST_PASS
+				private static readonly Type localRefStructType = null;
 #else
 				private static readonly Type localRefStructType = JVM.LoadType(typeof(IKVM.Runtime.JNI.Frame));
 #endif
@@ -6299,7 +6334,7 @@ namespace IKVM.Internal
 					// (note that we intentionally not check IsStatic here!)
 					if(baseMethod.IsFinal
 						&& !baseMethod.IsPrivate
-						&& (baseMethod.IsPublic || baseMethod.IsProtected || baseMethod.DeclaringType.IsInSamePackageAs(wrapper)))
+						&& (baseMethod.IsPublic || baseMethod.IsProtected || baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper)))
 					{
 						throw new VerifyError("final method " + baseMethod.Name + baseMethod.Signature + " in " + baseMethod.DeclaringType.Name + " is overriden in " + wrapper.Name);
 					}
@@ -6324,8 +6359,8 @@ namespace IKVM.Internal
 					else if(!baseMethod.IsPrivate)
 					{
 						// RULE 4: package methods can only be overridden in the same package
-						if(baseMethod.DeclaringType.IsInSamePackageAs(wrapper)
-							|| (baseMethod.IsInternal && baseMethod.DeclaringType.GetClassLoader() == wrapper.GetClassLoader()))
+						if(baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper)
+							|| (baseMethod.IsInternal && baseMethod.DeclaringType.GetClassLoader().InternalsVisibleTo(wrapper.GetClassLoader())))
 						{
 							return baseMethod;
 						}
@@ -6638,7 +6673,7 @@ namespace IKVM.Internal
 								MethodBase baseMethod = baseMce.GetMethod();
 								if((baseMethod.IsPublic && !m.IsPublic) ||
 									((baseMethod.IsFamily || baseMethod.IsFamilyOrAssembly) && !m.IsPublic && !m.IsProtected) ||
-									(!m.IsPublic && !m.IsProtected && !baseMce.DeclaringType.IsInSamePackageAs(wrapper)))
+									(!m.IsPublic && !m.IsProtected && !baseMce.DeclaringType.IsPackageAccessibleFrom(wrapper)))
 								{
 									attribs &= ~MethodAttributes.MemberAccessMask;
 									attribs |= baseMethod.IsPublic ? MethodAttributes.Public : MethodAttributes.FamORAssem;
@@ -6736,7 +6771,7 @@ namespace IKVM.Internal
 								Debug.Assert(baseMce.GetMethod().IsVirtual && !baseMce.GetMethod().IsFinal);
 								typeBuilder.DefineMethodOverride(mb, (MethodInfo)baseMce.GetMethod());
 							}
-							if(!m.IsStatic && !m.IsAbstract && !m.IsPrivate && baseMce != null && !baseMce.DeclaringType.IsInSamePackageAs(wrapper))
+							if(!m.IsStatic && !m.IsAbstract && !m.IsPrivate && baseMce != null && !baseMce.DeclaringType.IsPackageAccessibleFrom(wrapper))
 							{
 								// we may have to explicitly override another package accessible abstract method
 								TypeWrapper btw = baseMce.DeclaringType.BaseTypeWrapper;
@@ -6747,7 +6782,7 @@ namespace IKVM.Internal
 									{
 										break;
 									}
-									if(bmw.DeclaringType.IsInSamePackageAs(wrapper) && bmw.IsAbstract && !(bmw.IsPublic || bmw.IsProtected))
+									if(bmw.DeclaringType.IsPackageAccessibleFrom(wrapper) && bmw.IsAbstract && !(bmw.IsPublic || bmw.IsProtected))
 									{
 										if(bmw != baseMce)
 										{
@@ -7694,7 +7729,7 @@ namespace IKVM.Internal
 				object[] objs = new object[annotations.Length];
 				for(int i = 0; i < annotations.Length; i++)
 				{
-					objs[i] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[i]);
+					objs[i] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[i]);
 				}
 				return objs;
 			}
@@ -7714,7 +7749,7 @@ namespace IKVM.Internal
 						object[] objs = new object[annotations.Length];
 						for(int j = 0; j < annotations.Length; j++)
 						{
-							objs[j] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
+							objs[j] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
 						}
 						return objs;
 					}
@@ -7741,7 +7776,7 @@ namespace IKVM.Internal
 							objs[j] = new object[annotations[j].Length];
 							for(int k = 0; k < annotations[j].Length; k++)
 							{
-								objs[j][k] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j][k]);
+								objs[j][k] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j][k]);
 							}
 						}
 						return objs;
@@ -7766,7 +7801,7 @@ namespace IKVM.Internal
 						object[] objs = new object[annotations.Length];
 						for(int j = 0; j < annotations.Length; j++)
 						{
-							objs[j] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
+							objs[j] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
 						}
 						return objs;
 					}
@@ -7787,7 +7822,7 @@ namespace IKVM.Internal
 					object defVal = impl.GetMethodDefaultValue(i);
 					if(defVal != null)
 					{
-						return JVM.Library.newAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, defVal);
+						return JVM.NewAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, defVal);
 					}
 					return null;
 				}
@@ -9090,10 +9125,16 @@ namespace IKVM.Internal
 			// SECURITY we never expose types from IKVM.Runtime, because doing so would lead to a security hole,
 			// since the reflection implementation lives inside this assembly, all internal members would
 			// be accessible through Java reflection.
+#if !FIRST_PASS && !STATIC_COMPILER
 			if(type.Assembly == typeof(DotNetTypeWrapper).Assembly)
 			{
 				return false;
 			}
+			if(type.Assembly == typeof(IKVM.Runtime.JNI).Assembly)
+			{
+				return false;
+			}
+#endif
 			if(type.ContainsGenericParameters)
 			{
 				return false;
@@ -9781,10 +9822,10 @@ namespace IKVM.Internal
 				internal override object[] GetDeclaredAnnotations()
 				{
 					return new object[] {
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", 
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", 
 											new object[] { AnnotationDefaultAttribute.TAG_ARRAY, new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/ElementType;", "METHOD" } }
 										}),
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
 									};
 				}
 #endif
@@ -10081,8 +10122,8 @@ namespace IKVM.Internal
 					targets.Add(new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/ElementType;", "PARAMETER" });
 				}
 				return new object[] {
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", (object[])targets.ToArray() }),
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", (object[])targets.ToArray() }),
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
 									};
 			}
 #endif

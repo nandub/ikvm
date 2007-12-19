@@ -137,8 +137,8 @@ namespace IKVM.Internal
 				return IsPublic ||
 					caller == DeclaringType ||
 					(IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller))) ||
-					(IsInternal && caller.GetClassLoader() == DeclaringType.GetClassLoader()) ||
-					(!IsPrivate && caller.IsInSamePackageAs(DeclaringType));
+					(IsInternal && DeclaringType.GetClassLoader().InternalsVisibleTo(caller.GetClassLoader())) ||
+					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller));
 			}
 			return false;
 		}
@@ -736,41 +736,11 @@ namespace IKVM.Internal
 			// if we've still got the builder object, we need to replace it with the real thing before we can call it
 			if(method is MethodBuilder)
 			{
-				bool found = false;
-				int token = ((MethodBuilder)method).GetToken().Token;
-				ModuleBuilder module = (ModuleBuilder)((MethodBuilder)method).GetModule();
-				foreach(MethodInfo mi in this.DeclaringType.TypeAsTBD.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
-				{
-					if(module.GetMethodToken(mi).Token == token)
-					{
-						found = true;
-						method = mi;
-						break;
-					}
-				}
-				if(!found)
-				{
-					throw new InvalidOperationException("Failed to fixate method: " + this.DeclaringType.Name + "." + this.Name + this.Signature);
-				}
+				method = method.Module.ResolveMethod(((MethodBuilder)method).GetToken().Token);
 			}
 			if(method is ConstructorBuilder)
 			{
-				bool found = false;
-				int token = ((ConstructorBuilder)method).GetToken().Token;
-				ModuleBuilder module = (ModuleBuilder)((ConstructorBuilder)method).GetModule();
-				foreach(ConstructorInfo ci in this.DeclaringType.TypeAsTBD.GetConstructors(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-				{
-					if(module.GetConstructorToken(ci).Token == token)
-					{
-						found = true;
-						method = ci;
-						break;
-					}
-				}
-				if(!found)
-				{
-					throw new InvalidOperationException("Failed to fixate constructor: " + this.DeclaringType.Name + "." + this.Name + this.Signature);
-				}
+				method = method.Module.ResolveMethod(((ConstructorBuilder)method).GetToken().Token);
 			}
 #endif // !COMPACT_FRAMEWORK
 		}
@@ -824,7 +794,7 @@ namespace IKVM.Internal
 						}
 						catch(TargetInvocationException x)
 						{
-							throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
+							throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
 						}
 					}
 					else if(!method.DeclaringType.IsInstanceOfType(obj))
@@ -868,7 +838,7 @@ namespace IKVM.Internal
 					}
 					catch(TargetInvocationException x)
 					{
-						throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
+						throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
 					}
 #endif
 				}
@@ -890,7 +860,7 @@ namespace IKVM.Internal
 			}
 			catch(TargetInvocationException x)
 			{
-				throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
+				throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
 			}
 #else // !FIRST_PASS
 			return null;
@@ -1315,7 +1285,7 @@ namespace IKVM.Internal
 				}
 				if(val != null && !(val is string))
 				{
-					return JVM.Library.box(val);
+					return JVM.Box(val);
 				}
 				return val;
 			}
@@ -1471,38 +1441,12 @@ namespace IKVM.Internal
 			return new SimpleFieldWrapper(declaringType, fieldType, fi, name, sig, modifiers);
 		}
 
-		private FieldInfo TokenBasedLookup(BindingFlags bindings, int token)
-		{
-			ModuleBuilder module = DeclaringType.GetClassLoader().GetTypeWrapperFactory().ModuleBuilder;
-			foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
-			{
-				if(module.GetFieldToken(f).Token == token)
-				{
-					return f;
-				}
-			}
-			if(Type.GetType("Mono.Runtime") != null)
-			{
-				// MONOBUG token based lookup doesn't work on Mono 1.1.17,
-				// so we'll try again but now do a name/type based comparison
-				// (note that this is not water tight, because of erased types)
-				foreach(FieldInfo f in DeclaringType.TypeAsTBD.GetFields(bindings))
-				{
-					if(f.Name == field.Name && f.FieldType.Equals(field.FieldType))
-					{
-						return f;
-					}
-				}
-			}
-			throw new InvalidOperationException();
-		}
-
 		internal void ResolveField()
 		{
 			FieldBuilder fb = field as FieldBuilder;
 			if(fb != null)
 			{
-				field = DeclaringType.TypeAsTBD.Module.ResolveField(fb.GetToken().Token);
+				field = field.Module.ResolveField(fb.GetToken().Token);
 			}
 		}
 
