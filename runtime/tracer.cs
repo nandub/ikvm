@@ -30,7 +30,7 @@ using System.Configuration;
 
 namespace IKVM.Internal
 {
-	public class Tracer
+	public static class Tracer
 	{
 #if !COMPACT_FRAMEWORK
 		public readonly static TraceSwitch Compiler = new TraceSwitch("compiler", "Static Compiler");
@@ -67,6 +67,17 @@ namespace IKVM.Internal
 		}
 
 		static Tracer()
+		{
+			try
+			{
+				Init();
+			}
+			catch(System.Security.SecurityException)
+			{
+			}
+		}
+
+		private static void Init()
 		{
 			allTraceSwitches[Compiler.DisplayName] = Compiler;
 			allTraceSwitches[FxBug.DisplayName] = FxBug;
