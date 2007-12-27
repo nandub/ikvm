@@ -96,7 +96,13 @@ namespace IKVM.Internal
 			Assembly coreAssembly = JVM.CoreAssembly;
 			if(coreAssembly != null)
 			{
-				Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
+				try
+				{
+					Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
+				}
+				catch(System.Security.SecurityException)
+				{
+				}
 				RemappedClassAttribute[] remapped = AttributeHelper.GetRemappedClasses(coreAssembly);
 				if(remapped.Length > 0)
 				{
@@ -445,7 +451,7 @@ namespace IKVM.Internal
 				return null;
 			}
 			Type type = GetType(DotNetTypeWrapper.DemangleTypeName(name.Substring(0, pos)));
-			if(type == null || !Whidbey.IsGenericTypeDefinition(type))
+			if(type == null || !type.IsGenericTypeDefinition)
 			{
 				return null;
 			}
@@ -557,7 +563,7 @@ namespace IKVM.Internal
 			}
 			try
 			{
-				type = Whidbey.MakeGenericType(type, typeArguments);
+				type = type.MakeGenericType(typeArguments);
 			}
 			catch(ArgumentException)
 			{
@@ -789,7 +795,13 @@ namespace IKVM.Internal
 			}
 			lock(wrapperLock)
 			{
+#if FIRST_PASS
+				ClassLoaderWrapper wrapper = null;
+#elif OPENJDK
+				ClassLoaderWrapper wrapper = ((java.lang.ClassLoader)javaClassLoader).wrapper;
+#else
 				ClassLoaderWrapper wrapper = (ClassLoaderWrapper)JVM.Library.getWrapperFromClassLoader(javaClassLoader);
+#endif
 				if(wrapper == null)
 				{
 					CodeGenOptions opt = CodeGenOptions.None;
@@ -798,7 +810,7 @@ namespace IKVM.Internal
 						opt |= CodeGenOptions.Debug;
 					}
 					wrapper = new ClassLoaderWrapper(opt, javaClassLoader);
-					JVM.Library.setWrapperForClassLoader(javaClassLoader, wrapper);
+					SetWrapperForClassLoader(javaClassLoader, wrapper);
 				}
 				return wrapper;
 			}
@@ -809,7 +821,7 @@ namespace IKVM.Internal
 		{
 			//Tracer.Info(Tracer.Runtime, "GetWrapperFromType: {0}", type.AssemblyQualifiedName);
 			TypeWrapper.AssertFinished(type);
-			Debug.Assert(!Whidbey.ContainsGenericParameters(type));
+			Debug.Assert(!type.ContainsGenericParameters);
 			Debug.Assert(!type.IsPointer);
 			Debug.Assert(!type.IsByRef);
 			TypeWrapper wrapper = (TypeWrapper)typeToTypeWrapper[type];
@@ -861,12 +873,12 @@ namespace IKVM.Internal
 		internal static ClassLoaderWrapper GetGenericClassLoader(TypeWrapper wrapper)
 		{
 			Type type = wrapper.TypeAsTBD;
-			Debug.Assert(Whidbey.IsGenericType(type));
-			Debug.Assert(!Whidbey.ContainsGenericParameters(type));
+			Debug.Assert(type.IsGenericType);
+			Debug.Assert(!type.ContainsGenericParameters);
 
 			ArrayList list = new ArrayList();
 			list.Add(GetAssemblyClassLoader(type.Assembly));
-			foreach(Type arg in Whidbey.GetGenericArguments(type))
+			foreach(Type arg in type.GetGenericArguments())
 			{
 				ClassLoaderWrapper loader = GetWrapperFromType(arg).GetClassLoader();
 				if(!list.Contains(loader))
@@ -896,16 +908,24 @@ namespace IKVM.Internal
 					}
 				}
 				object javaClassLoader = null;
-#if !STATIC_COMPILER
-				javaClassLoader = JVM.Library.newAssemblyClassLoader(null);
+#if !STATIC_COMPILER && !FIRST_PASS
+				javaClassLoader = java.security.AccessController.doPrivileged(new CreateAssemblyClassLoader(null));
 #endif
 				GenericClassLoader newLoader = new GenericClassLoader(key, javaClassLoader);
-#if !STATIC_COMPILER
-				JVM.Library.setWrapperForClassLoader(javaClassLoader, newLoader);
-#endif
+				SetWrapperForClassLoader(javaClassLoader, newLoader);
 				genericClassLoaders.Add(newLoader);
 				return newLoader;
 			}
+		}
+
+		private static void SetWrapperForClassLoader(object javaClassLoader, ClassLoaderWrapper wrapper)
+		{
+#if FIRST_PASS || STATIC_COMPILER
+#elif OPENJDK
+			((java.lang.ClassLoader)javaClassLoader).wrapper = wrapper;
+#else
+			JVM.Library.setWrapperForClassLoader(javaClassLoader, wrapper);
+#endif
 		}
 
 		internal static ClassLoaderWrapper GetGenericClassLoaderByName(string name)
@@ -1000,7 +1020,7 @@ namespace IKVM.Internal
 					{
 						return GetBootstrapClassLoader();
 					}
-					if(!Whidbey.ReflectionOnly(assembly))
+					if(!assembly.ReflectionOnly)
 					{
 						Type customClassLoaderClass = null;
 						LoadCustomClassLoaderRedirects();
@@ -1049,7 +1069,7 @@ namespace IKVM.Internal
 								// class loader before it is constructed, but at least the object instance is valid and should anyone cache it, they will get the
 								// right object to use later on.
 								// Note also that we're not running the constructor here, because we don't want to run user code while holding a global lock.
-								javaClassLoader = (java.lang.ClassLoader)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(customClassLoaderClass);
+								javaClassLoader = (java.lang.ClassLoader)CreateUnitializedCustomClassLoader(customClassLoaderClass);
 								customClassLoaderCtor = customClassLoaderClass.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(Assembly) }, null);
 								if(customClassLoaderCtor == null)
 								{
@@ -1071,7 +1091,7 @@ namespace IKVM.Internal
 					}
 					if(javaClassLoader == null)
 					{
-						javaClassLoader = JVM.Library.newAssemblyClassLoader(assembly);
+						javaClassLoader = java.security.AccessController.doPrivileged(new CreateAssemblyClassLoader(assembly));
 					}
 #endif
 					loader = new AssemblyClassLoader(assembly, javaClassLoader, customClassLoaderCtor != null);
@@ -1083,7 +1103,7 @@ namespace IKVM.Internal
 					}
 					if(javaClassLoader != null)
 					{
-						JVM.Library.setWrapperForClassLoader(javaClassLoader, loader);
+						SetWrapperForClassLoader(javaClassLoader, loader);
 					}
 #endif
 				}
@@ -1103,6 +1123,11 @@ namespace IKVM.Internal
 			loader.WaitInitDone();
 #endif
 			return loader;
+		}
+
+		private static object CreateUnitializedCustomClassLoader(Type customClassLoaderClass)
+		{
+			return System.Runtime.Serialization.FormatterServices.GetUninitializedObject(customClassLoaderClass);
 		}
 
 #if !STATIC_COMPILER && !FIRST_PASS
@@ -1131,6 +1156,21 @@ namespace IKVM.Internal
 				{
 					Tracer.Error(Tracer.Runtime, "Error while reading custom class loader redirects: {0}", x);
 				}
+			}
+		}
+
+		sealed class CreateAssemblyClassLoader : java.security.PrivilegedAction
+		{
+			private Assembly assembly;
+
+			internal CreateAssemblyClassLoader(Assembly assembly)
+			{
+				this.assembly = assembly;
+			}
+
+			public object run()
+			{
+				return new ikvm.runtime.AssemblyClassLoader(assembly);
 			}
 		}
 
@@ -1215,6 +1255,11 @@ namespace IKVM.Internal
 			return String.Format("{0}@{1:X}", GetWrapperFromType(javaClassLoader.GetType()).Name, javaClassLoader.GetHashCode());
 		}
 #endif
+
+		internal virtual bool InternalsVisibleTo(ClassLoaderWrapper other)
+		{
+			return this == other;
+		}
 	}
 
 	class GenericClassLoader : ClassLoaderWrapper
@@ -1302,6 +1347,7 @@ namespace IKVM.Internal
 		private Assembly assembly;
 		private AssemblyName[] references;
 		private AssemblyClassLoader[] delegates;
+		private AssemblyName[] internalsVisibleTo;
 		private bool isReflectionOnly;
 		private bool[] isJavaModule;
 		private Module[] modules;
@@ -1354,6 +1400,7 @@ namespace IKVM.Internal
 			}
 			references = assembly.GetReferencedAssemblies();
 			delegates = new AssemblyClassLoader[references.Length];
+			internalsVisibleTo = AttributeHelper.GetInternalsVisibleToAttributes(assembly);
 		}
 
 		internal Assembly Assembly
@@ -1813,6 +1860,38 @@ namespace IKVM.Internal
 		{
 			TypeWrapper tw = base.GetLoadedClass(name);
 			return tw != null ? tw : DoLoad(name);
+		}
+
+		internal override bool InternalsVisibleTo(ClassLoaderWrapper other)
+		{
+			if(this == other)
+			{
+				return true;
+			}
+			AssemblyName otherName;
+#if STATIC_COMPILER
+			CompilerClassLoader ccl = other as CompilerClassLoader;
+			if(ccl == null)
+			{
+				return false;
+			}
+			otherName = ccl.GetAssemblyName();
+#else
+			AssemblyClassLoader acl = other as AssemblyClassLoader;
+			if(acl == null)
+			{
+				return false;
+			}
+			otherName = acl.Assembly.GetName();
+#endif
+			foreach(AssemblyName name in internalsVisibleTo)
+			{
+				if(AssemblyName.ReferenceMatchesDefinition(name, otherName))
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 	}
 
