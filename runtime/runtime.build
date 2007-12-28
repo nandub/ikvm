@@ -50,6 +50,7 @@
         <csc target="library" output="IKVM.Runtime.dll" define="${defs}" optimize="true" unsafe="false" rebuild="true">
             <sources>
                 <include name="AssemblyInfo.cs" />
+                <include name="atomic.cs" />
                 <include name="attributes.cs" />
                 <include name="BigEndianBinaryReader.cs" />
                 <include name="ByteCode.cs" />
@@ -88,9 +89,5 @@
             </nowarn>
         </csc>
         <copy file="IKVM.Runtime.dll" todir="../bin" />
-        <if test="${not first-pass}">
-            <!-- We have to build again, to be able to bind against the real ikvm.internal.LibraryVMInterface in the class library assembly -->
-            <call target="IKVM.Runtime.JNI" />
-        </if>
     </target>
 </project>
