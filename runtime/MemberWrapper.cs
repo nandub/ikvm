@@ -137,8 +137,8 @@ namespace IKVM.Internal
 				return IsPublic ||
 					caller == DeclaringType ||
 					(IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller))) ||
-					(IsInternal && caller.GetClassLoader() == DeclaringType.GetClassLoader()) ||
-					(!IsPrivate && caller.IsInSamePackageAs(DeclaringType));
+					(IsInternal && DeclaringType.GetClassLoader().InternalsVisibleTo(caller.GetClassLoader())) ||
+					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller));
 			}
 			return false;
 		}
@@ -235,8 +235,6 @@ namespace IKVM.Internal
 	abstract class MethodWrapper : MemberWrapper
 	{
 #if OPENJDK && !FIRST_PASS
-		private static readonly FieldInfo methodSlotField = typeof(java.lang.reflect.Method).GetField("slot", BindingFlags.NonPublic | BindingFlags.Instance);
-		private static readonly FieldInfo constructorSlotField = typeof(java.lang.reflect.Constructor).GetField("slot", BindingFlags.NonPublic | BindingFlags.Instance);
 		private volatile object reflectionMethod;
 #endif
 		internal static readonly MethodWrapper[] EmptyArray  = new MethodWrapper[0];
@@ -523,9 +521,10 @@ namespace IKVM.Internal
 			java.lang.reflect.Method method = methodOrConstructor as java.lang.reflect.Method;
 			if (method != null)
 			{
-				return TypeWrapper.FromClass(method.getDeclaringClass()).GetMethods()[(int)methodSlotField.GetValue(method)];
+				return TypeWrapper.FromClass(method.getDeclaringClass()).GetMethods()[method._slot()];
 			}
-			return TypeWrapper.FromClass(((java.lang.reflect.Constructor)methodOrConstructor).getDeclaringClass()).GetMethods()[(int)constructorSlotField.GetValue(methodOrConstructor)];
+			java.lang.reflect.Constructor constructor = (java.lang.reflect.Constructor)methodOrConstructor;
+			return TypeWrapper.FromClass(constructor.getDeclaringClass()).GetMethods()[constructor._slot()];
 #else
 			return (MethodWrapper)JVM.Library.getWrapperFromMethodOrConstructor(methodOrConstructor);
 #endif
@@ -794,7 +793,7 @@ namespace IKVM.Internal
 						}
 						catch(TargetInvocationException x)
 						{
-							throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
+							throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
 						}
 					}
 					else if(!method.DeclaringType.IsInstanceOfType(obj))
@@ -838,7 +837,7 @@ namespace IKVM.Internal
 					}
 					catch(TargetInvocationException x)
 					{
-						throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
+						throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
 					}
 #endif
 				}
@@ -860,7 +859,7 @@ namespace IKVM.Internal
 			}
 			catch(TargetInvocationException x)
 			{
-				throw new java.lang.reflect.InvocationTargetException(JVM.Library.mapException(x.InnerException));
+				throw new java.lang.reflect.InvocationTargetException(ikvm.runtime.Util.mapException(x.InnerException));
 			}
 #else // !FIRST_PASS
 			return null;
@@ -1285,7 +1284,7 @@ namespace IKVM.Internal
 				}
 				if(val != null && !(val is string))
 				{
-					return JVM.Library.box(val);
+					return JVM.Box(val);
 				}
 				return val;
 			}
