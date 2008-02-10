@@ -1471,7 +1471,7 @@ namespace IKVM.Internal
 			List<AssemblyName> list = new List<AssemblyName>();
 			foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(assembly))
 			{
-				if(MatchTypes(cad.Constructor.DeclaringType, typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute)))
+				if(cad.Constructor.DeclaringType == typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute))
 				{
 					try
 					{
@@ -1734,6 +1734,91 @@ namespace IKVM.Internal
 			return false;
 		}
 
+		protected static object QualifyClassNames(ClassLoaderWrapper loader, object annotation)
+		{
+			bool copy = false;
+			object[] def = (object[])annotation;
+			for(int i = 3; i < def.Length; i += 2)
+			{
+				object[] val = def[i] as object[];
+				if(val != null)
+				{
+					object[] newval = ValueQualifyClassNames(loader, val);
+					if(newval != val)
+					{
+						if(!copy)
+						{
+							copy = true;
+							object[] newdef = new object[def.Length];
+							Array.Copy(def, newdef, def.Length);
+							def = newdef;
+						}
+						def[i] = newval;
+					}
+				}
+			}
+			return def;
+		}
+
+		private static object[] ValueQualifyClassNames(ClassLoaderWrapper loader, object[] val)
+		{
+			if(val[0].Equals(AnnotationDefaultAttribute.TAG_ANNOTATION))
+			{
+				return (object[])QualifyClassNames(loader, val);
+			}
+			else if(val[0].Equals(AnnotationDefaultAttribute.TAG_CLASS))
+			{
+				string sig = (string)val[1];
+				if(sig.StartsWith("L"))
+				{
+					TypeWrapper tw = loader.LoadClassByDottedNameFast(sig.Substring(1, sig.Length - 2).Replace('/', '.'));
+					if(tw != null)
+					{
+						return new object[] { AnnotationDefaultAttribute.TAG_CLASS, "L" + tw.TypeAsBaseType.AssemblyQualifiedName.Replace('.', '/') + ";" };
+					}
+				}
+				return val;
+			}
+			else if(val[0].Equals(AnnotationDefaultAttribute.TAG_ENUM))
+			{
+				string sig = (string)val[1];
+				TypeWrapper tw = loader.LoadClassByDottedNameFast(sig.Substring(1, sig.Length - 2).Replace('/', '.'));
+				if(tw != null)
+				{
+					return new object[] { AnnotationDefaultAttribute.TAG_ENUM, "L" + tw.TypeAsBaseType.AssemblyQualifiedName.Replace('.', '/') + ";", val[2] };
+				}
+				return val;
+			}
+			else if(val[0].Equals(AnnotationDefaultAttribute.TAG_ARRAY))
+			{
+				bool copy = false;
+				for(int i = 1; i < val.Length; i++)
+				{
+					object[] nval = val[i] as object[];
+					if(nval != null)
+					{
+						object newnval = ValueQualifyClassNames(loader, nval);
+						if(newnval != nval)
+						{
+							if(!copy)
+							{
+								copy = true;
+								object[] newval = new object[val.Length];
+								Array.Copy(val, newval, val.Length);
+								val = newval;
+							}
+							val[i] = newnval;
+						}
+					}
+				}
+				return val;
+			}
+			else
+			{
+				throw new InvalidOperationException();
+			}
+		}
+
 		internal abstract void Apply(ClassLoaderWrapper loader, TypeBuilder tb, object annotation);
 		internal abstract void Apply(ClassLoaderWrapper loader, MethodBuilder mb, object annotation);
 		internal abstract void Apply(ClassLoaderWrapper loader, ConstructorBuilder cb, object annotation);
@@ -1803,7 +1888,14 @@ namespace IKVM.Internal
 						// DynamicTypeWrapper should haved already had SetClassObject explicitly
 						Debug.Assert(!(this is DynamicTypeWrapper));
 #endif // !COMPACT_FRAMEWORK
+#if FIRST_PASS
+#elif OPENJDK
+						java.lang.Class clazz = java.lang.Class.newClass();
+						clazz.typeWrapper = this;
+						classObject = clazz;
+#else
 						classObject = JVM.Library.newClass(this, null, GetClassLoader().GetJavaClassLoader());
+#endif
 					}
 				}
 				return classObject;
@@ -1812,7 +1904,13 @@ namespace IKVM.Internal
 
 		internal static TypeWrapper FromClass(object classObject)
 		{
+#if FIRST_PASS
+			return null;
+#elif OPENJDK
+			return ((java.lang.Class)classObject).typeWrapper;
+#else
 			return (TypeWrapper)JVM.Library.getWrapperFromClass(classObject);
+#endif
 		}
 #endif // !STATIC_COMPILER
 
@@ -3052,7 +3150,7 @@ namespace IKVM.Internal
 				object[] attr = mb.GetCustomAttributes(typeof(AnnotationDefaultAttribute), false);
 				if(attr.Length == 1)
 				{
-					return JVM.Library.newAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, ((AnnotationDefaultAttribute)attr[0]).Value);
+					return JVM.NewAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, ((AnnotationDefaultAttribute)attr[0]).Value);
 				}
 			}
 			return null;
@@ -3315,6 +3413,106 @@ namespace IKVM.Internal
 	}
 
 #if !COMPACT_FRAMEWORK
+	class BakedTypeCleanupHack
+	{
+		private static readonly FieldInfo m_methodBuilder = typeof(ConstructorBuilder).GetField("m_methodBuilder", BindingFlags.Instance | BindingFlags.NonPublic);
+		private static readonly FieldInfo[] methodBuilderFields = GetFieldList(typeof(MethodBuilder), new string[]
+			{
+				"m_ilGenerator",
+				"m_ubBody",
+				"m_RVAFixups",
+				"mm_mdMethodFixups",
+				"m_localSignature",
+				"m_localSymInfo",
+				"m_exceptions",
+				"m_parameterTypes",
+				"m_retParam",
+				"m_returnType",
+				"m_signature"
+			});
+		private static readonly FieldInfo[] fieldBuilderFields = GetFieldList(typeof(FieldBuilder), new string[]
+			{
+				"m_data",
+				"m_fieldType",
+		});
+
+		private static bool IsSupportedVersion
+		{
+			get
+			{
+				return Environment.Version.Major == 2 && Environment.Version.Minor == 0 && Environment.Version.Build == 50727 && Environment.Version.Revision == 1433;
+			}
+		}
+
+		private static FieldInfo[] GetFieldList(Type type, string[] list)
+		{
+			if(JVM.SafeGetEnvironmentVariable("IKVM_DISABLE_TYPEBUILDER_HACK") != null || !IsSupportedVersion)
+			{
+				return null;
+			}
+			if(!SecurityManager.IsGranted(new SecurityPermission(SecurityPermissionFlag.Assertion)) ||
+				!SecurityManager.IsGranted(new ReflectionPermission(ReflectionPermissionFlag.MemberAccess)))
+			{
+				return null;
+			}
+			FieldInfo[] fields = new FieldInfo[list.Length];
+			for(int i = 0; i < list.Length; i++)
+			{
+				fields[i] = type.GetField(list[i], BindingFlags.Instance | BindingFlags.NonPublic);
+				if(fields[i] == null)
+				{
+					return null;
+				}
+			}
+			return fields;
+		}
+
+		internal static void Process(DynamicTypeWrapper wrapper)
+		{
+			if(m_methodBuilder != null && methodBuilderFields != null && fieldBuilderFields != null)
+			{
+				foreach(MethodWrapper mw in wrapper.GetMethods())
+				{
+					MethodBuilder mb = mw.GetMethod() as MethodBuilder;
+					if(mb == null)
+					{
+						ConstructorBuilder cb = mw.GetMethod() as ConstructorBuilder;
+						if(cb != null)
+						{
+							new ReflectionPermission(ReflectionPermissionFlag.MemberAccess).Assert();
+							mb = (MethodBuilder)m_methodBuilder.GetValue(cb);
+							CodeAccessPermission.RevertAssert();
+						}
+					}
+					if(mb != null)
+					{
+						new ReflectionPermission(ReflectionPermissionFlag.MemberAccess).Assert();
+						foreach(FieldInfo fi in methodBuilderFields)
+						{
+							fi.SetValue(mb, null);
+						}
+						CodeAccessPermission.RevertAssert();
+					}
+				}
+				foreach(FieldWrapper fw in wrapper.GetFields())
+				{
+					FieldBuilder fb = fw.GetField() as FieldBuilder;
+					if(fb != null)
+					{
+						new ReflectionPermission(ReflectionPermissionFlag.MemberAccess).Assert();
+						foreach(FieldInfo fi in fieldBuilderFields)
+						{
+							fi.SetValue(fb, null);
+						}
+						CodeAccessPermission.RevertAssert();
+					}
+				}
+			}
+		}
+	}
+#endif
+
+#if !COMPACT_FRAMEWORK
 #if STATIC_COMPILER
 	abstract class DynamicTypeWrapper : TypeWrapper
 #else
@@ -3559,6 +3757,7 @@ namespace IKVM.Internal
 			private FieldInfo classObjectField;
 			private MethodBuilder clinitMethod;
 			private MethodBuilder finalizeMethod;
+			private List<System.Threading.ThreadStart> postFinishProcs;
 #if STATIC_COMPILER
 			private DynamicTypeWrapper outerClassWrapper;
 			private AnnotationBuilder annotationBuilder;
@@ -3601,7 +3800,7 @@ namespace IKVM.Internal
 					{
 						methods[i] = new MethodWrapper.GhostMethodWrapper(wrapper, m.Name, m.Signature, null, null, null, m.Modifiers, flags);
 					}
-					else if(ReferenceEquals(m.Name, StringConstants.INIT))
+					else if(ReferenceEquals(m.Name, StringConstants.INIT) || m.IsClassInitializer)
 					{
 						methods[i] = new SmartConstructorMethodWrapper(wrapper, m.Name, m.Signature, null, null, m.Modifiers, flags);
 					}
@@ -5273,6 +5472,13 @@ namespace IKVM.Internal
 					try
 					{
 						type = typeBuilder.CreateType();
+						if(postFinishProcs != null)
+						{
+							foreach(System.Threading.ThreadStart proc in postFinishProcs)
+							{
+								proc();
+							}
+						}
 #if STATIC_COMPILER
 						if(tbFields != null)
 						{
@@ -5300,6 +5506,7 @@ namespace IKVM.Internal
 #if STATIC_COMPILER
 					wrapper.FinishGhostStep2();
 #endif
+					BakedTypeCleanupHack.Process(wrapper);
 					finishedType = new FinishedTypeImpl(type, innerClassesTypeWrappers, declaringTypeWrapper, this.ReflectiveModifiers, Metadata.Create(classFile)
 #if STATIC_COMPILER
 						, annotationBuilder, enumBuilder
@@ -5315,6 +5522,18 @@ namespace IKVM.Internal
 				finally
 				{
 					Profiler.Leave("JavaTypeImpl.Finish.Core");
+				}
+			}
+
+			internal void RegisterPostFinishProc(System.Threading.ThreadStart proc)
+			{
+				lock(this)
+				{
+					if(postFinishProcs == null)
+					{
+						postFinishProcs = new List<System.Threading.ThreadStart>();
+					}
+					postFinishProcs.Add(proc);
 				}
 			}
 
@@ -5350,7 +5569,8 @@ namespace IKVM.Internal
 									if (enumeratorType != null)
 									{
 										typeBuilder.AddInterfaceImplementation(typeof(IEnumerable));
-										MethodBuilder mb = typeBuilder.DefineMethod("__<>GetEnumerator", MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Final | MethodAttributes.SpecialName, typeof(IEnumerator), Type.EmptyTypes);
+										// FXBUG we're using the same method name as the C# compiler here because both the .NET and Mono implementations of Xml serialization depend on this method name
+										MethodBuilder mb = typeBuilder.DefineMethod("System.Collections.IEnumerable.GetEnumerator", MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Final | MethodAttributes.SpecialName, typeof(IEnumerator), Type.EmptyTypes);
 										typeBuilder.DefineMethodOverride(mb, typeof(IEnumerable).GetMethod("GetEnumerator"));
 										ILGenerator ilgen = mb.GetILGenerator();
 										ilgen.Emit(OpCodes.Ldarg_0);
@@ -5911,6 +6131,7 @@ namespace IKVM.Internal
 				{
 					if(annotationTypeBuilder != null)
 					{
+						annotation = QualifyClassNames(loader, annotation);
 						tb.SetCustomAttribute(new CustomAttributeBuilder(defineConstructor, new object[] { annotation }));
 					}
 				}
@@ -5919,6 +6140,7 @@ namespace IKVM.Internal
 				{
 					if(annotationTypeBuilder != null)
 					{
+						annotation = QualifyClassNames(loader, annotation);
 						mb.SetCustomAttribute(new CustomAttributeBuilder(defineConstructor, new object[] { annotation }));
 					}
 				}
@@ -5927,6 +6149,7 @@ namespace IKVM.Internal
 				{
 					if(annotationTypeBuilder != null)
 					{
+						annotation = QualifyClassNames(loader, annotation);
 						cb.SetCustomAttribute(new CustomAttributeBuilder(defineConstructor, new object[] { annotation }));
 					}
 				}
@@ -5935,6 +6158,7 @@ namespace IKVM.Internal
 				{
 					if(annotationTypeBuilder != null)
 					{
+						annotation = QualifyClassNames(loader, annotation);
 						fb.SetCustomAttribute(new CustomAttributeBuilder(defineConstructor, new object[] { annotation }));
 					}
 				}
@@ -5943,6 +6167,7 @@ namespace IKVM.Internal
 				{
 					if(annotationTypeBuilder != null)
 					{
+						annotation = QualifyClassNames(loader, annotation);
 						pb.SetCustomAttribute(new CustomAttributeBuilder(defineConstructor, new object[] { annotation }));
 					}
 				}
@@ -5951,6 +6176,7 @@ namespace IKVM.Internal
 				{
 					if(annotationTypeBuilder != null)
 					{
+						annotation = QualifyClassNames(loader, annotation);
 						ab.SetCustomAttribute(new CustomAttributeBuilder(defineConstructor, new object[] { annotation }));
 					}
 				}
@@ -6013,7 +6239,9 @@ namespace IKVM.Internal
 			private class JniBuilder
 			{
 #if STATIC_COMPILER
-				private static readonly Type localRefStructType = StaticCompiler.GetType("IKVM.Runtime.JNI.Frame");
+				private static readonly Type localRefStructType = StaticCompiler.GetType("IKVM.Runtime.JNI+Frame");
+#elif FIRST_PASS
+				private static readonly Type localRefStructType = null;
 #else
 				private static readonly Type localRefStructType = JVM.LoadType(typeof(IKVM.Runtime.JNI.Frame));
 #endif
@@ -7684,6 +7912,11 @@ namespace IKVM.Internal
 			}
 		}
 
+		internal void RegisterPostFinishProc(System.Threading.ThreadStart proc)
+		{
+			((JavaTypeImpl)impl).RegisterPostFinishProc(proc);
+		}
+
 #if !STATIC_COMPILER
 		internal override int GetSourceLineNumber(MethodBase mb, int ilOffset)
 		{
@@ -7714,7 +7947,7 @@ namespace IKVM.Internal
 				object[] objs = new object[annotations.Length];
 				for(int i = 0; i < annotations.Length; i++)
 				{
-					objs[i] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[i]);
+					objs[i] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[i]);
 				}
 				return objs;
 			}
@@ -7734,7 +7967,7 @@ namespace IKVM.Internal
 						object[] objs = new object[annotations.Length];
 						for(int j = 0; j < annotations.Length; j++)
 						{
-							objs[j] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
+							objs[j] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
 						}
 						return objs;
 					}
@@ -7761,7 +7994,7 @@ namespace IKVM.Internal
 							objs[j] = new object[annotations[j].Length];
 							for(int k = 0; k < annotations[j].Length; k++)
 							{
-								objs[j][k] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j][k]);
+								objs[j][k] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j][k]);
 							}
 						}
 						return objs;
@@ -7786,7 +8019,7 @@ namespace IKVM.Internal
 						object[] objs = new object[annotations.Length];
 						for(int j = 0; j < annotations.Length; j++)
 						{
-							objs[j] = JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
+							objs[j] = JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), annotations[j]);
 						}
 						return objs;
 					}
@@ -7807,7 +8040,7 @@ namespace IKVM.Internal
 					object defVal = impl.GetMethodDefaultValue(i);
 					if(defVal != null)
 					{
-						return JVM.Library.newAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, defVal);
+						return JVM.NewAnnotationElementValue(mw.DeclaringType.GetClassLoader().GetJavaClassLoader(), mw.ReturnType.ClassObject, defVal);
 					}
 					return null;
 				}
@@ -8802,31 +9035,37 @@ namespace IKVM.Internal
 
 			internal override void Apply(ClassLoaderWrapper loader, TypeBuilder tb, object annotation)
 			{
+				annotation = QualifyClassNames(loader, annotation);
 				tb.SetCustomAttribute(MakeCustomAttributeBuilder(annotation));
 			}
 
 			internal override void Apply(ClassLoaderWrapper loader, ConstructorBuilder cb, object annotation)
 			{
+				annotation = QualifyClassNames(loader, annotation);
 				cb.SetCustomAttribute(MakeCustomAttributeBuilder(annotation));
 			}
 
 			internal override void Apply(ClassLoaderWrapper loader, MethodBuilder mb, object annotation)
 			{
+				annotation = QualifyClassNames(loader, annotation);
 				mb.SetCustomAttribute(MakeCustomAttributeBuilder(annotation));
 			}
 
 			internal override void Apply(ClassLoaderWrapper loader, FieldBuilder fb, object annotation)
 			{
+				annotation = QualifyClassNames(loader, annotation);
 				fb.SetCustomAttribute(MakeCustomAttributeBuilder(annotation));
 			}
 
 			internal override void Apply(ClassLoaderWrapper loader, ParameterBuilder pb, object annotation)
 			{
+				annotation = QualifyClassNames(loader, annotation);
 				pb.SetCustomAttribute(MakeCustomAttributeBuilder(annotation));
 			}
 
 			internal override void Apply(ClassLoaderWrapper loader, AssemblyBuilder ab, object annotation)
 			{
+				annotation = QualifyClassNames(loader, annotation);
 				ab.SetCustomAttribute(MakeCustomAttributeBuilder(annotation));
 			}
 		}
@@ -9110,10 +9349,16 @@ namespace IKVM.Internal
 			// SECURITY we never expose types from IKVM.Runtime, because doing so would lead to a security hole,
 			// since the reflection implementation lives inside this assembly, all internal members would
 			// be accessible through Java reflection.
+#if !FIRST_PASS && !STATIC_COMPILER
 			if(type.Assembly == typeof(DotNetTypeWrapper).Assembly)
 			{
 				return false;
 			}
+			if(type.Assembly == IKVM.NativeCode.java.lang.SecurityManager.jniAssembly)
+			{
+				return false;
+			}
+#endif
 			if(type.ContainsGenericParameters)
 			{
 				return false;
@@ -9801,10 +10046,10 @@ namespace IKVM.Internal
 				internal override object[] GetDeclaredAnnotations()
 				{
 					return new object[] {
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", 
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", 
 											new object[] { AnnotationDefaultAttribute.TAG_ARRAY, new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/ElementType;", "METHOD" } }
 										}),
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
 									};
 				}
 #endif
@@ -10101,8 +10346,8 @@ namespace IKVM.Internal
 					targets.Add(new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/ElementType;", "PARAMETER" });
 				}
 				return new object[] {
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", (object[])targets.ToArray() }),
-										JVM.Library.newAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Target", "value", (object[])targets.ToArray() }),
+										JVM.NewAnnotation(GetClassLoader().GetJavaClassLoader(), new object[] { AnnotationDefaultAttribute.TAG_ANNOTATION, "java.lang.annotation.Retention", "value", new object[] { AnnotationDefaultAttribute.TAG_ENUM, "Ljava/lang/annotation/RetentionPolicy;", "RUNTIME" } })
 									};
 			}
 #endif
@@ -10306,8 +10551,8 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal DotNetTypeWrapper(Type type)
-			: base(GetModifiers(type), GetName(type), GetBaseTypeWrapper(type))
+		internal DotNetTypeWrapper(Type type, string name)
+			: base(GetModifiers(type), name, GetBaseTypeWrapper(type))
 		{
 			Debug.Assert(!(type.IsByRef), type.FullName);
 			Debug.Assert(!(type.IsPointer), type.FullName);
@@ -11168,7 +11413,7 @@ namespace IKVM.Internal
 				if(outerClass == null)
 				{
 					Type outer = type.DeclaringType;
-					if(outer != null)
+					if(outer != null && !type.IsGenericType)
 					{
 						outerClass = ClassLoaderWrapper.GetWrapperFromType(outer);
 					}
