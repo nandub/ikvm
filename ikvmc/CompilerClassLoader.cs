@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Jeroen Frijters
+  Copyright (C) 2002-2008 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -363,13 +363,13 @@ namespace IKVM.Internal
 			{
 				Tracer.Info(Tracer.Compiler, "CompilerClassLoader saving temp.$$$ in {0}", assemblyDir);
 				string manifestAssembly = "temp.$$$";
-				assemblyBuilder.Save(manifestAssembly);
+				assemblyBuilder.Save(manifestAssembly, options.pekind, options.imageFileMachine);
 				File.Delete(assemblyDir + manifestAssembly);
 			}
 			else
 			{
 				Tracer.Info(Tracer.Compiler, "CompilerClassLoader saving {0} in {1}", assemblyFile, assemblyDir);
-				assemblyBuilder.Save(assemblyFile);
+				assemblyBuilder.Save(assemblyFile, options.pekind, options.imageFileMachine);
 			}
 		}
 
@@ -2081,6 +2081,11 @@ namespace IKVM.Internal
 			return key != null && key.Length != 0;
 		}
 
+		private static bool IsCoreAssembly(Assembly asm)
+		{
+			return AttributeHelper.IsDefined(asm, StaticCompiler.GetType("IKVM.Attributes.RemappedClassAttribute"));
+		}
+
 		internal static int Compile(CompilerOptions options)
 		{
 			Tracer.Info(Tracer.Compiler, "JVM.Compile path: {0}, assembly: {1}", options.path, options.assembly);
@@ -2091,16 +2096,22 @@ namespace IKVM.Internal
 					// HACK based on our assembly name we create the default runtime assembly name
 					Assembly compilerAssembly = typeof(CompilerClassLoader).Assembly;
 					StaticCompiler.runtimeAssembly = Assembly.ReflectionOnlyLoad(compilerAssembly.FullName.Replace(compilerAssembly.GetName().Name, "IKVM.Runtime"));
+					StaticCompiler.runtimeJniAssembly = Assembly.ReflectionOnlyLoad(compilerAssembly.FullName.Replace(compilerAssembly.GetName().Name, "IKVM.Runtime.JNI"));
 				}
 				else
 				{
 					StaticCompiler.runtimeAssembly = Assembly.ReflectionOnlyLoadFrom(options.runtimeAssembly);
+					StaticCompiler.runtimeJniAssembly = Assembly.ReflectionOnlyLoadFrom(Path.Combine(StaticCompiler.runtimeAssembly.CodeBase, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
 				}
 			}
 			catch(FileNotFoundException)
 			{
-				Console.Error.WriteLine("Error: unable to load runtime assembly");
-				return 1;
+				if(StaticCompiler.runtimeAssembly == null)
+				{
+					Console.Error.WriteLine("Error: unable to load runtime assembly");
+					return 1;
+				}
+				StaticCompiler.IssueMessage(Message.NoJniRuntime);
 			}
 			Tracer.Info(Tracer.Compiler, "Loaded runtime assembly: {0}", StaticCompiler.runtimeAssembly.FullName);
 			AssemblyName runtimeAssemblyName = StaticCompiler.runtimeAssembly.GetName();
@@ -2111,7 +2122,7 @@ namespace IKVM.Internal
 				try
 				{
 					Assembly reference = Assembly.ReflectionOnlyLoadFrom(r);
-					if(AttributeHelper.IsDefined(reference, StaticCompiler.GetType("IKVM.Attributes.RemappedClassAttribute")))
+					if(IsCoreAssembly(reference))
 					{
 						JVM.CoreAssembly = reference;
 					}
@@ -2242,6 +2253,8 @@ namespace IKVM.Internal
 					}
 				}
 			}
+			// HACK remove "assembly" type that exists only as a placeholder for assembly attributes
+			options.classes.Remove("assembly");
 			foreach(DictionaryEntry de in options.classes)
 			{
 				string name = (string)de.Key;
@@ -2369,33 +2382,28 @@ namespace IKVM.Internal
 			}
 			if(!hasBootClasses)
 			{
-				AssemblyName coreAssemblyName = null;
-				foreach(AssemblyName asm in StaticCompiler.runtimeAssembly.GetReferencedAssemblies())
+				// try to find the core assembly looking at the assemblies that the runtime references
+				foreach(AssemblyName name in StaticCompiler.runtimeAssembly.GetReferencedAssemblies())
 				{
-					// HACK we assume that IKVM.Runtime.dll only references the core library and that the name starts with "IKVM."
-					if(asm.Name.StartsWith("IKVM."))
-					{
-						coreAssemblyName = asm;
-						break;
-					}
-				}
-				if(coreAssemblyName == null)
-				{
-					Console.Error.WriteLine("Error: runtime assembly doesn't reference core assembly");
-					return 1;
-				}
-				try
-				{
-					JVM.CoreAssembly = Assembly.ReflectionOnlyLoad(coreAssemblyName.FullName);
-				}
-				catch(FileNotFoundException)
-				{
+					Assembly asm = null;
 					try
 					{
-						JVM.CoreAssembly = Assembly.ReflectionOnlyLoadFrom(StaticCompiler.runtimeAssembly.CodeBase + "\\..\\" + coreAssemblyName.Name + ".dll");
+						asm = Assembly.ReflectionOnlyLoad(name.FullName);
 					}
 					catch(FileNotFoundException)
 					{
+						try
+						{
+							asm = Assembly.ReflectionOnlyLoadFrom(StaticCompiler.runtimeAssembly.CodeBase + "\\..\\" + name.Name + ".dll");
+						}
+						catch(FileNotFoundException)
+						{
+						}
+					}
+					if(asm != null && IsCoreAssembly(asm))
+					{
+						JVM.CoreAssembly = asm;
+						break;
 					}
 				}
 				if(JVM.CoreAssembly == null)
@@ -2615,6 +2623,8 @@ namespace IKVM.Internal
 		internal string sourcepath;
 		internal Hashtable externalResources;
 		internal string classLoader;
+		internal PortableExecutableKinds pekind = PortableExecutableKinds.ILOnly;
+		internal ImageFileMachine imageFileMachine = ImageFileMachine.I386;
 	}
 
 	enum Message
@@ -2636,11 +2646,13 @@ namespace IKVM.Internal
 		DuplicateResourceName = 107,
 		NotAClassFile = 108,
 		SkippingReferencedClass = 109,
+		NoJniRuntime= 110,
 	}
 
 	class StaticCompiler
 	{
 		internal static Assembly runtimeAssembly;
+		internal static Assembly runtimeJniAssembly;
 
 		internal static Type GetType(string name)
 		{
@@ -2652,6 +2664,10 @@ namespace IKVM.Internal
 			if(runtimeAssembly.GetType(name) != null)
 			{
 				return runtimeAssembly.GetType(name);
+			}
+			if(runtimeJniAssembly != null && runtimeJniAssembly.GetType(name) != null)
+			{
+				return runtimeJniAssembly.GetType(name);
 			}
 			foreach(Assembly asm in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
 			{
@@ -2744,6 +2760,9 @@ namespace IKVM.Internal
 				case Message.SkippingReferencedClass:
 					msg = "skipping class: \"{0}\"" + Environment.NewLine +
 						"    (class is already available in referenced assembly \"{1}\")";
+					break;
+				case Message.NoJniRuntime:
+					msg = "unable to load runtime JNI assembly";
 					break;
 				default:
 					throw new InvalidProgramException();
