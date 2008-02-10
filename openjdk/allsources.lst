@@ -1009,11 +1009,11 @@
 ../classpath/gnu/java/awt/peer/ClasspathDesktopPeer.java
 ../classpath/gnu/java/awt/peer/gtk/CairoSurface.java
 ../classpath/gnu/java/net/protocol/ikvmres/Handler.java
+../classpath/ikvm/extensions/ExtensionMethods.java
 ../classpath/ikvm/internal/__unspecified.java
 ../classpath/ikvm/internal/AssemblyClassLoader.java
 ../classpath/ikvm/internal/EnumEnum.java
 ../classpath/ikvm/internal/Formatter.java
-../classpath/ikvm/internal/Library.java
 ../classpath/ikvm/internal/stubgen/StubGenerator.java
 ../classpath/ikvm/internal/Util.java
 ../classpath/ikvm/internal/WeakIdentityMap.java
@@ -1041,15 +1041,14 @@ com/sun/imageio/plugins/jpeg/JPEGImageReaderSpi.java
 com/sun/imageio/plugins/jpeg/JPEGImageWriterSpi.java
 ikvm/internal/AnnotationAttributeBase.java
 ikvm/internal/FieldReflectorBase.java
-ikvm/internal/LibraryVMInterface.java
 java/io/FileDescriptor.java
 java/io/FileInputStream.java
 java/io/FileOutputStream.java
 java/io/ObjectStreamClass.java
 java/io/RandomAccessFile.java
 java/lang/LangHelper.java
-java/lang/LibraryVMInterfaceImpl.java
 java/lang/ProcessImpl.java
+java/lang/Shutdown.java
 java/lang/StringHelper.java
 java/lang/VMThread.java
 java/lang/ref/Reference.java
@@ -6418,7 +6417,6 @@ SystemProperties.java
 ../../openjdk-b13/j2se/src/share/classes/java/lang/SecurityException.java
 ../../openjdk-b13/j2se/src/share/classes/java/lang/SecurityManager.java
 ../../openjdk-b13/j2se/src/share/classes/java/lang/Short.java
-../../openjdk-b13/j2se/src/share/classes/java/lang/Shutdown.java
 ../../openjdk-b13/j2se/src/share/classes/java/lang/StackOverflowError.java
 ../../openjdk-b13/j2se/src/share/classes/java/lang/StackTraceElement.java
 ../../openjdk-b13/j2se/src/share/classes/java/lang/StrictMath.java

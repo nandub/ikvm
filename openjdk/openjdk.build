@@ -30,7 +30,18 @@
 			<include name="**.class"/>
 		</fileset>
 	</delete>
-        <exec program="javac" commandline="-J-Xmx1024M -g -nowarn -bootclasspath ../classpath/mscorlib.jar${pathsep}../classpath/System.jar @allsources.lst" useruntimeengine="false" />
+        <property name="IKVM.Runtime" value="IKVM.Runtime" />
+        <if test="${signoption != ''}">
+            <property name="IKVM.Runtime" value="IKVM.Runtime, PublicKey=0024000004800000940000000602000000240000525341310004000001000100DD6B140E5209CAE3D1C710030021EF589D0F00D05ACA8771101A7E99E10EE063E66040DF96E6F842F717BFC5B62D2EC2B62CEB0282E4649790DACB424DB29B68ADC7EAEAB0356FCE04702379F84400B8427EDBB33DAB8720B9F16A42E2CDB87F885EF413DBC4229F2BD157C9B8DC2CD14866DEC5F31C764BFB9394CC3C60E6C0" />
+        </if>
+        <copy file="AssemblyInfo.java.in" tofile="AssemblyInfo.java">
+            <filterchain>
+                <replacetokens>
+                    <token key="RUNTIME" value="${IKVM.Runtime}" />
+                </replacetokens>
+            </filterchain>
+        </copy>
+        <exec program="javac" commandline="-J-Xmx1024M -g -nowarn -bootclasspath ../classpath/mscorlib.jar${pathsep}../classpath/System.jar${pathsep}../classpath/IKVM.Runtime.jar @allsources.lst" useruntimeengine="false" />
     </target>
 
     <target name="vfs">
@@ -49,7 +60,7 @@
 
     <target name="IKVM.OpenJDK.ClassLibrary.dll" depends="classes vfs">
         <exec program="${project::get-base-directory()}/../bin/ikvmc.exe" useruntimeengine="true">
-          <arg value="-version:0.35.*" />
+          <arg value="-version:0.37.*" />
           <arg value="${signoption}" />
           <arg value="-compressresources" />
           <arg value="-opt:fields" />
@@ -67,6 +78,7 @@
           <arg value="-recurse:${OpenJDK.dir}/control/build/linux-i586/classes/*_Skel.class" />
           <arg value="-recurse:${Classpath.dir}/*.class" />
           <arg value="-r:mscorlib" />
+          <arg value="-r:IKVM.Runtime" />
           <arg value="-r:${framework::get-assembly-directory(framework::get-target-framework())}/System.dll" />
           <arg value="-resource:META-INF/MANIFEST.MF=MANIFEST.MF" />
           <arg value="${OpenJDK.dir}/control/build/linux-i586/j2re-image/lib/resources.jar" />

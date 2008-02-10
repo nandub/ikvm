@@ -46,6 +46,18 @@ using jlrConstructor = java.lang.reflect.Constructor;
 using jlrField = java.lang.reflect.Field;
 #endif
 
+// HACK we have our own version of ExtensionAttribute to avoid a System.Core.dll (i.e. .NET 3.5) dependency
+// it turns out that the C# compiler will honor the attribute, even if it's from a different assembly
+// (note that it's internal because it should only be used by the core class library assembly and it will
+// go away at some point in the future (when taking a .NET 3.5 dependency is acceptable))
+namespace System.Runtime.CompilerServices
+{
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+	sealed class ExtensionAttribute : Attribute
+	{
+	}
+}
+
 namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 {
 	static class Handler
@@ -277,7 +289,13 @@ namespace IKVM.NativeCode.ikvm.runtime
 
 		public static int GetGenericClassLoaderId(object classLoader)
 		{
+#if FIRST_PASS
+			return 0;
+#elif OPENJDK
+			return ClassLoaderWrapper.GetGenericClassLoaderId(((global::java.lang.ClassLoader)classLoader).wrapper);
+#else
 			return ClassLoaderWrapper.GetGenericClassLoaderId((ClassLoaderWrapper)JVM.Library.getWrapperFromClassLoader(classLoader));
+#endif
 		}
 
 		public static Assembly GetBootClassLoaderAssembly()
@@ -287,7 +305,13 @@ namespace IKVM.NativeCode.ikvm.runtime
 
 		public static string GetGenericClassLoaderName(object classLoader)
 		{
+#if FIRST_PASS
+			return null;
+#elif OPENJDK
+			return ((GenericClassLoader)((global::java.lang.ClassLoader)classLoader).wrapper).GetName();
+#else
 			return ((GenericClassLoader)JVM.Library.getWrapperFromClassLoader(classLoader)).GetName();
+#endif
 		}
 	}
 
