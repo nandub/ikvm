@@ -96,7 +96,13 @@ namespace IKVM.Internal
 			Assembly coreAssembly = JVM.CoreAssembly;
 			if(coreAssembly != null)
 			{
-				Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
+				try
+				{
+					Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
+				}
+				catch(System.Security.SecurityException)
+				{
+				}
 				RemappedClassAttribute[] remapped = AttributeHelper.GetRemappedClasses(coreAssembly);
 				if(remapped.Length > 0)
 				{
@@ -218,6 +224,14 @@ namespace IKVM.Internal
 			get
 			{
 				return (codegenoptions & CodeGenOptions.NoJNI) != 0;
+			}
+		}
+
+		internal bool RemoveAsserts
+		{
+			get
+			{
+				return (codegenoptions & CodeGenOptions.RemoveAsserts) != 0;
 			}
 		}
 
@@ -1063,7 +1077,7 @@ namespace IKVM.Internal
 								// class loader before it is constructed, but at least the object instance is valid and should anyone cache it, they will get the
 								// right object to use later on.
 								// Note also that we're not running the constructor here, because we don't want to run user code while holding a global lock.
-								javaClassLoader = (java.lang.ClassLoader)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(customClassLoaderClass);
+								javaClassLoader = (java.lang.ClassLoader)CreateUnitializedCustomClassLoader(customClassLoaderClass);
 								customClassLoaderCtor = customClassLoaderClass.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { typeof(Assembly) }, null);
 								if(customClassLoaderCtor == null)
 								{
@@ -1117,6 +1131,11 @@ namespace IKVM.Internal
 			loader.WaitInitDone();
 #endif
 			return loader;
+		}
+
+		private static object CreateUnitializedCustomClassLoader(Type customClassLoaderClass)
+		{
+			return System.Runtime.Serialization.FormatterServices.GetUninitializedObject(customClassLoaderClass);
 		}
 
 #if !STATIC_COMPILER && !FIRST_PASS
@@ -1492,11 +1511,10 @@ namespace IKVM.Internal
 					Type type = GetType(modules[i], DotNetTypeWrapper.DemangleTypeName(name));
 					if(type != null && DotNetTypeWrapper.IsAllowedOutside(type))
 					{
-						TypeWrapper tw = new DotNetTypeWrapper(type);
 						// check the name to make sure that the canonical name was used
-						if(tw.Name == name)
+						if(DotNetTypeWrapper.GetName(type) == name)
 						{
-							return RegisterInitiatingLoader(tw);
+							return RegisterInitiatingLoader(new DotNetTypeWrapper(type, name));
 						}
 					}
 				}
@@ -1608,7 +1626,7 @@ namespace IKVM.Internal
 					// since this type was not compiled from Java source, we don't need to
 					// look for our attributes, but we do need to filter unrepresentable
 					// stuff (and transform some other stuff)
-					return RegisterInitiatingLoader(new DotNetTypeWrapper(type));
+					return RegisterInitiatingLoader(new DotNetTypeWrapper(type, name));
 				}
 			}
 		}
