@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2007 Jeroen Frijters
+  Copyright (C) 2007, 2008 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -2635,7 +2635,7 @@ namespace IKVM.NativeCode.java
 					Type type = Type.GetType(name);
 					if (type != null)
 					{
-						tw = DotNetTypeWrapper.GetWrapperFromDotNetType(type);
+						tw = ClassLoaderWrapper.GetWrapperFromType(type);
 					}
 					if (tw == null)
 					{
@@ -2909,28 +2909,36 @@ namespace IKVM.NativeCode.java
 				return sig.Replace('.', '/');
 			}
 
-			public static byte[] getRawAnnotations(object thisClass)
+			internal static object AnnotationsToMap(object[] objAnn)
+			{
+#if FIRST_PASS
+				return null;
+#else
+				global::java.util.HashMap map = new global::java.util.HashMap();
+				if (objAnn != null)
+				{
+					foreach (object obj in objAnn)
+					{
+						Annotation a = obj as Annotation;
+						if (a != null)
+						{
+							global::ikvm.@internal.AnnotationAttributeBase.freeze(a);
+							map.put(a.annotationType(), a);
+						}
+					}
+				}
+				return map;
+#endif
+			}
+
+			public static object getDeclaredAnnotationsImpl(object thisClass)
 			{
 #if FIRST_PASS
 				return null;
 #else
 				TypeWrapper wrapper = TypeWrapper.FromClass(thisClass);
 				wrapper.Finish();
-				object[] objAnn = wrapper.GetDeclaredAnnotations();
-				if (objAnn == null)
-				{
-					return null;
-				}
-				ArrayList ann = new ArrayList();
-				foreach (object obj in objAnn)
-				{
-					if (obj is Annotation)
-					{
-						ann.Add(obj);
-					}
-				}
-				IConstantPoolWriter cp = (IConstantPoolWriter)((srConstantPool)getConstantPool(thisClass))._constantPoolOop();
-				return StubGenerator.writeAnnotations(cp, (Annotation[])ann.ToArray(typeof(Annotation)));
+				return AnnotationsToMap(wrapper.GetDeclaredAnnotations());
 #endif
 			}
 
@@ -3695,9 +3703,10 @@ namespace IKVM.NativeCode.java
 
 			public static long nanoTime()
 			{
-				// Note that the epoch is undefined, but we use something similar to the JDK
-				const long epoch = 632785401332600000L;
-				return (DateTime.UtcNow.Ticks - epoch) * 100L;
+				const long NANOS_PER_SEC = 1000000000;
+				double current = global::System.Diagnostics.Stopwatch.GetTimestamp();
+				double freq = global::System.Diagnostics.Stopwatch.Frequency;
+				return (long)((current / freq) * NANOS_PER_SEC);
 			}
 
 			public static string mapLibraryName(string libname)
@@ -4595,21 +4604,57 @@ namespace IKVM.NativeCode.java
 				}
 			}
 
+			static class Field
+			{
+				public static object getDeclaredAnnotationsImpl(object thisField)
+				{
+					FieldWrapper fw = FieldWrapper.FromField(thisField);
+					return Class.AnnotationsToMap(fw.DeclaringType.GetFieldAnnotations(fw));
+				}
+			}
+
 			static class Method
 			{
-				public static byte[] getRawAnnotations(object thisMethod)
+				public static object getDeclaredAnnotationsImpl(object methodOrConstructor)
 				{
-					return MethodWrapper.FromMethodOrConstructor(thisMethod).GetRawAnnotations();
+					MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(methodOrConstructor);
+					return Class.AnnotationsToMap(mw.DeclaringType.GetMethodAnnotations(mw));
 				}
 
-				public static byte[] getRawParameterAnnotations(object thisMethod)
+				public static object[][] getParameterAnnotationsImpl(object methodOrConstructor)
 				{
-					return MethodWrapper.FromMethodOrConstructor(thisMethod).GetRawParameterAnnotations();
+#if FIRST_PASS
+					return null;
+#else
+					MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(methodOrConstructor);
+					object[][] objAnn = mw.DeclaringType.GetParameterAnnotations(mw);
+					if (objAnn == null)
+					{
+						return null;
+					}
+					Annotation[][] ann = new Annotation[objAnn.Length][];
+					for (int i = 0; i < ann.Length; i++)
+					{
+						List<Annotation> list = new List<Annotation>();
+						foreach (object obj in objAnn[i])
+						{
+							Annotation a = obj as Annotation;
+							if (a != null)
+							{
+								global::ikvm.@internal.AnnotationAttributeBase.freeze(a);
+								list.Add(a);
+							}
+						}
+						ann[i] = list.ToArray();
+					}
+					return ann;
+#endif
 				}
 
-				public static byte[] getRawAnnotationDefault(object thisMethod)
+				public static object getDefaultValue(object thisMethod)
 				{
-					return MethodWrapper.FromMethodOrConstructor(thisMethod).GetRawAnnotationDefault();
+					MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(thisMethod);
+					return mw.DeclaringType.GetAnnotationDefault(mw);
 				}
 			}
 		}
@@ -8564,8 +8609,9 @@ namespace IKVM.NativeCode.sun.reflect
 			jlrMethod m = (jlrMethod)method;
 			if (DynamicMethodSupport.Enabled)
 			{
+				MethodWrapper mw = MethodWrapper.FromMethodOrConstructor(method);
 				TypeWrapper tw = TypeWrapper.FromClass(m.getDeclaringClass());
-				if (!tw.IsDynamicOnly && !tw.IsRemapped)
+				if (!mw.IsDynamicOnly && !tw.IsRemapped)
 				{
 					return new FastMethodAccessorImpl(m);
 				}
@@ -8581,7 +8627,7 @@ namespace IKVM.NativeCode.sun.reflect
 #else
 			jlrConstructor cons = (jlrConstructor)constructor;
 			if (DynamicMethodSupport.Enabled
-				&& !TypeWrapper.FromClass(cons.getDeclaringClass()).IsDynamicOnly)
+				&& !MethodWrapper.FromMethodOrConstructor(constructor).IsDynamicOnly)
 			{
 				return new FastConstructorAccessorImpl(cons);
 			}
@@ -8600,8 +8646,7 @@ namespace IKVM.NativeCode.sun.reflect
 			jlrConstructor cons = (jlrConstructor)constructorToCall;
 			if (DynamicMethodSupport.Enabled
 				&& cons.getParameterTypes().Length == 0
-				&& !TypeWrapper.FromClass(cons.getDeclaringClass()).IsDynamicOnly
-				&& !TypeWrapper.FromClass(classToInstantiate).IsDynamicOnly)
+				&& !MethodWrapper.FromMethodOrConstructor(constructorToCall).IsDynamicOnly)
 			{
 				return new FastSerializationConstructorAccessorImpl(cons, (jlClass)classToInstantiate);
 			}
