@@ -1158,6 +1158,22 @@
 			</method>
 		</class>
 		<!-- Here we are adding/replacing methods to existing classes -->
+    <class name="java.io.Console">
+      <method name="_reinitHack" sig="()V" modifiers="static">
+        <body>
+          <call class="java.io.Console" name="&lt;clinit&gt;" sig="()V" />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.io.File">
+      <method name="_reinitHack" sig="()V" modifiers="static">
+        <body>
+          <call class="java.io.File" name="&lt;clinit&gt;" sig="()V" />
+          <ret />
+        </body>
+      </method>
+    </class>
 		<class name="java.lang.Class">
       <field name="typeWrapper" sig="Lcli.IKVM.Internal.TypeWrapper;" modifiers="">
         <attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
@@ -1199,16 +1215,142 @@
           <ret />
         </body>
       </method>
+      <method name="clearSclSet" sig="()V" modifiers="static">
+        <body>
+          <ldc_i4_0 />
+          <stsfld class="java.lang.ClassLoader" name="sclSet" sig="Z" />
+          <ret />
+        </body>
+      </method>
     </class>
     <class name="java.lang.Thread">
-      <field name="vmThread" sig="Ljava.lang.Object;" modifiers="private" />
+      <field name="vmThread" sig="Lcli.IKVM.NativeCode.java.lang.Thread$VMThread;" modifiers="">
+        <attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
+      </field>
       <field name="parkLock" sig="Ljava.lang.Object;" modifiers="" />
       <field name="parkState" sig="I" modifiers="" />
+      <constructor sig="(Lcli.IKVM.NativeCode.java.lang.Thread$VMThread;Ljava.lang.ThreadGroup;Ljava.lang.String;)V">
+        <attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <stfld class="java.lang.Thread" name="vmThread" sig="Lcli.IKVM.NativeCode.java.lang.Thread$VMThread;" />
+          <ldarg_0 />
+          <ldarg_2 />
+          <ldarg_3 />
+          <call class="java.lang.Thread" name="&lt;init&gt;" sig="(Ljava.lang.ThreadGroup;Ljava.lang.String;)V" />
+          <ret />
+        </body>
+      </constructor>
+      <constructor sig="(Lcli.IKVM.NativeCode.java.lang.Thread$VMThread;Ljava.lang.ThreadGroup;Ljava.lang.Runnable;)V">
+        <attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <stfld class="java.lang.Thread" name="vmThread" sig="Lcli.IKVM.NativeCode.java.lang.Thread$VMThread;" />
+          <ldarg_0 />
+          <ldarg_2 />
+          <ldarg_3 />
+          <call class="java.lang.Thread" name="&lt;init&gt;" sig="(Ljava.lang.ThreadGroup;Ljava.lang.Runnable;)V" />
+          <ret />
+        </body>
+      </constructor>
+      <method name="init" sig="(Ljava.lang.ThreadGroup;Ljava.lang.Runnable;Ljava.lang.String;J)V">
+        <replace-method-call class="java.lang.Thread" name="currentThread" sig="()Ljava.lang.Thread;">
+          <code>
+            <ldarg_0 />
+            <call type="IKVM.NativeCode.java.lang.Thread" name="CurrentThreadFromInit" sig="(Ljava.lang.Object;)Ljava.lang.Object;" />
+            <castclass class="java.lang.Thread" />
+          </code>
+        </replace-method-call>
+      </method>
       <method name="getState" sig="()Ljava.lang.Thread$State;">
         <body>
           <ldarg_0 />
           <call type="IKVM.NativeCode.java.lang.Thread" name="getState" sig="(Ljava.lang.Object;)Ljava.lang.Object;" />
           <castclass class="java.lang.Thread$State" />
+          <ret />
+        </body>
+      </method>
+      <method name="_exit" sig="()V">
+        <body>
+          <ldarg_0 />
+          <call class="java.lang.Thread" name="exit" sig="()V" />
+          <ret />
+        </body>
+      </method>
+      <method name="_threadStatus" sig="()I">
+        <body>
+          <ldarg_0 />
+          <volatile />
+          <ldfld class="java.lang.Thread" name="threadStatus" sig="I" />
+          <ret />
+        </body>
+      </method>
+      <method name="_threadStatus" sig="(I)V">
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <volatile />
+          <stfld class="java.lang.Thread" name="threadStatus" sig="I" />
+          <ret />
+        </body>
+      </method>
+      <method name="_deamon" sig="(Z)V">
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <stfld class="java.lang.Thread" name="daemon" sig="Z" />
+          <ret />
+        </body>
+      </method>
+      <method name="_priority" sig="(I)V">
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <stfld class="java.lang.Thread" name="priority" sig="I" />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.lang.ThreadGroup">
+      <method name="createRootGroup" sig="()Ljava.lang.ThreadGroup;" modifiers="static">
+        <body>
+          <newobj class="java.lang.ThreadGroup" name="&lt;init&gt;" sig="()V" />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.lang.reflect.AccessibleObject">
+      <method name="_reinitHack" sig="()V" modifiers="static">
+        <body>
+          <call class="java.lang.reflect.AccessibleObject" name="&lt;clinit&gt;" sig="()V" />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.lang.reflect.Constructor">
+      <method name="_slot" sig="()I">
+        <body>
+          <ldarg_0 />
+          <ldfld class="java.lang.reflect.Constructor" name="slot" sig="I" />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.lang.reflect.Method">
+      <method name="_slot" sig="()I">
+        <body>
+          <ldarg_0 />
+          <ldfld class="java.lang.reflect.Method" name="slot" sig="I" />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.lang.reflect.Modifier">
+      <method name="_reinitHack" sig="()V" modifiers="static">
+        <body>
+          <call class="java.lang.reflect.Modifier" name="&lt;clinit&gt;" sig="()V" />
           <ret />
         </body>
       </method>
@@ -1224,6 +1366,52 @@
             <call class="java.net.PlainDatagramSocketImpl" name="equalsHack" sig="(Ljava.net.InetAddress;Ljava.net.InetAddress;)Z" />
           </code>
         </replace-method-call>
+      </method>
+    </class>
+    <class name="java.util.AbstractCollection">
+      <!-- We're adding an Add(object) method to allow collection initializers and Xml (soap) serialization to magically work -->
+      <!-- NOTE Modifiers.Final and MethodAttributes.NewSlot is recognized by AotTypeWrapper.MapModifiers() as a magic combination that generates a non-virtual method -->
+      <method name="Add" sig="(Ljava.lang.Object;)V" modifiers="public final" attributes="NewSlot">
+				<attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
+        <attribute type="System.ComponentModel.EditorBrowsableAttribute" sig="(Lcli.System.ComponentModel.EditorBrowsableState;)V">
+          <parameter>Never</parameter>
+        </attribute>
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <callvirt class="java.util.AbstractCollection" name="add" sig="(Ljava.lang.Object;)Z" />
+          <pop />
+          <ret />
+        </body>
+      </method>
+    </class>
+    <class name="java.util.AbstractMap">
+      <!-- NOTE the compiler will not magically make all Maps enumerable, so we manually implement IEnumerable here -->
+      <implements class="cli.System.Collections.IEnumerable" />
+      <method name="System.Collections.IEnumerable.GetEnumerator" sig="()Lcli.System.Collections.IEnumerator;" modifiers="private" attributes="NewSlot Virtual Final">
+        <override class="cli.System.Collections.IEnumerable" name="GetEnumerator" />
+        <attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
+        <body>
+          <ldarg_0 />
+          <newobj class="ikvm.lang.MapEnumerator" name="&lt;init&gt;" sig="(Ljava.util.Map;)V" />
+          <ret />
+        </body>
+      </method>
+      <!-- We're adding an Add(object,object) method to allow collection initializers to magically work -->
+      <!-- NOTE Modifiers.Final and MethodAttributes.NewSlot is recognized by AotTypeWrapper.MapModifiers() as a magic combination that generates a non-virtual method -->
+      <method name="Add" sig="(Ljava.lang.Object;Ljava.lang.Object;)V" modifiers="public final" attributes="NewSlot">
+        <attribute type="IKVM.Attributes.HideFromJavaAttribute" sig="()V" />
+        <attribute type="System.ComponentModel.EditorBrowsableAttribute" sig="(Lcli.System.ComponentModel.EditorBrowsableState;)V">
+          <parameter>Never</parameter>
+        </attribute>
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <ldarg_2 />
+          <callvirt class="java.util.AbstractMap" name="put" sig="(Ljava.lang.Object;Ljava.lang.Object;)Ljava.lang.Object;" />
+          <pop />
+          <ret />
+        </body>
       </method>
     </class>
     <class name="java.util.concurrent.locks.AbstractQueuedSynchronizer">
@@ -1322,9 +1510,6 @@
         </body>
       </method>
     </class>
-		<class name="ikvm.internal.EnumEnum">
-			<field name="typeWrapper" sig="Ljava.lang.Object;" modifiers="private" />
-		</class>
     <class name="java.lang.Package">
       <method name="getSystemPackage" sig="(Ljava.lang.String;)Ljava.lang.Package;" modifiers="static">
         <body>
@@ -1511,7 +1696,6 @@
       <method name="&lt;clinit&gt;" sig="()V">
         <body>
           <call class="java.lang.System" name="registerNatives" sig="()V" />
-          <call class="java.lang.LangHelper" name="init" sig="()V" />
           <ret />
         </body>
       </method>
@@ -1532,7 +1716,34 @@
 					<ret />
 				</body>
 			</method>
-		</class>
+      <method name="runInit" sig="()V" modifiers="static">
+        <body>
+          <call class="java.lang.System" name="initializeSystemClass" sig="()V" />
+          <ret />
+        </body>
+      </method>
+      <method name="setIn0" sig="(Ljava.io.InputStream;)V">
+        <body>
+          <ldarg_0 />
+          <stsfld class="java.lang.System" name="in" sig="Ljava.io.InputStream;" />
+          <ret />
+        </body>
+      </method>
+      <method name="setOut0" sig="(Ljava.io.PrintStream;)V">
+        <body>
+          <ldarg_0 />
+          <stsfld class="java.lang.System" name="out" sig="Ljava.io.PrintStream;" />
+          <ret />
+        </body>
+      </method>
+      <method name="setErr0" sig="(Ljava.io.PrintStream;)V">
+        <body>
+          <ldarg_0 />
+          <stsfld class="java.lang.System" name="err" sig="Ljava.io.PrintStream;" />
+          <ret />
+        </body>
+      </method>
+    </class>
     <class name="sun.misc.Launcher">
       <method name="&lt;init&gt;" sig="()V">
         <replace-method-call class="sun.misc.Launcher$ExtClassLoader" name="getExtClassLoader" sig="()Lsun.misc.Launcher$ExtClassLoader;">
@@ -1543,6 +1754,46 @@
         <replace-method-call class="sun.misc.Launcher$AppClassLoader" name="getAppClassLoader" sig="(Ljava.lang.ClassLoader;)Ljava.lang.ClassLoader;">
           <code>
             <call class="sun.misc.MiscHelper" name="getAppClassLoader" sig="(Ljava.lang.ClassLoader;)Ljava.lang.ClassLoader;" />
+          </code>
+        </replace-method-call>
+      </method>
+    </class>
+    <class name="sun.misc.SharedSecrets">
+      <method name="javaUtilJarAccess" sig="()Lsun.misc.JavaUtilJarAccess;">
+        <replace-method-call class="sun.misc.Unsafe" name="ensureClassInitialized" sig="(Ljava.lang.Class;)V">
+          <code>
+            <pop />
+            <pop />
+            <runclassinit class="java.util.jar.JarFile" />
+          </code>
+        </replace-method-call>
+      </method>
+      <method name="getJavaIOAccess" sig="()Lsun.misc.JavaIOAccess;">
+        <replace-method-call class="sun.misc.Unsafe" name="ensureClassInitialized" sig="(Ljava.lang.Class;)V">
+          <code>
+            <pop />
+            <pop />
+            <runclassinit class="java.io.Console" />
+          </code>
+        </replace-method-call>
+      </method>
+      <method name="getJavaIODeleteOnExitAccess" sig="()Lsun.misc.JavaIODeleteOnExitAccess;">
+        <replace-method-call class="sun.misc.Unsafe" name="ensureClassInitialized" sig="(Ljava.lang.Class;)V">
+          <code>
+            <pop />
+            <pop />
+            <runclassinit class="java.io.File" />
+          </code>
+        </replace-method-call>
+      </method>
+    </class>
+    <class name="sun.misc.Unsafe">
+      <method name="getUnsafe" sig="()Lsun.misc.Unsafe;">
+        <replace-method-call class="sun.misc.Unsafe" name="ensureClassInitialized" sig="(Ljava.lang.Class;)V">
+          <code>
+            <pop />
+            <pop />
+            <runclassinit class="java.lang.System" />
           </code>
         </replace-method-call>
       </method>
@@ -1750,6 +2001,19 @@
         </attribute>
       </method>
     </class>
+    <class name="java.nio.Bits">
+      <method name="byteOrder" sig="()Ljava.nio.ByteOrder;">
+        <body>
+          <ldsfld type="System.BitConverter" name="IsLittleEndian" sig="Z" />
+          <brfalse name="big" />
+          <ldsfld class="java.nio.ByteOrder" name="LITTLE_ENDIAN" sig="Ljava.nio.ByteOrder;" />
+          <ret />
+          <label name="big" />
+          <ldsfld class="java.nio.ByteOrder" name="BIG_ENDIAN" sig="Ljava.nio.ByteOrder;" />
+          <ret />
+        </body>
+      </method>
+    </class>
     <class name="java.nio.charset.spi.CharsetProvider">
       <method name="&lt;init&gt;" sig="()V">
         <!-- HACK this is a work around for a bootstrap issue, we can't trigger initialization of java.lang.System from here -->
@@ -1763,6 +2027,23 @@
             <label name="skip" />
           </code>
         </replace-method-call>
+      </method>
+    </class>
+    <class name="sun.reflect.ConstantPool">
+      <method name="_constantPoolOop" sig="()Ljava.lang.Object;">
+        <body>
+          <ldarg_0 />
+          <ldfld class="sun.reflect.ConstantPool" name="constantPoolOop" sig="Ljava.lang.Object;" />
+          <ret />
+        </body>
+      </method>
+      <method name="_constantPoolOop" sig="(Ljava.lang.Object;)V">
+        <body>
+          <ldarg_0 />
+          <ldarg_1 />
+          <stfld class="sun.reflect.ConstantPool" name="constantPoolOop" sig="Ljava.lang.Object;" />
+          <ret />
+        </body>
       </method>
     </class>
     <class name="sun.reflect.Reflection">

@@ -536,18 +536,6 @@ namespace IKVM.Internal
 					AttributeHelper.SetRemappedType(typeBuilder, shadowType);
 				}
 
-				// HACK because of the above FXBUG that prevents us from making the type both abstract and sealed,
-				// we need to emit a private constructor (otherwise reflection will automatically generate a public
-				// default constructor, another lame feature)
-				if(baseIsSealed)
-				{
-					ConstructorBuilder cb = typeBuilder.DefineConstructor(MethodAttributes.Private, CallingConventions.Standard, Type.EmptyTypes);
-					ILGenerator ilgen = cb.GetILGenerator();
-					// lazyman's way to create a type-safe bogus constructor
-					ilgen.Emit(OpCodes.Ldnull);
-					ilgen.Emit(OpCodes.Throw);
-				}
-
 				ArrayList methods = new ArrayList();
 
 				if(c.Constructors != null)
@@ -2081,6 +2069,11 @@ namespace IKVM.Internal
 			return key != null && key.Length != 0;
 		}
 
+		private static bool IsCoreAssembly(Assembly asm)
+		{
+			return AttributeHelper.IsDefined(asm, StaticCompiler.GetType("IKVM.Attributes.RemappedClassAttribute"));
+		}
+
 		internal static int Compile(CompilerOptions options)
 		{
 			Tracer.Info(Tracer.Compiler, "JVM.Compile path: {0}, assembly: {1}", options.path, options.assembly);
@@ -2117,7 +2110,7 @@ namespace IKVM.Internal
 				try
 				{
 					Assembly reference = Assembly.ReflectionOnlyLoadFrom(r);
-					if(AttributeHelper.IsDefined(reference, StaticCompiler.GetType("IKVM.Attributes.RemappedClassAttribute")))
+					if(IsCoreAssembly(reference))
 					{
 						JVM.CoreAssembly = reference;
 					}
@@ -2365,45 +2358,31 @@ namespace IKVM.Internal
 				}
 				loader.EmitRemappedTypes(map);
 			}
-			// Do a sanity check to make sure some of the bootstrap classes are available
-			bool hasBootClasses;
-			try
+			// If we do not yet have a reference to the core assembly and we are not compiling the core assembly,
+			// try to find the core assembly by looking at the assemblies that the runtime references
+			if(JVM.CoreAssembly == null && !loader.remapped.ContainsKey("java.lang.Object"))
 			{
-				hasBootClasses = loader.LoadClassByDottedNameFast("java.lang.Object") != null;
-			}
-			catch(ClassFormatError)
-			{
-				hasBootClasses = false;
-			}
-			if(!hasBootClasses)
-			{
-				AssemblyName coreAssemblyName = null;
-				foreach(AssemblyName asm in StaticCompiler.runtimeAssembly.GetReferencedAssemblies())
+				foreach(AssemblyName name in StaticCompiler.runtimeAssembly.GetReferencedAssemblies())
 				{
-					// HACK we assume that IKVM.Runtime.dll only references the core library and that the name starts with "IKVM."
-					if(asm.Name.StartsWith("IKVM."))
-					{
-						coreAssemblyName = asm;
-						break;
-					}
-				}
-				if(coreAssemblyName == null)
-				{
-					Console.Error.WriteLine("Error: runtime assembly doesn't reference core assembly");
-					return 1;
-				}
-				try
-				{
-					JVM.CoreAssembly = Assembly.ReflectionOnlyLoad(coreAssemblyName.FullName);
-				}
-				catch(FileNotFoundException)
-				{
+					Assembly asm = null;
 					try
 					{
-						JVM.CoreAssembly = Assembly.ReflectionOnlyLoadFrom(StaticCompiler.runtimeAssembly.CodeBase + "\\..\\" + coreAssemblyName.Name + ".dll");
+						asm = Assembly.ReflectionOnlyLoad(name.FullName);
 					}
 					catch(FileNotFoundException)
 					{
+						try
+						{
+							asm = Assembly.ReflectionOnlyLoadFrom(StaticCompiler.runtimeAssembly.CodeBase + "\\..\\" + name.Name + ".dll");
+						}
+						catch(FileNotFoundException)
+						{
+						}
+					}
+					if(asm != null && IsCoreAssembly(asm))
+					{
+						JVM.CoreAssembly = asm;
+						break;
 					}
 				}
 				if(JVM.CoreAssembly == null)
@@ -2426,6 +2405,11 @@ namespace IKVM.Internal
 			if(map != null)
 			{
 				loader.LoadMapXml(map);
+			}
+
+			if(!loader.remapped.ContainsKey("java.lang.Object"))
+			{
+				FakeTypes.Load(JVM.CoreAssembly);
 			}
 
 			Tracer.Info(Tracer.Compiler, "Compiling class files (1)");
@@ -2515,6 +2499,13 @@ namespace IKVM.Internal
 				}
 				Tracer.Info(Tracer.Compiler, "Loading remapped types (2)");
 				loader.FinishRemappedTypes();
+				// if we're compiling the core class library, generate the "fake" generic types
+				// that represent the not-really existing types (i.e. the Java enums that represent .NET enums,
+				// the Method interface for delegates and the Annotation annotation for custom attributes)
+				if(loader.remapped.ContainsKey("java.lang.Object"))
+				{
+					FakeTypes.Create(loader.GetTypeWrapperFactory().ModuleBuilder, loader);
+				}
 			}
 			Tracer.Info(Tracer.Compiler, "Compiling class files (2)");
 			loader.AddResources(options.resources, options.compressedResources);

@@ -46,6 +46,25 @@ using jlrConstructor = java.lang.reflect.Constructor;
 using jlrField = java.lang.reflect.Field;
 #endif
 
+// HACK we have our own version of ExtensionAttribute to avoid a System.Core.dll (i.e. .NET 3.5) dependency
+// it turns out that the C# compiler will honor the attribute, even if it's from a different assembly
+// (note that it's internal because it should only be used by the core class library assembly and it will
+// go away at some point in the future (when taking a .NET 3.5 dependency is acceptable))
+namespace System.Runtime.CompilerServices
+{
+	[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+	// HACK we only "see" public attributes (as Java annotations),
+	// so we make our ExtensionAttribute public in the first compilation pass
+	// (we don't want it to be public later on, because that will cause conflicts
+	// with the real ExtensionAttribute).
+#if FIRST_PASS
+	public
+#endif
+	sealed class ExtensionAttribute : Attribute
+	{
+	}
+}
+
 namespace IKVM.NativeCode.gnu.java.net.protocol.ikvmres
 {
 	static class Handler
@@ -337,12 +356,6 @@ namespace IKVM.NativeCode.ikvm.runtime
 
 	static class Util
 	{
-		private static Type enumEnumType = JVM.CoreAssembly.GetType("ikvm.internal.EnumEnum");
-		private static FieldInfo enumEnumTypeField = enumEnumType.GetField("typeWrapper", BindingFlags.Instance | BindingFlags.NonPublic);
-
-		// we don't want "beforefieldinit"
-		static Util() {}
-
 		public static object getClassFromObject(object o)
 		{
 			return GetTypeWrapperFromObject(o).ClassObject;
@@ -354,10 +367,6 @@ namespace IKVM.NativeCode.ikvm.runtime
 			if(t.IsPrimitive || (ClassLoaderWrapper.IsRemappedType(t) && !t.IsSealed))
 			{
 				return DotNetTypeWrapper.GetWrapperFromDotNetType(t);
-			}
-			if(t == enumEnumType)
-			{
-				return (TypeWrapper)enumEnumTypeField.GetValue(o);
 			}
 			return ClassLoaderWrapper.GetWrapperFromType(t);
 		}
@@ -413,10 +422,6 @@ namespace IKVM.NativeCode.ikvm.runtime
 		public static Type getInstanceTypeFromClass(object clazz)
 		{
 			TypeWrapper wrapper = TypeWrapper.FromClass(clazz);
-			if(wrapper.IsDynamicOnly)
-			{
-				return null;
-			}
 			if(wrapper.IsRemapped && wrapper.IsFinal)
 			{
 				return wrapper.TypeAsTBD;
