@@ -41,6 +41,7 @@ namespace IKVM.Internal
 #endif
 		internal abstract TypeWrapper DefineClassImpl(Hashtable types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain);
 		internal abstract bool ReserveName(string name);
+		internal abstract Type DefineUnloadable(string name);
 	}
 
 	class ClassLoaderWrapper
@@ -224,6 +225,14 @@ namespace IKVM.Internal
 			get
 			{
 				return (codegenoptions & CodeGenOptions.NoJNI) != 0;
+			}
+		}
+
+		internal bool RemoveAsserts
+		{
+			get
+			{
+				return (codegenoptions & CodeGenOptions.RemoveAsserts) != 0;
 			}
 		}
 
@@ -1513,7 +1522,7 @@ namespace IKVM.Internal
 			}
 			if(hasDotNetModule)
 			{
-				// for manufactured types, we load the declaring outer type (the real one) and
+				// for fake types, we load the declaring outer type (the real one) and
 				// let that generated the manufactured nested classes
 				TypeWrapper outer = null;
 				if(name.EndsWith(DotNetTypeWrapper.DelegateInterfaceSuffix))
@@ -1536,7 +1545,7 @@ namespace IKVM.Internal
 				{
 					outer = DoLoad(name.Substring(0, name.Length - DotNetTypeWrapper.EnumEnumSuffix.Length));
 				}
-				if(outer != null && (outer is DotNetTypeWrapper || outer.IsDynamicOnly))
+				if(outer != null && outer.IsFakeTypeContainer)
 				{
 					foreach(TypeWrapper tw in outer.InnerClasses)
 					{
