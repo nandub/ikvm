@@ -1586,6 +1586,11 @@ namespace IKVM.NativeCode.java
 					{
 						return false;
 					}
+					// FXBUG on .NET 1.1 and Mono CreateDirectory doesn't throw an IOException if a file with the same name already exists
+					if (System.IO.File.Exists(path))
+					{
+						return false;
+					}
 					return System.IO.Directory.CreateDirectory(path) != null;
 				}
 				catch (System.Security.SecurityException)
@@ -3684,6 +3689,7 @@ namespace IKVM.NativeCode.java
 			private static readonly FieldInfo daemonField;
 			private static readonly FieldInfo threadPriorityField;
 			private static readonly MethodInfo threadExitMethod;
+			private static readonly FieldInfo threadContextClassLoaderField;
 			private static readonly object mainThreadGroup;
 			// we don't really use the Thread.threadStatus field, but we have to set it to a non-zero value,
 			// so we use RUNNABLE (which the HotSpot also uses) and the value was taken from the
@@ -3905,6 +3911,7 @@ namespace IKVM.NativeCode.java
 				daemonField = typeof(jlThread).GetField("daemon", BindingFlags.Instance | BindingFlags.NonPublic);
 				threadPriorityField = typeof(jlThread).GetField("priority", BindingFlags.Instance | BindingFlags.NonPublic);
 				threadExitMethod = typeof(jlThread).GetMethod("exit", BindingFlags.Instance | BindingFlags.NonPublic, null, Type.EmptyTypes, null);
+				threadContextClassLoaderField = typeof(jlThread).GetField("contextClassLoader", BindingFlags.Instance | BindingFlags.NonPublic);
 
 				jlThreadGroup systemThreadGroup = (jlThreadGroup)Activator.CreateInstance(typeof(jlThreadGroup), true);
 				mainThreadGroup = new jlThreadGroup(systemThreadGroup, "main");
@@ -3990,6 +3997,16 @@ namespace IKVM.NativeCode.java
 				return (VMThread)vmThreadField.GetValue(threadObj);
 			}
 
+#if !FIRST_PASS
+			sealed class GetSystemClassLoaderAction : jsPrivilegedAction
+			{
+				public object run()
+				{
+					return jlClassLoader.getSystemClassLoader();
+				}
+			}
+#endif
+
 			private static VMThread AttachThread(string name, bool addToGroup, object threadGroup)
 			{
 #if FIRST_PASS
@@ -4008,6 +4025,10 @@ namespace IKVM.NativeCode.java
 				vmThread = t;
 				cleanup = new Cleanup(thread);
 				threadPriorityField.SetValue(thread, MapNativePriorityToJava(t.nativeThread.Priority));
+				if (addToGroup)
+				{
+					threadContextClassLoaderField.SetValue(thread, jsAccessController.doPrivileged(new GetSystemClassLoaderAction()));
+				}
 				if (name == null)
 				{
 					// inherit the .NET name of the thread (if it has a name)
