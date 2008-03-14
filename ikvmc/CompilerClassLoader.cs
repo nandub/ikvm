@@ -380,25 +380,23 @@ namespace IKVM.Internal
 			foreach(DictionaryEntry d in resources)
 			{
 				byte[] buf = (byte[])d.Value;
-				if(buf.Length > 0)
+				string name = JVM.MangleResourceName((string)d.Key);
+				MemoryStream mem = new MemoryStream();
+				if(compressedResources)
 				{
-					string name = JVM.MangleResourceName((string)d.Key);
-					MemoryStream mem = new MemoryStream();
-					if(compressedResources)
+					mem.WriteByte(1);
+					using(System.IO.Compression.DeflateStream def = new System.IO.Compression.DeflateStream(mem, System.IO.Compression.CompressionMode.Compress, true))
 					{
-						mem.WriteByte(1);
-						System.IO.Compression.DeflateStream def = new System.IO.Compression.DeflateStream(mem, System.IO.Compression.CompressionMode.Compress, true);
 						def.Write(buf, 0, buf.Length);
-						def.Close();
 					}
-					else
-					{
-						mem.WriteByte(0);
-						mem.Write(buf, 0, buf.Length);
-					}
-					mem.Position = 0;
-					moduleBuilder.DefineManifestResource(name, mem, ResourceAttributes.Public);
 				}
+				else
+				{
+					mem.WriteByte(0);
+					mem.Write(buf, 0, buf.Length);
+				}
+				mem.Position = 0;
+				moduleBuilder.DefineManifestResource(name, mem, ResourceAttributes.Public);
 			}
 		}
 
@@ -2407,6 +2405,11 @@ namespace IKVM.Internal
 				loader.LoadMapXml(map);
 			}
 
+			if(!loader.remapped.ContainsKey("java.lang.Object"))
+			{
+				FakeTypes.Load(JVM.CoreAssembly);
+			}
+
 			Tracer.Info(Tracer.Compiler, "Compiling class files (1)");
 			ArrayList allwrappers = new ArrayList();
 			foreach(string s in new ArrayList(h.Keys))
@@ -2494,6 +2497,13 @@ namespace IKVM.Internal
 				}
 				Tracer.Info(Tracer.Compiler, "Loading remapped types (2)");
 				loader.FinishRemappedTypes();
+				// if we're compiling the core class library, generate the "fake" generic types
+				// that represent the not-really existing types (i.e. the Java enums that represent .NET enums,
+				// the Method interface for delegates and the Annotation annotation for custom attributes)
+				if(loader.remapped.ContainsKey("java.lang.Object"))
+				{
+					FakeTypes.Create(loader.GetTypeWrapperFactory().ModuleBuilder, loader);
+				}
 			}
 			Tracer.Info(Tracer.Compiler, "Compiling class files (2)");
 			loader.AddResources(options.resources, options.compressedResources);
