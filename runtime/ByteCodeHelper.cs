@@ -31,54 +31,6 @@ using System.Runtime.InteropServices;
 
 namespace IKVM.Runtime
 {
-	static class GhostTag
-	{
-		private static volatile PassiveWeakDictionary<object, TypeWrapper> dict;
-
-		internal static void SetTag(object obj, RuntimeTypeHandle typeHandle)
-		{
-			SetTag(obj, ClassLoaderWrapper.GetWrapperFromType(Type.GetTypeFromHandle(typeHandle)));
-		}
-
-		internal static void SetTag(object obj, TypeWrapper wrapper)
-		{
-			if(dict == null)
-			{
-				PassiveWeakDictionary<object, TypeWrapper> newDict = new PassiveWeakDictionary<object, TypeWrapper>();
-#pragma warning disable 0420 // don't whine about CompareExchange not respecting 'volatile'
-				if(Interlocked.CompareExchange(ref dict, newDict, null) != null)
-#pragma warning restore
-				{
-					newDict.Dispose();
-				}
-			}
-			dict.Add(obj, wrapper);
-		}
-
-		internal static TypeWrapper GetTag(object obj)
-		{
-			if(dict != null)
-			{
-				TypeWrapper tw;
-				dict.TryGetValue(obj, out tw);
-				return tw;
-			}
-			return null;
-		}
-
-		// this method is called from <GhostType>.IsInstanceArray()
-		internal static bool IsGhostArrayInstance(object obj, RuntimeTypeHandle typeHandle, int rank)
-		{
-			TypeWrapper tw1 = GhostTag.GetTag(obj);
-			if(tw1 != null)
-			{
-				TypeWrapper tw2 = ClassLoaderWrapper.GetWrapperFromType(Type.GetTypeFromHandle(typeHandle)).MakeArrayType(rank);
-				return tw1.IsAssignableTo(tw2);
-			}
-			return false;
-		}
-	}
-
 	public static class ByteCodeHelper
 	{
 		[DebuggerStepThroughAttribute]
@@ -109,29 +61,6 @@ namespace IKVM.Runtime
 				}
 			}
 			return o;
-		}
-
-		[DebuggerStepThroughAttribute]
-		public static object multianewarray_ghost(RuntimeTypeHandle typeHandle, int[] lengths)
-		{
-			Type type = Type.GetTypeFromHandle(typeHandle);
-			int rank = 0;
-			while(type.IsArray)
-			{
-				rank++;
-				type = type.GetElementType();
-			}
-			object obj = multianewarray(ArrayTypeWrapper.MakeArrayType(typeof(object), rank).TypeHandle, lengths);
-			GhostTag.SetTag(obj, typeHandle);
-			return obj;
-		}
-
-		[DebuggerStepThroughAttribute]
-		public static T[] anewarray_ghost<T>(int length, RuntimeTypeHandle typeHandle)
-		{
-			T[] obj = new T[length];
-			GhostTag.SetTag(obj, typeHandle);
-			return obj;
 		}
 
 #if !COMPACT_FRAMEWORK && !FIRST_PASS
@@ -193,35 +122,21 @@ namespace IKVM.Runtime
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static object DynamicGetfield(object obj, string name, string sig, RuntimeTypeHandle type, string clazz, ikvm.@internal.CallerID callerID)
+		public static object DynamicGetfield(object obj, string name, string sig, RuntimeTypeHandle type, string clazz)
 		{
 			Profiler.Count("DynamicGetfield");
-			FieldWrapper fw = GetFieldWrapper(ClassLoaderWrapper.GetWrapperFromType(obj.GetType()), type, clazz, name, sig, false);
-			java.lang.reflect.Field field = (java.lang.reflect.Field)fw.ToField(false);
-			object val = field.get(obj, callerID);
-			if(fw.FieldTypeWrapper.IsPrimitive)
-			{
-				val = JVM.Unbox(val);
-			}
-			return val;
+			return GetFieldWrapper(ClassLoaderWrapper.GetWrapperFromType(obj.GetType()), type, clazz, name, sig, false).GetValue(obj);
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static object DynamicGetstatic(string name, string sig, RuntimeTypeHandle type, string clazz, ikvm.@internal.CallerID callerID)
+		public static object DynamicGetstatic(string name, string sig, RuntimeTypeHandle type, string clazz)
 		{
 			Profiler.Count("DynamicGetstatic");
-			FieldWrapper fw = GetFieldWrapper(null, type, clazz, name, sig, true);
-			java.lang.reflect.Field field = (java.lang.reflect.Field)fw.ToField(false);
-			object val = field.get(null, callerID);
-			if(fw.FieldTypeWrapper.IsPrimitive)
-			{
-				val = JVM.Unbox(val);
-			}
-			return val;
+			return GetFieldWrapper(null, type, clazz, name, sig, true).GetValue(null);
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static void DynamicPutfield(object obj, object val, string name, string sig, RuntimeTypeHandle type, string clazz, ikvm.@internal.CallerID callerID)
+		public static void DynamicPutfield(object obj, object val, string name, string sig, RuntimeTypeHandle type, string clazz)
 		{
 			Profiler.Count("DynamicPutfield");
 			FieldWrapper fw = GetFieldWrapper(ClassLoaderWrapper.GetWrapperFromType(obj.GetType()), type, clazz, name, sig, false);
@@ -229,16 +144,11 @@ namespace IKVM.Runtime
 			{
 				throw new java.lang.IllegalAccessError("Field " + fw.DeclaringType.Name + "." + fw.Name + " is final");
 			}
-			java.lang.reflect.Field field = (java.lang.reflect.Field)fw.ToField(false);
-			if(fw.FieldTypeWrapper.IsPrimitive)
-			{
-				val = JVM.Box(val);
-			}
-			field.set(obj, val, callerID);
+			fw.SetValue(obj, val);
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static void DynamicPutstatic(object val, string name, string sig, RuntimeTypeHandle type, string clazz, ikvm.@internal.CallerID callerID)
+		public static void DynamicPutstatic(object val, string name, string sig, RuntimeTypeHandle type, string clazz)
 		{
 			Profiler.Count("DynamicPutstatic");
 			FieldWrapper fw = GetFieldWrapper(null, type, clazz, name, sig, true);
@@ -246,12 +156,7 @@ namespace IKVM.Runtime
 			{
 				throw new java.lang.IllegalAccessError("Field " + fw.DeclaringType.Name + "." + fw.Name + " is final");
 			}
-			java.lang.reflect.Field field = (java.lang.reflect.Field)fw.ToField(false);
-			if(fw.FieldTypeWrapper.IsPrimitive)
-			{
-				val = JVM.Box(val);
-			}
-			field.set(null, val, callerID);
+			fw.SetValue(null, val);
 		}
 
 		// the sole purpose of this method is to check whether the clazz can be instantiated (but not to actually do it)
@@ -346,53 +251,24 @@ namespace IKVM.Runtime
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static object DynamicInvokeSpecialNew(RuntimeTypeHandle type, string clazz, string name, string sig, object[] args, ikvm.@internal.CallerID callerID)
+		public static object DynamicInvokeSpecialNew(RuntimeTypeHandle type, string clazz, string name, string sig, object[] args)
 		{
 			Profiler.Count("DynamicInvokeSpecialNew");
-			MethodWrapper mw = GetMethodWrapper(null, type, clazz, name, sig, false);
-			java.lang.reflect.Constructor cons = (java.lang.reflect.Constructor)mw.ToMethodOrConstructor(false);
-			return cons.newInstance(BoxArgs(mw, args), callerID);
+			return GetMethodWrapper(null, type, clazz, name, sig, false).Invoke(null, args, false);
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static object DynamicInvokestatic(RuntimeTypeHandle type, string clazz, string name, string sig, object[] args, ikvm.@internal.CallerID callerID)
+		public static object DynamicInvokestatic(RuntimeTypeHandle type, string clazz, string name, string sig, object[] args)
 		{
 			Profiler.Count("DynamicInvokestatic");
-			MethodWrapper mw = GetMethodWrapper(null, type, clazz, name, sig, true);
-			java.lang.reflect.Method m = (java.lang.reflect.Method)mw.ToMethodOrConstructor(false);
-			object val = m.invoke(null, BoxArgs(mw, args), callerID);
-			if (mw.ReturnType.IsPrimitive && mw.ReturnType != PrimitiveTypeWrapper.VOID)
-			{
-				val = JVM.Unbox(val);
-			}
-			return val;
+			return GetMethodWrapper(null, type, clazz, name, sig, true).Invoke(null, args, false);
 		}
 
 		[DebuggerStepThroughAttribute]
-		public static object DynamicInvokevirtual(object obj, RuntimeTypeHandle type, string clazz, string name, string sig, object[] args, ikvm.@internal.CallerID callerID)
+		public static object DynamicInvokevirtual(object obj, RuntimeTypeHandle type, string clazz, string name, string sig, object[] args)
 		{
 			Profiler.Count("DynamicInvokevirtual");
-			MethodWrapper mw = GetMethodWrapper(ClassLoaderWrapper.GetWrapperFromType(obj.GetType()), type, clazz, name, sig, false);
-			java.lang.reflect.Method m = (java.lang.reflect.Method)mw.ToMethodOrConstructor(false);
-			object val = m.invoke(obj, BoxArgs(mw, args), callerID);
-			if (mw.ReturnType.IsPrimitive && mw.ReturnType != PrimitiveTypeWrapper.VOID)
-			{
-				val = JVM.Unbox(val);
-			}
-			return val;
-		}
-
-		private static object[] BoxArgs(MethodWrapper mw, object[] args)
-		{
-			TypeWrapper[] paramTypes = mw.GetParameters();
-			for (int i = 0; i < paramTypes.Length; i++)
-			{
-				if (paramTypes[i].IsPrimitive)
-				{
-					args[i] = JVM.Box(args[i]);
-				}
-			}
-			return args;
+			return GetMethodWrapper(ClassLoaderWrapper.GetWrapperFromType(obj.GetType()), type, clazz, name, sig, false).Invoke(obj, args, false);
 		}
 
 		[DebuggerStepThroughAttribute]
@@ -740,8 +616,10 @@ namespace IKVM.Runtime
 		{
 #if COMPACT_FRAMEWORK || FIRST_PASS
 			return false;
-#else
+#elif OPENJDK
 			return Environment.HasShutdownStarted && !java.lang.Shutdown.runFinalizersOnExit;
+#else
+			return Environment.HasShutdownStarted && !IKVM.Internal.JVM.Library.runFinalizersOnExit();
 #endif
 		}
 

@@ -23,7 +23,7 @@
 */
 using System;
 using System.IO;
-using System.Collections.Generic;
+using System.Collections;
 using IKVM.Attributes;
 
 namespace IKVM.Internal
@@ -70,7 +70,6 @@ namespace IKVM.Internal
 		private const ushort FLAG_MASK_DEPRECATED = 0x100;
 		private const ushort FLAG_MASK_INTERNAL = 0x200;
 		private const ushort FLAG_MASK_EFFECTIVELY_FINAL = 0x400;
-		private const ushort FLAG_HAS_CALLERID = 0x800;
 		private ConstantPoolItemClass[] interfaces;
 		private Field[] fields;
 		private Method[] methods;
@@ -81,7 +80,7 @@ namespace IKVM.Internal
 		private string signature;
 		private string[] enclosingMethod;
 
-		private static class SupportedVersions
+		private class SupportedVersions
 		{
 			internal static readonly int Minimum = 45;
 			internal static readonly int Maximum = 50;
@@ -744,13 +743,13 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal void Link(TypeWrapper thisType)
+		internal void Link(TypeWrapper thisType, Hashtable classCache)
 		{
 			for(int i = 1; i < constantpool.Length; i++)
 			{
 				if(constantpool[i] != null)
 				{
-					constantpool[i].Link(thisType);
+					constantpool[i].Link(thisType, classCache);
 				}
 			}
 		}
@@ -822,7 +821,7 @@ namespace IKVM.Internal
 
 		internal void RemoveUnusedFields()
 		{
-			List<Field> list = new List<Field>();
+			ArrayList list = new ArrayList();
 			foreach(Field f in fields)
 			{
 				if(f.IsPrivate && f.IsStatic && f.Name != "serialVersionUID" && !IsReferenced(f))
@@ -835,7 +834,7 @@ namespace IKVM.Internal
 					list.Add(f);
 				}
 			}
-			fields = list.ToArray();
+			fields = (Field[])list.ToArray(typeof(Field));
 		}
 
 		private bool IsReferenced(Field fld)
@@ -874,17 +873,6 @@ namespace IKVM.Internal
 		internal ConstantPoolItemMI GetMethodref(int index)
 		{
 			return (ConstantPoolItemMI)constantpool[index];
-		}
-
-		// this won't throw an exception if index is invalid
-		// (used by IsAccessBridge)
-		internal ConstantPoolItemMI SafeGetMethodref(int index)
-		{
-			if (index > 0 && index < constantpool.Length)
-			{
-				return constantpool[index] as ConstantPoolItemMI;
-			}
-			return null;
 		}
 
 		private ConstantPoolItem GetConstantPoolItem(int index)
@@ -1076,21 +1064,6 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal bool HasInitializedFields
-		{
-			get
-			{
-				foreach (Field f in fields)
-				{
-					if (f.IsStatic && !f.IsFinal && f.ConstantValue != null)
-					{
-						return true;
-					}
-				}
-				return false;
-			}
-		}
-
 		internal struct InnerClass
 		{
 			internal ushort innerClass;		// ConstantPoolItemClass
@@ -1123,7 +1096,7 @@ namespace IKVM.Internal
 			{
 			}
 
-			internal virtual void Link(TypeWrapper thisType)
+			internal virtual void Link(TypeWrapper thisType, Hashtable classCache)
 			{
 			}
 
@@ -1216,11 +1189,11 @@ namespace IKVM.Internal
 					throw new ClassFormatError("Invalid class name \"{0}\"", name);
 			}
 
-			internal override void Link(TypeWrapper thisType)
+			internal override void Link(TypeWrapper thisType, Hashtable classCache)
 			{
 				if(typeWrapper == null)
 				{
-					typeWrapper = LoadClassHelper(thisType.GetClassLoader(), name);
+					typeWrapper = LoadClassHelper(thisType.GetClassLoader(), classCache, name);
 				}
 			}
 
@@ -1243,11 +1216,16 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static TypeWrapper LoadClassHelper(ClassLoaderWrapper classLoader, string name)
+		private static TypeWrapper LoadClassHelper(ClassLoaderWrapper classLoader, Hashtable classCache, string name)
 		{
 			try
 			{
-				TypeWrapper wrapper = classLoader.LoadClassByDottedNameFast(name);
+				TypeWrapper wrapper = (TypeWrapper)classCache[name];
+				if(wrapper != null)
+				{
+					return wrapper;
+				}
+				wrapper = classLoader.LoadClassByDottedNameFast(name);
 				if(wrapper == null)
 				{
 					Tracer.Error(Tracer.ClassLoading, "Class not found: {0}", name);
@@ -1283,7 +1261,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static TypeWrapper SigDecoderWrapper(ClassLoaderWrapper classLoader, ref int index, string sig)
+		private static TypeWrapper SigDecoderWrapper(ClassLoaderWrapper classLoader, Hashtable classCache, ref int index, string sig)
 		{
 			switch(sig[index++])
 			{
@@ -1303,7 +1281,7 @@ namespace IKVM.Internal
 				{
 					int pos = index;
 					index = sig.IndexOf(';', index) + 1;
-					return LoadClassHelper(classLoader, sig.Substring(pos, index - pos - 1));
+					return LoadClassHelper(classLoader, classCache, sig.Substring(pos, index - pos - 1));
 				}
 				case 'S':
 					return PrimitiveTypeWrapper.SHORT;
@@ -1326,7 +1304,7 @@ namespace IKVM.Internal
 						{
 							int pos = index;
 							index = sig.IndexOf(';', index) + 1;
-							return LoadClassHelper(classLoader, array + sig.Substring(pos, index - pos));
+							return LoadClassHelper(classLoader, classCache, array + sig.Substring(pos, index - pos));
 						}
 						case 'B':
 						case 'C':
@@ -1336,7 +1314,7 @@ namespace IKVM.Internal
 						case 'J':
 						case 'S':
 						case 'Z':
-							return LoadClassHelper(classLoader, array + sig[index++]);
+							return LoadClassHelper(classLoader, classCache, array + sig[index++]);
 						default:
 							// TODO this should never happen, because ClassFile should validate the descriptors
 							throw new InvalidOperationException(sig.Substring(index));
@@ -1348,30 +1326,32 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal static TypeWrapper[] ArgTypeWrapperListFromSig(ClassLoaderWrapper classLoader, string sig)
+		internal static TypeWrapper[] ArgTypeWrapperListFromSig(ClassLoaderWrapper classLoader, Hashtable classCache, string sig)
 		{
 			if(sig[1] == ')')
 			{
 				return TypeWrapper.EmptyArray;
 			}
-			List<TypeWrapper> list = new List<TypeWrapper>();
+			ArrayList list = new ArrayList();
 			for(int i = 1; sig[i] != ')';)
 			{
-				list.Add(SigDecoderWrapper(classLoader, ref i, sig));
+				list.Add(SigDecoderWrapper(classLoader, classCache, ref i, sig));
 			}
-			return list.ToArray();
+			TypeWrapper[] types = new TypeWrapper[list.Count];
+			list.CopyTo(types);
+			return types;
 		}
 
-		internal static TypeWrapper FieldTypeWrapperFromSig(ClassLoaderWrapper classLoader, string sig)
+		internal static TypeWrapper FieldTypeWrapperFromSig(ClassLoaderWrapper classLoader, Hashtable classCache, string sig)
 		{
 			int index = 0;
-			return SigDecoderWrapper(classLoader, ref index, sig);
+			return SigDecoderWrapper(classLoader, classCache, ref index, sig);
 		}
 
-		internal static TypeWrapper RetTypeWrapperFromSig(ClassLoaderWrapper classLoader, string sig)
+		internal static TypeWrapper RetTypeWrapperFromSig(ClassLoaderWrapper classLoader, Hashtable classCache, string sig)
 		{
 			int index = sig.IndexOf(')') + 1;
-			return SigDecoderWrapper(classLoader, ref index, sig);
+			return SigDecoderWrapper(classLoader, classCache, ref index, sig);
 		}
 
 		private sealed class ConstantPoolItemDouble : ConstantPoolItem
@@ -1428,9 +1408,9 @@ namespace IKVM.Internal
 
 			protected abstract void Validate(string name, string descriptor, int majorVersion);
 
-			internal override void Link(TypeWrapper thisType)
+			internal override void Link(TypeWrapper thisType, Hashtable classCache)
 			{
-				clazz.Link(thisType);
+				clazz.Link(thisType, classCache);
 			}
 
 			internal string Name
@@ -1489,9 +1469,9 @@ namespace IKVM.Internal
 				return fieldTypeWrapper;
 			}
 
-			internal override void Link(TypeWrapper thisType)
+			internal override void Link(TypeWrapper thisType, Hashtable classCache)
 			{
-				base.Link(thisType);
+				base.Link(thisType, classCache);
 				lock(this)
 				{
 					if(fieldTypeWrapper != null)
@@ -1510,7 +1490,7 @@ namespace IKVM.Internal
 					}
 				}
 				ClassLoaderWrapper classLoader = thisType.GetClassLoader();
-				TypeWrapper fld = FieldTypeWrapperFromSig(classLoader, this.Signature);
+				TypeWrapper fld = FieldTypeWrapperFromSig(classLoader, classCache, this.Signature);
 				lock(this)
 				{
 					if(fieldTypeWrapper == null)
@@ -1557,9 +1537,9 @@ namespace IKVM.Internal
 				}
 			}
 
-			internal override void Link(TypeWrapper thisType)
+			internal override void Link(TypeWrapper thisType, Hashtable classCache)
 			{
-				base.Link(thisType);
+				base.Link(thisType, classCache);
 				lock(this)
 				{
 					if(argTypeWrappers != null)
@@ -1568,8 +1548,8 @@ namespace IKVM.Internal
 					}
 				}
 				ClassLoaderWrapper classLoader = thisType.GetClassLoader();
-				TypeWrapper[] args = ArgTypeWrapperListFromSig(classLoader, this.Signature);
-				TypeWrapper ret = RetTypeWrapperFromSig(classLoader, this.Signature);
+				TypeWrapper[] args = ArgTypeWrapperListFromSig(classLoader, classCache, this.Signature);
+				TypeWrapper ret = RetTypeWrapperFromSig(classLoader, classCache, this.Signature);
 				lock(this)
 				{
 					if(argTypeWrappers == null)
@@ -1607,9 +1587,9 @@ namespace IKVM.Internal
 			{
 			}
 
-			internal override void Link(TypeWrapper thisType)
+			internal override void Link(TypeWrapper thisType, Hashtable classCache)
 			{
-				base.Link(thisType);
+				base.Link(thisType, classCache);
 				TypeWrapper wrapper = GetClassType();
 				if(!wrapper.IsUnloadable)
 				{
@@ -1657,9 +1637,9 @@ namespace IKVM.Internal
 				return null;
 			}
 
-			internal override void Link(TypeWrapper thisType)
+			internal override void Link(TypeWrapper thisType, Hashtable classCache)
 			{
-				base.Link(thisType);
+				base.Link(thisType, classCache);
 				TypeWrapper wrapper = GetClassType();
 				if(!wrapper.IsUnloadable)
 				{
@@ -2327,10 +2307,6 @@ namespace IKVM.Internal
 									this.access_flags &= ~Modifiers.AccessMask;
 									flags |= FLAG_MASK_INTERNAL;
 								}
-								if(annot[1].Equals("Likvm/internal/HasCallerID;"))
-								{
-									flags |= FLAG_HAS_CALLERID;
-								}
 							}
 							break;
 #endif
@@ -2382,15 +2358,6 @@ namespace IKVM.Internal
 				get
 				{
 					return ReferenceEquals(Name, StringConstants.CLINIT) && ReferenceEquals(Signature, StringConstants.SIG_VOID);
-				}
-			}
-
-			// for use by ikvmc only
-			internal bool HasCallerIDAnnotation
-			{
-				get
-				{
-					return (flags & FLAG_HAS_CALLERID) != 0;
 				}
 			}
 
@@ -2624,7 +2591,7 @@ namespace IKVM.Internal
 					}
 					// build the argmap
 					string sig = method.Signature;
-					List<int> args = new List<int>();
+					ArrayList args = new ArrayList();
 					int pos = 0;
 					if(!method.IsStatic)
 					{
@@ -2656,7 +2623,8 @@ namespace IKVM.Internal
 							}
 						}
 					}
-					argmap = args.ToArray();
+					argmap = new int[args.Count];
+					args.CopyTo(argmap);
 					if(args.Count > max_locals)
 					{
 						throw new ClassFormatError("{0} (Arguments can't fit into locals)", classFile.Name);
