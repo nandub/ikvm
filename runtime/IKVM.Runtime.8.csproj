@@ -36,7 +36,7 @@
     <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
     <ConfigurationOverrideFile>
     </ConfigurationOverrideFile>
-    <DefineConstants>TRACE;DEBUG;WHIDBEY;OPENJDK</DefineConstants>
+    <DefineConstants>TRACE;DEBUG</DefineConstants>
     <DocumentationFile>
     </DocumentationFile>
     <DebugSymbols>true</DebugSymbols>
@@ -93,9 +93,6 @@
     <Compile Include="ClassLoaderWrapper.cs">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="classpath.cs">
-      <SubType>Code</SubType>
-    </Compile>
     <Compile Include="CodeEmitter.cs">
       <SubType>Code</SubType>
     </Compile>
@@ -120,6 +117,7 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="openjdk.cs" />
+    <Compile Include="PassiveWeakDictionary.cs" />
     <Compile Include="profiler.cs">
       <SubType>Code</SubType>
     </Compile>

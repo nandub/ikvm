@@ -25,6 +25,7 @@ using System;
 using System.Threading;
 using System.Reflection;
 using System.IO;
+using System.Collections;
 using System.Diagnostics;
 using System.Text;
 using System.Security;
@@ -189,26 +190,6 @@ namespace IKVM.Internal
 			return sb.ToString();
 		}
 
-		// based on Bret Mulvey's C# port of Jenkins32
-		// note that this algorithm cannot be changed, because we persist these hashcodes in the metadata of shared class loader assemblies
-		internal static int PersistableHash(string str)
-		{
-			uint key = 1;
-			foreach (char c in str)
-			{
-				key += c;
-				key += (key << 12);
-				key ^= (key >> 22);
-				key += (key << 4);
-				key ^= (key >> 9);
-				key += (key << 10);
-				key ^= (key >> 2);
-				key += (key << 7);
-				key ^= (key >> 12);
-			}
-			return (int)key;
-		}
-
 		internal static void CriticalFailure(string message, Exception x)
 		{
 			try
@@ -370,6 +351,16 @@ namespace IKVM.Internal
 		}
 
 #if !STATIC_COMPILER
+		internal static void SetProperties(Hashtable props)
+		{
+#if FIRST_PASS
+#else
+			gnu.classpath.VMSystemProperties.props = props;
+#endif
+		}
+#endif
+
+#if !STATIC_COMPILER
 		internal static object NewAnnotation(object classLoader, object definition)
 		{
 #if FIRST_PASS
@@ -395,31 +386,6 @@ namespace IKVM.Internal
 				// TODO this shouldn't be here
 				return null;
 			}
-#endif
-		}
-#endif
-
-
-#if !STATIC_COMPILER
-		// helper for JNI (which doesn't have access to core library internals)
-		internal static object CreateCallerID(RuntimeMethodHandle method)
-		{
-#if FIRST_PASS
-			return null;
-#else
-			return ikvm.@internal.CallerID.create(MethodBase.GetMethodFromHandle(method));
-#endif
-		}
-#endif
-
-#if !STATIC_COMPILER
-		// helper for JNI (which doesn't have access to core library internals)
-		internal static object NewDirectByteBuffer(long address, int capacity)
-		{
-#if FIRST_PASS
-			return null;
-#else
-			return java.nio.DirectByteBuffer.__new(address, capacity);
 #endif
 		}
 #endif

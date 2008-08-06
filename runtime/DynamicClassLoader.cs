@@ -23,14 +23,11 @@
 */
 #if !COMPACT_FRAMEWORK
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
-#if IKVM_REF_EMIT
-using IKVM.Reflection.Emit;
-#else
 using System.Reflection.Emit;
-#endif
 
 namespace IKVM.Internal
 {
@@ -47,17 +44,16 @@ namespace IKVM.Internal
 
 	sealed class DynamicClassLoader : TypeWrapperFactory
 	{
-		// note that MangleNestedTypeName() assumes that there are less than 16 special characters
 		private static readonly char[] specialCharacters = { '\\', '+', ',', '[', ']', '*', '&', '\u0000' };
 		private static readonly string specialCharactersString = new String(specialCharacters);
 #if !STATIC_COMPILER
-		private static List<AssemblyBuilder> saveDebugAssemblies;
+		private static ArrayList saveDebugAssemblies;
 #endif // !STATIC_COMPILER
-		private readonly Dictionary<string, TypeWrapper> dynamicTypes = new Dictionary<string, TypeWrapper>();
+		private readonly Hashtable dynamicTypes = Hashtable.Synchronized(new Hashtable());
 		private ModuleBuilder moduleBuilder;
 #if STATIC_COMPILER
 		private TypeBuilder proxyHelperContainer;
-		private List<TypeBuilder> proxyHelpers;
+		private ArrayList proxyHelpers;
 #endif // STATIC_COMPILER
 		private Dictionary<string, TypeBuilder> unloadables;
 		private TypeBuilder unloadableContainer;
@@ -85,11 +81,7 @@ namespace IKVM.Internal
 
 		private static Assembly OnTypeResolve(object sender, ResolveEventArgs args)
 		{
-			TypeWrapper type;
-			lock(Instance.dynamicTypes)
-			{
-				Instance.dynamicTypes.TryGetValue(args.Name, out type);
-			}
+			TypeWrapper type = (TypeWrapper)Instance.dynamicTypes[args.Name];
 			if(type == null)
 			{
 				return null;
@@ -144,7 +136,7 @@ namespace IKVM.Internal
 
 		internal override bool ReserveName(string name)
 		{
-			lock(dynamicTypes)
+			lock(dynamicTypes.SyncRoot)
 			{
 				if(dynamicTypes.ContainsKey(name))
 				{
@@ -157,7 +149,7 @@ namespace IKVM.Internal
 
 		private string AllocMangledName(string mangledTypeName)
 		{
-			lock(dynamicTypes)
+			lock(dynamicTypes.SyncRoot)
 			{
 				mangledTypeName = EscapeName(mangledTypeName);
 				// FXBUG the CLR (both 1.1 and 2.0) doesn't like type names that end with a single period,
@@ -181,7 +173,7 @@ namespace IKVM.Internal
 			return mangledTypeName;
 		}
 
-		internal sealed override TypeWrapper DefineClassImpl(Dictionary<string, TypeWrapper> types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain)
+		internal sealed override TypeWrapper DefineClassImpl(Hashtable types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain)
 		{
 			DynamicTypeWrapper type;
 #if STATIC_COMPILER
@@ -198,29 +190,21 @@ namespace IKVM.Internal
 			// if an exception does occur, it is due to a programming error in the IKVM or CLR runtime
 			// and will cause a CriticalFailure and exit the process.
 			type.CreateStep2NoFail(hasclinit, mangledTypeName);
-			lock(types)
+			lock(types.SyncRoot)
 			{
 				// in very extreme conditions another thread may have beaten us to it
 				// and loaded (not defined) a class with the same name, in that case
 				// we'll leak the the Reflection.Emit defined type. Also see the comment
 				// in ClassLoaderWrapper.RegisterInitiatingLoader().
-				TypeWrapper race;
-				types.TryGetValue(f.Name, out race);
+				TypeWrapper race = (TypeWrapper)types[f.Name];
 				if(race == null)
 				{
-					lock(dynamicTypes)
-					{
-						Debug.Assert(dynamicTypes.ContainsKey(mangledTypeName) && dynamicTypes[mangledTypeName] == null);
-						dynamicTypes[mangledTypeName] = type;
-					}
+					Debug.Assert(dynamicTypes.ContainsKey(mangledTypeName) && dynamicTypes[mangledTypeName] == null);
+					dynamicTypes[mangledTypeName] = type;
 					types[f.Name] = type;
 #if !STATIC_COMPILER && !FIRST_PASS
 					java.lang.Class clazz = java.lang.Class.newClass();
-#if __MonoCS__
 					TypeWrapper.SetTypeWrapperHack(ref clazz.typeWrapper, type);
-#else
-					clazz.typeWrapper = type;
-#endif
 					clazz.pd = (java.security.ProtectionDomain)protectionDomain;
 					type.SetClassObject(clazz);
 #endif
@@ -241,7 +225,7 @@ namespace IKVM.Internal
 				proxyHelperContainer = moduleBuilder.DefineType("__<Proxy>", TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract);
 				AttributeHelper.HideFromJava(proxyHelperContainer);
 				AttributeHelper.SetEditorBrowsableNever(proxyHelperContainer);
-				proxyHelpers = new List<TypeBuilder>();
+				proxyHelpers = new ArrayList();
 			}
 			proxyHelpers.Add(proxyHelperContainer.DefineNestedType(MangleNestedTypeName(type.FullName), TypeAttributes.NestedPublic | TypeAttributes.Interface | TypeAttributes.Abstract, null, new Type[] { type }));
 		}
@@ -260,23 +244,19 @@ namespace IKVM.Internal
 				int index = specialCharactersString.IndexOf(c);
 				if(c == '.')
 				{
-					sb.Append("_");
-				}
-				else if(c == '_')
-				{
-					sb.Append("^-");
+					sb.Append("%-");
 				}
 				else if(index == -1)
 				{
 					sb.Append(c);
-					if(c == '^')
+					if(c == '%')
 					{
 						sb.Append(c);
 					}
 				}
 				else
 				{
-					sb.Append('^').AppendFormat("{0:X1}", index);
+					sb.Append('%').AppendFormat("{0:X2}", index);
 				}
 			}
 			return sb.ToString();
@@ -308,12 +288,12 @@ namespace IKVM.Internal
 
 		internal void FinishAll()
 		{
-			Dictionary<TypeWrapper, TypeWrapper> done = new Dictionary<TypeWrapper, TypeWrapper>();
+			Hashtable done = new Hashtable();
 			bool more = true;
 			while(more)
 			{
 				more = false;
-				List<TypeWrapper> l = new List<TypeWrapper>(dynamicTypes.Values);
+				ArrayList l = new ArrayList(dynamicTypes.Values);
 				foreach(TypeWrapper tw in l)
 				{
 					if(tw != null && !done.ContainsKey(tw))
@@ -365,7 +345,7 @@ namespace IKVM.Internal
 		{
 			if(saveDebugAssemblies == null)
 			{
-				saveDebugAssemblies = new List<AssemblyBuilder>();
+				saveDebugAssemblies = new ArrayList();
 			}
 			saveDebugAssemblies.Add(ab);
 		}
