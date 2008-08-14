@@ -2039,13 +2039,10 @@ namespace IKVM.Internal
 						// DynamicTypeWrapper should haved already had SetClassObject explicitly
 						Debug.Assert(!(this is DynamicTypeWrapper));
 #endif // !COMPACT_FRAMEWORK
-#if FIRST_PASS
-#elif OPENJDK
+#if !FIRST_PASS
 						java.lang.Class clazz = java.lang.Class.newClass();
 						SetTypeWrapperHack(ref clazz.typeWrapper, this);
 						classObject = clazz;
-#else
-						classObject = JVM.Library.newClass(this, null, GetClassLoader().GetJavaClassLoader());
 #endif
 					}
 				}
@@ -2063,11 +2060,9 @@ namespace IKVM.Internal
 		{
 #if FIRST_PASS
 			return null;
-#elif OPENJDK
+#else
 			// MONOBUG redundant cast to workaround mcs bug
 			return (TypeWrapper)(object)((java.lang.Class)classObject).typeWrapper;
-#else
-			return (TypeWrapper)JVM.Library.getWrapperFromClass(classObject);
 #endif
 		}
 #endif // !STATIC_COMPILER
@@ -3989,16 +3984,6 @@ namespace IKVM.Internal
 					{
 						fields[i] = new DynamicPropertyFieldWrapper(wrapper, fld);
 					}
-#if STATIC_COMPILER && !OPENJDK
-					else if(fld.IsFinal
-						&& (fld.IsPublic || fld.IsProtected)
-						&& wrapper.IsPublic
-						&& !wrapper.IsInterface
-						&& (!wrapper.classLoader.StrictFinalFieldSemantics || wrapper.Name == "java.lang.System"))
-					{
-						fields[i] = new GetterFieldWrapper(wrapper, null, null, fld.Name, fld.Signature, new ExModifiers(fld.Modifiers, fld.IsInternal), null, null);
-					}
-#endif
 					else
 					{
 						fields[i] = FieldWrapper.Create(wrapper, null, null, fld.Name, fld.Signature, new ExModifiers(fld.Modifiers, fld.IsInternal));
@@ -4063,8 +4048,10 @@ namespace IKVM.Internal
 							if(outerClassWrapper != null)
 							{
 								// make sure the relationship is reciprocal (otherwise we run the risk of
-								// baking the outer type before the inner type)
-								if(outerClassWrapper.impl is JavaTypeImpl)
+								// baking the outer type before the inner type) and that the inner and outer
+								// class live in the same class loader (when doing a multi target compilation,
+								// it is possible to split the two classes acros assemblies)
+								if(outerClassWrapper.impl is JavaTypeImpl && outerClassWrapper.GetClassLoader() == wrapper.GetClassLoader())
 								{
 									ClassFile outerClassFile = ((JavaTypeImpl)outerClassWrapper.impl).classFile;
 									ClassFile.InnerClass[] outerInnerClasses = outerClassFile.InnerClasses;
