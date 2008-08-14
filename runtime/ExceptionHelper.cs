@@ -34,6 +34,15 @@ namespace IKVM.NativeCode.java.lang
 {
 	static class ExceptionHelper
 	{
+		public static Exception MapExceptionImpl(Exception x)
+		{
+#if FIRST_PASS
+			return null;
+#else
+			return global::java.lang.Throwable.__mapImpl(x);
+#endif
+		}
+
 		public static string SafeGetEnvironmentVariable(string name)
 		{
 			try
@@ -100,11 +109,7 @@ namespace IKVM.NativeCode.java.lang
 
 		public static bool IsHideFromJava(MethodBase mb)
 		{
-#if OPENJDK
 			return NativeCode.sun.reflect.Reflection.IsHideFromJava(mb);
-#else
-			return NativeCode.gnu.classpath.VMStackWalker.isHideFromJava(mb);
-#endif
 		}
 
 		public static string getClassNameFromType(Type type)
