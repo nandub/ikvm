@@ -1405,8 +1405,7 @@ namespace IKVM.Runtime
 				try
 				{
 					wrapper.Finish();
-					java.lang.reflect.Constructor cons = (java.lang.reflect.Constructor)mw.ToMethodOrConstructor(false);
-					exception = (Exception)cons.newInstance(new object[] { StringFromOEM(msg) }, (ikvm.@internal.CallerID)JVM.CreateCallerID(pEnv->currentMethod));
+					exception = (Exception)mw.InvokeJNI(null, new object[] { StringFromOEM(msg) }, false, null);
 					rc = JNI_OK;
 				}
 				catch(RetargetableJavaException x)
@@ -1636,28 +1635,28 @@ namespace IKVM.Runtime
 				switch(sig[i])
 				{
 					case 'Z':
-						argarray[i] = java.lang.Boolean.valueOf(args[i].z != JNI_FALSE);
+						argarray[i] = args[i].z != JNI_FALSE;
 						break;
 					case 'B':
-						argarray[i] = java.lang.Byte.valueOf((byte)args[i].b);
+						argarray[i] = args[i].b;
 						break;
 					case 'C':
-						argarray[i] = java.lang.Character.valueOf((char)args[i].c);
+						argarray[i] = (char)args[i].c;
 						break;
 					case 'S':
-						argarray[i] = java.lang.Short.valueOf(args[i].s);
+						argarray[i] = args[i].s;
 						break;
 					case 'I':
-						argarray[i] = java.lang.Integer.valueOf(args[i].i);
+						argarray[i] = args[i].i;
 						break;
 					case 'J':
-						argarray[i] = java.lang.Long.valueOf(args[i].j);
+						argarray[i] = args[i].j;
 						break;
 					case 'F':
-						argarray[i] = java.lang.Float.valueOf(args[i].f);
+						argarray[i] = args[i].f;
 						break;
 					case 'D':
-						argarray[i] = java.lang.Double.valueOf(args[i].d);
+						argarray[i] = args[i].d;
 						break;
 					case 'L':
 						argarray[i] = pEnv->UnwrapRef(args[i].l);
@@ -2004,99 +2003,120 @@ namespace IKVM.Runtime
 			return FindFieldID(pEnv, clazz, name, sig, false);
 		}
 
-		private static sun.reflect.FieldAccessor GetFieldAccessor(jfieldID cookie)
+		private static void SetFieldValue(jfieldID cookie, object obj, object val)
 		{
-			return (sun.reflect.FieldAccessor)FieldWrapper.FromCookie(cookie).GetFieldAccessorJNI();
+			try
+			{
+				FieldWrapper.FromCookie(cookie).SetValue(obj, val);
+			}
+			catch
+			{
+				Debug.Assert(false);
+				throw;
+			}
+		}
+
+		private static object GetFieldValue(jfieldID cookie, object obj)
+		{
+			try
+			{
+				return FieldWrapper.FromCookie(cookie).GetValue(obj);
+			}
+			catch
+			{
+				Debug.Assert(false);
+				throw;
+			}
 		}
 
 		internal static jobject GetObjectField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return pEnv->MakeLocalRef(GetFieldAccessor(fieldID).get(pEnv->UnwrapRef(obj)));
+			return pEnv->MakeLocalRef(GetFieldValue(fieldID, pEnv->UnwrapRef(obj)));
 		}
 
 		internal static jboolean GetBooleanField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return GetFieldAccessor(fieldID).getBoolean(pEnv->UnwrapRef(obj)) ? JNI_TRUE : JNI_FALSE;
+			return ((bool)GetFieldValue(fieldID, pEnv->UnwrapRef(obj))) ? JNI_TRUE : JNI_FALSE;
 		}
 
 		internal static jbyte GetByteField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jbyte)GetFieldAccessor(fieldID).getByte(pEnv->UnwrapRef(obj));
+			return (jbyte)(byte)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static jchar GetCharField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jchar)GetFieldAccessor(fieldID).getChar(pEnv->UnwrapRef(obj));
+			return (jchar)(char)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static jshort GetShortField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jshort)GetFieldAccessor(fieldID).getShort(pEnv->UnwrapRef(obj));
+			return (jshort)(short)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static jint GetIntField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jint)GetFieldAccessor(fieldID).getInt(pEnv->UnwrapRef(obj));
+			return (jint)(int)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static jlong GetLongField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jlong)GetFieldAccessor(fieldID).getLong(pEnv->UnwrapRef(obj));
+			return (jlong)(long)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static jfloat GetFloatField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jfloat)GetFieldAccessor(fieldID).getFloat(pEnv->UnwrapRef(obj));
+			return (jfloat)(float)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static jdouble GetDoubleField(JNIEnv* pEnv, jobject obj, jfieldID fieldID)
 		{
-			return (jdouble)GetFieldAccessor(fieldID).getDouble(pEnv->UnwrapRef(obj));
+			return (jdouble)(double)GetFieldValue(fieldID, pEnv->UnwrapRef(obj));
 		}
 
 		internal static void SetObjectField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jobject val)
 		{
-			GetFieldAccessor(fieldID).set(pEnv->UnwrapRef(obj), pEnv->UnwrapRef(val));
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), pEnv->UnwrapRef(val));
 		}
 
 		internal static void SetBooleanField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jboolean val)
 		{
-			GetFieldAccessor(fieldID).setBoolean(pEnv->UnwrapRef(obj), val != JNI_FALSE);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), val != JNI_FALSE);
 		}
 
 		internal static void SetByteField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jbyte val)
 		{
-			GetFieldAccessor(fieldID).setByte(pEnv->UnwrapRef(obj), (byte)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (byte)val);
 		}
 
 		internal static void SetCharField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jchar val)
 		{
-			GetFieldAccessor(fieldID).setChar(pEnv->UnwrapRef(obj), (char)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (char)val);
 		}
 
 		internal static void SetShortField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jshort val)
 		{
-			GetFieldAccessor(fieldID).setShort(pEnv->UnwrapRef(obj), (short)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (short)val);
 		}
 
 		internal static void SetIntField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jint val)
 		{
-			GetFieldAccessor(fieldID).setInt(pEnv->UnwrapRef(obj), (int)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (int)val);
 		}
 
 		internal static void SetLongField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jlong val)
 		{
-			GetFieldAccessor(fieldID).setLong(pEnv->UnwrapRef(obj), (long)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (long)val);
 		}
 
 		internal static void SetFloatField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jfloat val)
 		{
-			GetFieldAccessor(fieldID).setFloat(pEnv->UnwrapRef(obj), (float)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (float)val);
 		}
 
 		internal static void SetDoubleField(JNIEnv* pEnv, jobject obj, jfieldID fieldID, jdouble val)
 		{
-			GetFieldAccessor(fieldID).setDouble(pEnv->UnwrapRef(obj), (double)val);
+			SetFieldValue(fieldID, pEnv->UnwrapRef(obj), (double)val);
 		}
 
 		internal static jmethodID GetStaticMethodID(JNIEnv* pEnv, jclass clazz, byte* name, byte* sig)
@@ -2201,92 +2221,92 @@ namespace IKVM.Runtime
 
 		internal static jobject GetStaticObjectField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return pEnv->MakeLocalRef(GetFieldAccessor(fieldID).get(null));
+			return pEnv->MakeLocalRef(GetFieldValue(fieldID, null));
 		}
 
 		internal static jboolean GetStaticBooleanField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return GetFieldAccessor(fieldID).getBoolean(null) ? JNI_TRUE : JNI_FALSE;
+			return ((bool)GetFieldValue(fieldID, null)) ? JNI_TRUE : JNI_FALSE;
 		}
 
 		internal static jbyte GetStaticByteField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jbyte)GetFieldAccessor(fieldID).getByte(null);
+			return (jbyte)(byte)GetFieldValue(fieldID, null);
 		}
 
 		internal static jchar GetStaticCharField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jchar)GetFieldAccessor(fieldID).getChar(null);
+			return (jchar)(char)GetFieldValue(fieldID, null);
 		}
 
 		internal static jshort GetStaticShortField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jshort)GetFieldAccessor(fieldID).getShort(null);
+			return (jshort)(short)GetFieldValue(fieldID, null);
 		}
 
 		internal static jint GetStaticIntField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jint)GetFieldAccessor(fieldID).getInt(null);
+			return (jint)(int)GetFieldValue(fieldID, null);
 		}
 
 		internal static jlong GetStaticLongField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jlong)GetFieldAccessor(fieldID).getLong(null);
+			return (jlong)(long)GetFieldValue(fieldID, null);
 		}
 
 		internal static jfloat GetStaticFloatField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jfloat)GetFieldAccessor(fieldID).getFloat(null);
+			return (jfloat)(float)GetFieldValue(fieldID, null);
 		}
 
 		internal static jdouble GetStaticDoubleField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID)
 		{
-			return (jdouble)GetFieldAccessor(fieldID).getDouble(null);
+			return (jdouble)(double)GetFieldValue(fieldID, null);
 		}
 
 		internal static void SetStaticObjectField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jobject val)
 		{
-			GetFieldAccessor(fieldID).set(null, pEnv->UnwrapRef(val));
+			SetFieldValue(fieldID, null, pEnv->UnwrapRef(val));
 		}
 
 		internal static void SetStaticBooleanField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jboolean val)
 		{
-			GetFieldAccessor(fieldID).setBoolean(null, val != JNI_FALSE);
+			SetFieldValue(fieldID, null, val != JNI_FALSE);
 		}
 
 		internal static void SetStaticByteField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jbyte val)
 		{
-			GetFieldAccessor(fieldID).setByte(null, (byte)val);
+			SetFieldValue(fieldID, null, (byte)val);
 		}
 
 		internal static void SetStaticCharField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jchar val)
 		{
-			GetFieldAccessor(fieldID).setChar(null, (char)val);
+			SetFieldValue(fieldID, null, (char)val);
 		}
 
 		internal static void SetStaticShortField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jshort val)
 		{
-			GetFieldAccessor(fieldID).setShort(null, (short)val);
+			SetFieldValue(fieldID, null, (short)val);
 		}
 
 		internal static void SetStaticIntField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jint val)
 		{
-			GetFieldAccessor(fieldID).setInt(null, (int)val);
+			SetFieldValue(fieldID, null, (int)val);
 		}
 
 		internal static void SetStaticLongField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jlong val)
 		{
-			GetFieldAccessor(fieldID).setLong(null, (long)val);
+			SetFieldValue(fieldID, null, (long)val);
 		}
 
 		internal static void SetStaticFloatField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jfloat val)
 		{
-			GetFieldAccessor(fieldID).setFloat(null, (float)val);
+			SetFieldValue(fieldID, null, (float)val);
 		}
 
 		internal static void SetStaticDoubleField(JNIEnv* pEnv, jclass clazz, jfieldID fieldID, jdouble val)
 		{
-			GetFieldAccessor(fieldID).setDouble(null, (double)val);
+			SetFieldValue(fieldID, null, (double)val);
 		}
 
 		internal static jstring NewString(JNIEnv* pEnv, jchar* unicode, int len)
@@ -3338,7 +3358,9 @@ namespace IKVM.Runtime
 					SetPendingException(pEnv, new java.lang.IllegalArgumentException("capacity"));
 					return IntPtr.Zero;
 				}
-				return pEnv->MakeLocalRef(JVM.NewDirectByteBuffer(address.ToInt64(), (int)capacity));
+				return pEnv->MakeLocalRef(JVM.CoreAssembly.GetType("java.nio.DirectByteBuffer")
+					.GetConstructor(BindingFlags.Instance | BindingFlags.NonPublic, null, new Type[] { typeof(long), typeof(int) }, null)
+					.Invoke(new object[] { address.ToInt64(), (int)capacity }));
 			}
 			catch(Exception x)
 			{

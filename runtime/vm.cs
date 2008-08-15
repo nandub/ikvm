@@ -378,30 +378,5 @@ namespace IKVM.Internal
 #endif
 		}
 #endif
-
-
-#if !STATIC_COMPILER
-		// helper for JNI (which doesn't have access to core library internals)
-		internal static object CreateCallerID(RuntimeMethodHandle method)
-		{
-#if FIRST_PASS
-			return null;
-#else
-			return ikvm.@internal.CallerID.create(MethodBase.GetMethodFromHandle(method));
-#endif
-		}
-#endif
-
-#if !STATIC_COMPILER
-		// helper for JNI (which doesn't have access to core library internals)
-		internal static object NewDirectByteBuffer(long address, int capacity)
-		{
-#if FIRST_PASS
-			return null;
-#else
-			return java.nio.DirectByteBuffer.__new(address, capacity);
-#endif
-		}
-#endif
 	}
 }
