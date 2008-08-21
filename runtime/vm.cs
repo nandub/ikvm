@@ -25,7 +25,6 @@ using System;
 using System.Threading;
 using System.Reflection;
 using System.IO;
-using System.Collections;
 using System.Diagnostics;
 using System.Text;
 using System.Security;
@@ -74,9 +73,6 @@ namespace IKVM.Internal
 		internal const bool IsStaticCompiler = false;
 		private static bool enableReflectionOnMethodsWithUnloadableTypeParameters;
 		private static bool finishingForDebugSave;
-#if !FIRST_PASS && !OPENJDK
-		private static ikvm.@internal.LibraryVMInterface lib;
-#endif
 		internal static bool IsSaveDebugImage;
 #endif // STATIC_COMPILER
 		private static Assembly coreAssembly;
@@ -134,24 +130,6 @@ namespace IKVM.Internal
 		}
 
 #if !STATIC_COMPILER
-#if !OPENJDK
-		internal static ikvm.@internal.LibraryVMInterface Library
-		{
-			get
-			{
-#if FIRST_PASS
-				throw new InvalidOperationException("This version of IKVM.Runtime.dll was compiled with FIRST_PASS defined.");
-#else
-				if(lib == null)
-				{
-					lib = ikvm.@internal.Library.getImpl();
-				}
-				return lib;
-#endif
-			}
-		}
-#endif
-
 		public static bool EnableReflectionOnMethodsWithUnloadableTypeParameters
 		{
 			get
@@ -372,26 +350,12 @@ namespace IKVM.Internal
 		}
 
 #if !STATIC_COMPILER
-		internal static void SetProperties(Hashtable props)
-		{
-#if FIRST_PASS
-#elif OPENJDK
-			gnu.classpath.VMSystemProperties.props = props;
-#else
-			JVM.Library.setProperties(props);
-#endif
-		}
-#endif
-
-#if !STATIC_COMPILER
 		internal static object NewAnnotation(object classLoader, object definition)
 		{
 #if FIRST_PASS
 			return null;
-#elif OPENJDK
-			return ikvm.@internal.AnnotationAttributeBase.newAnnotation((java.lang.ClassLoader)classLoader, definition);
 #else
-			return JVM.Library.newAnnotation(classLoader, definition);
+			return ikvm.@internal.AnnotationAttributeBase.newAnnotation((java.lang.ClassLoader)classLoader, definition);
 #endif
 		}
 #endif
@@ -401,7 +365,7 @@ namespace IKVM.Internal
 		{
 #if FIRST_PASS
 			return null;
-#elif OPENJDK
+#else
 			try
 			{
 				return ikvm.@internal.AnnotationAttributeBase.decodeElementValue(definition, (java.lang.Class)expectedClass, (java.lang.ClassLoader)classLoader);
@@ -411,8 +375,18 @@ namespace IKVM.Internal
 				// TODO this shouldn't be here
 				return null;
 			}
+#endif
+		}
+#endif
+
+#if !STATIC_COMPILER
+		// helper for JNI (which doesn't have access to core library internals)
+		internal static object NewDirectByteBuffer(long address, int capacity)
+		{
+#if FIRST_PASS
+			return null;
 #else
-			return JVM.Library.newAnnotationElementValue(classLoader, expectedClass, definition);
+			return java.nio.DirectByteBuffer.__new(address, capacity);
 #endif
 		}
 #endif
