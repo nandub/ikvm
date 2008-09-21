@@ -40,30 +40,6 @@ using System.Security;
 
 namespace IKVM.Internal
 {
-	struct MethodKey : IEquatable<MethodKey>
-	{
-		private readonly string className;
-		private readonly string methodName;
-		private readonly string methodSig;
-
-		internal MethodKey(string className, string methodName, string methodSig)
-		{
-			this.className = className;
-			this.methodName = methodName;
-			this.methodSig = methodSig;
-		}
-
-		public bool Equals(MethodKey other)
-		{
-			return className == other.className && methodName == other.methodName && methodSig == other.methodSig;
-		}
-
-		public override int GetHashCode()
-		{
-			return className.GetHashCode() ^ methodName.GetHashCode() ^ methodSig.GetHashCode();
-		}
-	}
-
 	class CompilerClassLoader : ClassLoaderWrapper
 	{
 		private Dictionary<string, byte[]> classes;
@@ -201,7 +177,12 @@ namespace IKVM.Internal
 					peerHack = false;
 				}
 			}
-			return GetTypeWrapperCompilerHook(name);
+			TypeWrapper tw1 = GetTypeWrapperCompilerHook(name);
+			if(tw1 != null)
+			{
+				return tw1;
+			}
+			return LoadGenericClass(name);
 		}
 
 		private TypeWrapper GetTypeWrapperCompilerHook(string name)
