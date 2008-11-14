@@ -160,7 +160,7 @@ class Compiler
 	private static MethodInfo monitorEnterMethod;
 	private static MethodInfo monitorExitMethod;
 	private static MethodInfo keepAliveMethod;
-	internal static MethodWrapper getClassFromTypeHandle;
+	private static MethodWrapper getClassFromTypeHandle;
 	private static TypeWrapper java_lang_Object;
 	private static TypeWrapper java_lang_Class;
 	private static TypeWrapper java_lang_Throwable;
@@ -785,7 +785,7 @@ class Compiler
 				case StackType.Null:
 				case StackType.This:
 				case StackType.UnitializedThis:
-					compiler.ilGenerator.LazyEmitPop();
+					compiler.ilGenerator.Emit(OpCodes.Pop);
 					break;
 				case StackType.New:
 					// new objects aren't really there on the stack
@@ -1611,6 +1611,10 @@ class Compiler
 					{
 						ilGenerator.Emit(OpCodes.Conv_R8);
 					}
+					else if(tw == PrimitiveTypeWrapper.FLOAT)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					field.EmitSet(ilGenerator);
 					break;
 				}
@@ -1628,6 +1632,10 @@ class Compiler
 					{
 						ilGenerator.Emit(OpCodes.Conv_R8);
 					}
+					else if(tw == PrimitiveTypeWrapper.FLOAT)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					field.EmitSet(ilGenerator);
 					break;
 				}
@@ -1639,7 +1647,7 @@ class Compiler
 					DynamicGetPutField(instr, i);
 					break;
 				case NormalizedByteCode.__aconst_null:
-					ilGenerator.LazyEmitLdnull();
+					ilGenerator.Emit(OpCodes.Ldnull);
 					break;
 				case NormalizedByteCode.__iconst:
 					ilGenerator.LazyEmitLdc_I4(instr.NormalizedArg1);
@@ -1722,9 +1730,20 @@ class Compiler
 								ilGenerator.Emit(OpCodes.Call, ByteCodeHelperMethods.DynamicClassLiteral);
 								java_lang_Class.EmitCheckcast(clazz, ilGenerator);
 							}
+							else if(tw.IsGhostArray)
+							{
+								int rank = tw.ArrayRank;
+								while(tw.IsArray)
+								{
+									tw = tw.ElementTypeWrapper;
+								}
+								ilGenerator.Emit(OpCodes.Ldtoken, ArrayTypeWrapper.MakeArrayType(tw.TypeAsTBD, rank));
+								getClassFromTypeHandle.EmitCall(ilGenerator);
+							}
 							else
 							{
-								ilGenerator.LazyEmitLoadClass(tw);
+								ilGenerator.Emit(OpCodes.Ldtoken, tw.IsRemapped ? tw.TypeAsBaseType : tw.TypeAsTBD);
+								getClassFromTypeHandle.EmitCall(ilGenerator);
 							}
 							break;
 						}
@@ -2197,7 +2216,7 @@ class Compiler
 						// any unitialized reference is always the this reference, we don't store anything
 						// here (because CLR won't allow unitialized references in locals) and then when
 						// the unitialized ref is loaded we redirect to the this reference
-						ilGenerator.LazyEmitPop();
+						ilGenerator.Emit(OpCodes.Pop);
 					}
 					else
 					{
@@ -2215,14 +2234,34 @@ class Compiler
 				case NormalizedByteCode.__lstore:
 					StoreLocal(instr);
 					break;
-				case NormalizedByteCode.__fstore_conv:	// since we convert after every FP-operation, we don't need this convert anymore
+				case NormalizedByteCode.__fstore_conv:
+					ilGenerator.Emit(OpCodes.Conv_R4);
+					StoreLocal(instr);
+					break;
 				case NormalizedByteCode.__fstore:
 					StoreLocal(instr);
 					break;
 				case NormalizedByteCode.__dstore_conv:
-					ilGenerator.Emit(OpCodes.Conv_R8);
-					StoreLocal(instr);
+				{
+					LocalVar v = StoreLocal(instr);
+					if(v != null && !v.isArg)
+					{
+						// HACK this appears to be the fastest way to do the equivalent of
+						// an explicit conv.r8. Simply doing a conv.r8 can result in the
+						// CLR JIT using an unaligned stack address for the conversion
+						// and that is ridiculously expensive. Doing this indirect load
+						// triggers the stack alignment and according to my reading
+						// of the ECMA CLI spec is guaranteed to result in a converted
+						// value (and in practice it actually works and seems to
+						// perform reasonably well). The downside is that it affects
+						// performance negatively on x64 where a conv.r8 is free.
+						ilGenerator.Emit(OpCodes.Ldloca, v.builder);
+						ilGenerator.Emit(OpCodes.Volatile);
+						ilGenerator.Emit(OpCodes.Ldind_R8);
+						ilGenerator.Emit(OpCodes.Pop);
+					}
 					break;
+				}
 				case NormalizedByteCode.__dstore:
 					StoreLocal(instr);
 					break;
@@ -2433,17 +2472,39 @@ class Compiler
 				case NormalizedByteCode.__faload:
 					ilGenerator.Emit(OpCodes.Ldelem_R4);
 					break;
-				case NormalizedByteCode.__fastore_conv:	// since we convert after every FP-operation, we don't need this convert anymore
 				case NormalizedByteCode.__fastore:
 					ilGenerator.Emit(OpCodes.Stelem_R4);
 					break;
+				case NormalizedByteCode.__fastore_conv:
+				{
+					// see dastore_conv comment
+					LocalBuilder local = ilGenerator.UnsafeAllocTempLocal(typeof(float));
+					ilGenerator.Emit(OpCodes.Stloc, local);
+					ilGenerator.Emit(OpCodes.Ldloc, local);
+					ilGenerator.Emit(OpCodes.Conv_R4);
+					ilGenerator.Emit(OpCodes.Stelem_R4);
+					break;
+				}
 				case NormalizedByteCode.__daload:
 					ilGenerator.Emit(OpCodes.Ldelem_R8);
 					break;
 				case NormalizedByteCode.__dastore_conv:
+				{
+					// HACK the intermediate local is to work around a CLR JIT flaw,
+					// without the intermediate local it will actually do an explicit
+					// fstp/fld for the conv.r8, but with intermediate it notices
+					// that the explicit conversion isn't needed since the array store
+					// will already result in the conversion. Note that we still need
+					// do the conv.r8, because otherwise it would be legal
+					// (per ECMA CLI spec) for the JIT to reuse the unconverted value
+					// on the FPU stack.
+					LocalBuilder local = ilGenerator.UnsafeAllocTempLocal(typeof(double));
+					ilGenerator.Emit(OpCodes.Stloc, local);
+					ilGenerator.Emit(OpCodes.Ldloc, local);
 					ilGenerator.Emit(OpCodes.Conv_R8);
 					ilGenerator.Emit(OpCodes.Stelem_R8);
 					break;
+				}
 				case NormalizedByteCode.__dastore:
 					ilGenerator.Emit(OpCodes.Stelem_R8);
 					break;
@@ -2569,7 +2630,10 @@ class Compiler
 					break;
 				case NormalizedByteCode.__fadd:
 					ilGenerator.Emit(OpCodes.Add);
-					ilGenerator.Emit(OpCodes.Conv_R4);
+					if(strictfp)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					break;
 				case NormalizedByteCode.__dadd:
 					ilGenerator.Emit(OpCodes.Add);
@@ -2584,7 +2648,10 @@ class Compiler
 					break;
 				case NormalizedByteCode.__fsub:
 					ilGenerator.Emit(OpCodes.Sub);
-					ilGenerator.Emit(OpCodes.Conv_R4);
+					if(strictfp)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					break;
 				case NormalizedByteCode.__dsub:
 					ilGenerator.Emit(OpCodes.Sub);
@@ -2611,7 +2678,10 @@ class Compiler
 					break;
 				case NormalizedByteCode.__fmul:
 					ilGenerator.Emit(OpCodes.Mul);
-					ilGenerator.Emit(OpCodes.Conv_R4);
+					if(strictfp)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					break;
 				case NormalizedByteCode.__dmul:
 					ilGenerator.Emit(OpCodes.Mul);
@@ -2628,7 +2698,10 @@ class Compiler
 					break;
 				case NormalizedByteCode.__fdiv:
 					ilGenerator.Emit(OpCodes.Div);
-					ilGenerator.Emit(OpCodes.Conv_R4);
+					if(strictfp)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					break;
 				case NormalizedByteCode.__ddiv:
 					ilGenerator.Emit(OpCodes.Div);
@@ -2668,7 +2741,10 @@ class Compiler
 				}
 				case NormalizedByteCode.__frem:
 					ilGenerator.Emit(OpCodes.Rem);
-					ilGenerator.Emit(OpCodes.Conv_R4);
+					if(strictfp)
+					{
+						ilGenerator.Emit(OpCodes.Conv_R4);
+					}
 					break;
 				case NormalizedByteCode.__drem:
 					ilGenerator.Emit(OpCodes.Rem);
@@ -2906,17 +2982,17 @@ class Compiler
 					TypeWrapper type1 = ma.GetRawStackTypeWrapper(i, 0);
 					if(type1.IsWidePrimitive)
 					{
-						ilGenerator.LazyEmitPop();
+						ilGenerator.Emit(OpCodes.Pop);
 					}
 					else
 					{
 						if(!VerifierTypeWrapper.IsNew(type1))
 						{
-							ilGenerator.LazyEmitPop();
+							ilGenerator.Emit(OpCodes.Pop);
 						}
 						if(!VerifierTypeWrapper.IsNew(ma.GetRawStackTypeWrapper(i, 1)))
 						{
-							ilGenerator.LazyEmitPop();
+							ilGenerator.Emit(OpCodes.Pop);
 						}
 					}
 					break;
@@ -2925,7 +3001,7 @@ class Compiler
 					// if the TOS is a new object, it isn't really there, so we don't need to pop it
 					if(!VerifierTypeWrapper.IsNew(ma.GetRawStackTypeWrapper(i, 0)))
 					{
-						ilGenerator.LazyEmitPop();
+						ilGenerator.Emit(OpCodes.Pop);
 					}
 					break;
 				case NormalizedByteCode.__monitorenter:
@@ -3058,22 +3134,10 @@ class Compiler
 					{
 						ilGenerator.Emit(OpCodes.Br, block.GetLabel(m.Instructions[callsites[callsites.Length - 1] + 1].PC));
 					}
-					else
-					{
-						// this code location is unreachable, but the verifier doesn't know that, so we emit a branch to keep it happy
-						// (it would be a little nicer to rewrite the above for loop to dynamically find the last reachable callsite,
-						// but since this only happens with unreachable code, it's not a big deal).
-						ilGenerator.Emit(OpCodes.Br_S, (sbyte)-2);
-					}
 					break;
 				}
 				case NormalizedByteCode.__nop:
 					ilGenerator.Emit(OpCodes.Nop);
-					break;
-				case NormalizedByteCode.__intrinsic_gettypehandlevalue:
-					ilGenerator.Emit(OpCodes.Dup);
-					EmitHelper.NullCheck(ilGenerator);
-					EmitHelper.GetTypeHandleValue(ilGenerator);
 					break;
 				case NormalizedByteCode.__static_error:
 				{
@@ -3232,7 +3296,7 @@ class Compiler
 				}
 				// if the stack contains an unloadable, we might need to cast it
 				// (e.g. if the argument type is a base class that is loadable)
-				if(ma.GetRawStackTypeWrapper(instructionIndex, args.Length - 1 - i).IsUnloadable)
+				if(ma.GetRawStackTypeWrapper(instructionIndex, i).IsUnloadable)
 				{
 					needsCast = true;
 					firstCastArg = i;
@@ -3577,6 +3641,20 @@ class Compiler
 		if(v.isArg)
 		{
 			int i = m.ArgMap[instr.NormalizedArg1];
+			if(v.type == PrimitiveTypeWrapper.DOUBLE)
+			{
+				ilGenerator.Emit(OpCodes.Ldarga, (short)i);
+				ilGenerator.Emit(OpCodes.Volatile);
+				ilGenerator.Emit(OpCodes.Ldind_R8);
+				return v;
+			}
+			if(v.type == PrimitiveTypeWrapper.FLOAT)
+			{
+				ilGenerator.Emit(OpCodes.Ldarga, (short)i);
+				ilGenerator.Emit(OpCodes.Volatile);
+				ilGenerator.Emit(OpCodes.Ldind_R4);
+				return v;
+			}
 			switch(i)
 			{
 				case 0:
@@ -3601,14 +3679,6 @@ class Compiler
 						ilGenerator.Emit(OpCodes.Ldarg, (short)i);
 					}
 					break;
-			}
-			if(v.type == PrimitiveTypeWrapper.DOUBLE)
-			{
-				ilGenerator.Emit(OpCodes.Conv_R8);
-			}
-			if(v.type == PrimitiveTypeWrapper.FLOAT)
-			{
-				ilGenerator.Emit(OpCodes.Conv_R4);
 			}
 		}
 		else if(v.type == VerifierTypeWrapper.Null)
@@ -3636,7 +3706,7 @@ class Compiler
 		if(v == null)
 		{
 			// dead store
-			ilGenerator.LazyEmitPop();
+			ilGenerator.Emit(OpCodes.Pop);
 		}
 		else if(v.isArg)
 		{
@@ -3652,7 +3722,7 @@ class Compiler
 		}
 		else if(v.type == VerifierTypeWrapper.Null)
 		{
-			ilGenerator.LazyEmitPop();
+			ilGenerator.Emit(OpCodes.Pop);
 		}
 		else
 		{

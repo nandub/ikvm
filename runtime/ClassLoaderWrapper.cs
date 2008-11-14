@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002, 2003, 2004, 2005, 2006, 2007 Jeroen Frijters
+  Copyright (C) 2002-2008 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -23,11 +23,13 @@
 */
 using System;
 using System.Reflection;
-#if !COMPACT_FRAMEWORK
+#if IKVM_REF_EMIT
+using IKVM.Reflection.Emit;
+#elif !COMPACT_FRAMEWORK
 using System.Reflection.Emit;
 #endif
 using System.IO;
-using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using IKVM.Attributes;
@@ -39,7 +41,7 @@ namespace IKVM.Internal
 #if !COMPACT_FRAMEWORK
 		internal abstract ModuleBuilder ModuleBuilder { get; }
 #endif
-		internal abstract TypeWrapper DefineClassImpl(Hashtable types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain);
+		internal abstract TypeWrapper DefineClassImpl(Dictionary<string, TypeWrapper> types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain);
 		internal abstract bool ReserveName(string name);
 		internal abstract Type DefineUnloadable(string name);
 	}
@@ -47,25 +49,25 @@ namespace IKVM.Internal
 	class ClassLoaderWrapper
 	{
 		private static readonly object wrapperLock = new object();
-		private static readonly Hashtable typeToTypeWrapper = Hashtable.Synchronized(new Hashtable());
+		private static readonly Dictionary<Type, TypeWrapper> typeToTypeWrapper = new Dictionary<Type, TypeWrapper>();
 #if STATIC_COMPILER
 		private static ClassLoaderWrapper bootstrapClassLoader;
 		private TypeWrapperFactory factory;
 #else
 		private static AssemblyClassLoader bootstrapClassLoader;
 #endif
-		private static readonly Hashtable assemblyClassLoaders = new Hashtable();
-		private static ArrayList genericClassLoaders;
+		private static readonly Dictionary<Assembly, AssemblyClassLoader> assemblyClassLoaders = new Dictionary<Assembly, AssemblyClassLoader>();
+		private static List<GenericClassLoader> genericClassLoaders;
 #if !STATIC_COMPILER && !FIRST_PASS
 		private readonly java.lang.ClassLoader javaClassLoader;
 		private static bool customClassLoaderRedirectsLoaded;
-		private static Hashtable customClassLoaderRedirects;
+		private static Dictionary<string, string> customClassLoaderRedirects;
 #endif
-		protected Hashtable types = new Hashtable();
-		private readonly Hashtable defineClassInProgress = new Hashtable();
-		private ArrayList nativeLibraries;
+		private Dictionary<string, TypeWrapper> types = new Dictionary<string, TypeWrapper>();
+		private readonly Dictionary<string, Thread> defineClassInProgress = new Dictionary<string, Thread>();
+		private List<IntPtr> nativeLibraries;
 		private CodeGenOptions codegenoptions;
-		private static Hashtable remappedTypes = new Hashtable();
+		private static Dictionary<Type, string> remappedTypes = new Dictionary<Type, string>();
 
 #if STATIC_COMPILER
 		// HACK this is used by the ahead-of-time compiler to overrule the bootstrap classloader
@@ -122,7 +124,10 @@ namespace IKVM.Internal
 
 		internal static int GetLoadedClassCount()
 		{
-			return typeToTypeWrapper.Count;
+			lock(typeToTypeWrapper)
+			{
+				return typeToTypeWrapper.Count;
+			}
 		}
 
 		internal static bool IsCoreAssemblyType(Type type)
@@ -140,7 +145,12 @@ namespace IKVM.Internal
 
 		internal static bool IsDynamicType(Type type)
 		{
-			return typeToTypeWrapper[type] is DynamicTypeWrapper;
+			lock(typeToTypeWrapper)
+			{
+				TypeWrapper tw;
+				typeToTypeWrapper.TryGetValue(type, out tw);
+				return tw is DynamicTypeWrapper;
+			}
 		}
 
 		internal static bool IsRemappedType(Type type)
@@ -150,20 +160,26 @@ namespace IKVM.Internal
 
 		internal void SetRemappedType(Type type, TypeWrapper tw)
 		{
-			Debug.Assert(!types.ContainsKey(tw.Name));
-			types.Add(tw.Name, tw);
-			Debug.Assert(!typeToTypeWrapper.ContainsKey(type));
-			typeToTypeWrapper.Add(type, tw);
-			remappedTypes.Add(type, type);
+			lock(types)
+			{
+				types.Add(tw.Name, tw);
+			}
+			lock(typeToTypeWrapper)
+			{
+				typeToTypeWrapper.Add(type, tw);
+			}
+			remappedTypes.Add(type, tw.Name);
 		}
 
 		// return the TypeWrapper if it is already loaded, this exists for DynamicTypeWrapper.SetupGhosts
 		// and ClassLoader.findLoadedClass()
 		internal virtual TypeWrapper GetLoadedClass(string name)
 		{
-			lock(types.SyncRoot)
+			lock(types)
 			{
-				return (TypeWrapper)types[name];
+				TypeWrapper tw;
+				types.TryGetValue(name, out tw);
+				return tw;
 			}
 		}
 
@@ -173,16 +189,17 @@ namespace IKVM.Internal
 			Debug.Assert(!tw.IsUnloadable);
 			Debug.Assert(!tw.IsPrimitive);
 
-			lock(types.SyncRoot)
+			lock(types)
 			{
-				object existing = types[tw.Name];
+				TypeWrapper existing;
+				types.TryGetValue(tw.Name, out existing);
 				if(existing != tw)
 				{
 					if(existing != null)
 					{
 						// another thread beat us to it, discard the new TypeWrapper and
 						// return the previous one
-						return (TypeWrapper)existing;
+						return existing;
 					}
 					// NOTE if types.ContainsKey(tw.Name) is true (i.e. the value is null),
 					// we currently have a DefineClass in progress on another thread and we've
@@ -274,7 +291,7 @@ namespace IKVM.Internal
 				return RegisterInitiatingLoader(tw);
 			}
 			CheckDefineClassAllowed(f.Name);
-			lock(types.SyncRoot)
+			lock(types)
 			{
 				if(types.ContainsKey(f.Name))
 				{
@@ -290,7 +307,7 @@ namespace IKVM.Internal
 			}
 			finally
 			{
-				lock(types.SyncRoot)
+				lock(types)
 				{
 					if(types[f.Name] == null)
 					{
@@ -299,7 +316,7 @@ namespace IKVM.Internal
 						types.Remove(f.Name);
 					}
 					defineClassInProgress.Remove(f.Name);
-					Monitor.PulseAll(types.SyncRoot);
+					Monitor.PulseAll(types);
 				}
 			}
 		}
@@ -350,13 +367,12 @@ namespace IKVM.Internal
 			try
 			{
 				TypeWrapper type;
-				lock(types.SyncRoot)
+				lock(types)
 				{
-					type = (TypeWrapper)types[name];
-					if(type == null)
+					if(!types.TryGetValue(name, out type))
 					{
-						object defineThread = defineClassInProgress[name];
-						if(defineThread != null)
+						Thread defineThread;
+						if(defineClassInProgress.TryGetValue(name, out defineThread))
 						{
 							if(Thread.CurrentThread == defineThread)
 							{
@@ -366,9 +382,10 @@ namespace IKVM.Internal
 							// so we have to wait on that
 							while(defineClassInProgress.ContainsKey(name))
 							{
-								Monitor.Wait(types.SyncRoot);
+								Monitor.Wait(types);
 							}
-							type = (TypeWrapper)types[name];
+							// the defineClass may have failed, so we need to use TryGetValue
+							types.TryGetValue(name, out type);
 						}
 					}
 				}
@@ -464,7 +481,7 @@ namespace IKVM.Internal
 			{
 				return null;
 			}
-			ArrayList typeParamNames = new ArrayList();
+			List<string> typeParamNames = new List<string>();
 			pos += 5;
 			int start = pos;
 			int nest = 0;
@@ -769,14 +786,12 @@ namespace IKVM.Internal
 			{
 				return TypeWrapper.EmptyArray;
 			}
-			ArrayList list = new ArrayList();
+			List<TypeWrapper> list = new List<TypeWrapper>();
 			for(int i = 1; sig[i] != ')';)
 			{
 				list.Add(SigDecoderWrapper(ref i, sig));
 			}
-			TypeWrapper[] types = new TypeWrapper[list.Count];
-			list.CopyTo(types);
-			return types;
+			return list.ToArray();
 		}
 
 #if STATIC_COMPILER
@@ -832,13 +847,17 @@ namespace IKVM.Internal
 			Debug.Assert(!type.ContainsGenericParameters);
 			Debug.Assert(!type.IsPointer);
 			Debug.Assert(!type.IsByRef);
-			TypeWrapper wrapper = (TypeWrapper)typeToTypeWrapper[type];
+			TypeWrapper wrapper;
+			lock(typeToTypeWrapper)
+			{
+				typeToTypeWrapper.TryGetValue(type, out wrapper);
+			}
 			if(wrapper != null)
 			{
 				return wrapper;
 			}
-			string remapped = (string)remappedTypes[type];
-			if(remapped != null)
+			string remapped;
+			if(remappedTypes.TryGetValue(type, out remapped))
 			{
 				wrapper = LoadClassCritical(remapped);
 			}
@@ -861,7 +880,10 @@ namespace IKVM.Internal
 				// was "loaded" by an assembly classloader
 				wrapper = GetAssemblyClassLoader(type.Assembly).GetWrapperFromAssemblyType(type);
 			}
-			typeToTypeWrapper[type] = wrapper;
+			lock(typeToTypeWrapper)
+			{
+				typeToTypeWrapper[type] = wrapper;
+			}
 			return wrapper;
 		}
 
@@ -884,7 +906,7 @@ namespace IKVM.Internal
 			Debug.Assert(type.IsGenericType);
 			Debug.Assert(!type.ContainsGenericParameters);
 
-			ArrayList list = new ArrayList();
+			List<ClassLoaderWrapper> list = new List<ClassLoaderWrapper>();
 			list.Add(GetAssemblyClassLoader(type.Assembly));
 			foreach(Type arg in type.GetGenericArguments())
 			{
@@ -894,7 +916,7 @@ namespace IKVM.Internal
 					list.Add(loader);
 				}
 			}
-			ClassLoaderWrapper[] key = (ClassLoaderWrapper[])list.ToArray(typeof(ClassLoaderWrapper));
+			ClassLoaderWrapper[] key = list.ToArray();
 			ClassLoaderWrapper matchingLoader = GetGenericClassLoaderByKey(key);
 			matchingLoader.RegisterInitiatingLoader(wrapper);
 			return matchingLoader;
@@ -906,7 +928,7 @@ namespace IKVM.Internal
 			{
 				if(genericClassLoaders == null)
 				{
-					genericClassLoaders = new ArrayList();
+					genericClassLoaders = new List<GenericClassLoader>();
 				}
 				foreach(GenericClassLoader loader in genericClassLoaders)
 				{
@@ -944,8 +966,8 @@ namespace IKVM.Internal
 		internal static ClassLoaderWrapper GetGenericClassLoaderByName(string name)
 		{
 			Debug.Assert(name.StartsWith("[[") && name.EndsWith("]]"));
-			Stack stack = new Stack();
-			ArrayList list = null;
+			Stack<List<ClassLoaderWrapper>> stack = new Stack<List<ClassLoaderWrapper>>();
+			List<ClassLoaderWrapper> list = null;
 			for(int i = 0; i < name.Length; i++)
 			{
 				if(name[i] == '[')
@@ -953,7 +975,7 @@ namespace IKVM.Internal
 					if(name[i + 1] == '[')
 					{
 						stack.Push(list);
-						list = new ArrayList();
+						list = new List<ClassLoaderWrapper>();
 						if(name[i + 2] == '[')
 						{
 							i++;
@@ -968,8 +990,8 @@ namespace IKVM.Internal
 				}
 				else if(name[i] == ']')
 				{
-					ClassLoaderWrapper loader = GetGenericClassLoaderByKey((ClassLoaderWrapper[])list.ToArray(typeof(ClassLoaderWrapper)));
-					list = (ArrayList)stack.Pop();
+					ClassLoaderWrapper loader = GetGenericClassLoaderByKey(list.ToArray());
+					list = stack.Pop();
 					if(list == null)
 					{
 						return loader;
@@ -1001,7 +1023,7 @@ namespace IKVM.Internal
 		{
 			lock(wrapperLock)
 			{
-				return genericClassLoaders.IndexOf(wrapper);
+				return genericClassLoaders.IndexOf(wrapper as GenericClassLoader);
 			}
 		}
 
@@ -1009,14 +1031,14 @@ namespace IKVM.Internal
 		{
 			lock(wrapperLock)
 			{
-				return (ClassLoaderWrapper)genericClassLoaders[id];
+				return genericClassLoaders[id];
 			}
 		}
 
 		// this method only supports .NET or pre-compiled Java assemblies
 		internal static AssemblyClassLoader GetAssemblyClassLoader(Assembly assembly)
 		{
-#if !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK && !IKVM_REF_EMIT
 			Debug.Assert(!(assembly is AssemblyBuilder));
 #endif // !COMPACT_FRAMEWORK
 
@@ -1025,8 +1047,7 @@ namespace IKVM.Internal
 			object javaClassLoader = null;
 			lock(wrapperLock)
 			{
-				loader = (AssemblyClassLoader)assemblyClassLoaders[assembly];
-				if(loader == null)
+				if(!assemblyClassLoaders.TryGetValue(assembly, out loader))
 				{
 #if !STATIC_COMPILER && !FIRST_PASS
 					if(assembly == JVM.CoreAssembly)
@@ -1040,9 +1061,9 @@ namespace IKVM.Internal
 						if(customClassLoaderRedirects != null)
 						{
 							string assemblyName = assembly.FullName;
-							foreach(DictionaryEntry de in customClassLoaderRedirects)
+							foreach(KeyValuePair<string, string> kv in customClassLoaderRedirects)
 							{
-								string asm = (string)de.Key;
+								string asm = kv.Key;
 								// we only support matching on the assembly's simple name,
 								// because there appears to be no viable alternative.
 								// On .NET 2.0 there is AssemblyName.ReferenceMatchesDefinition()
@@ -1051,11 +1072,11 @@ namespace IKVM.Internal
 								{
 									try
 									{
-										customClassLoaderClass = Type.GetType((string)de.Value, true);
+										customClassLoaderClass = Type.GetType(kv.Value, true);
 									}
 									catch(Exception x)
 									{
-										Tracer.Error(Tracer.Runtime, "Unable to load custom class loader {0} specified in app.config for assembly {1}: {2}", de.Value, assembly, x);
+										Tracer.Error(Tracer.Runtime, "Unable to load custom class loader {0} specified in app.config for assembly {1}: {2}", kv.Value, assembly, x);
 									}
 									break;
 								}
@@ -1152,14 +1173,14 @@ namespace IKVM.Internal
 				customClassLoaderRedirectsLoaded = true;
 				try
 				{
-					foreach(string key in System.Configuration.ConfigurationSettings.AppSettings.AllKeys)
+					foreach(string key in System.Configuration.ConfigurationManager.AppSettings.AllKeys)
 					{
 						const string prefix = "ikvm-classloader:";
 						if(key.StartsWith(prefix))
 						{
 							if(customClassLoaderRedirects == null)
 							{
-								customClassLoaderRedirects = new Hashtable();
+								customClassLoaderRedirects = new Dictionary<string, string>();
 							}
 							customClassLoaderRedirects[key.Substring(prefix.Length)] = System.Configuration.ConfigurationManager.AppSettings.Get(key);
 						}
@@ -1211,14 +1232,19 @@ namespace IKVM.Internal
 		internal static void SetWrapperForType(Type type, TypeWrapper wrapper)
 		{
 			TypeWrapper.AssertFinished(type);
-			Debug.Assert(!typeToTypeWrapper.ContainsKey(type));
-			typeToTypeWrapper.Add(type, wrapper);
+			lock(typeToTypeWrapper)
+			{
+				typeToTypeWrapper.Add(type, wrapper);
+			}
 		}
 
 		internal static void ResetWrapperForType(Type type, TypeWrapper wrapper)
 		{
 			TypeWrapper.AssertFinished(type);
-			typeToTypeWrapper[type] = wrapper;
+			lock(typeToTypeWrapper)
+			{
+				typeToTypeWrapper[type] = wrapper;
+			}
 		}
 
 		internal static TypeWrapper LoadClassCritical(string name)
@@ -1240,7 +1266,7 @@ namespace IKVM.Internal
 			{
 				if(nativeLibraries == null)
 				{
-					nativeLibraries = new ArrayList();
+					nativeLibraries = new List<IntPtr>();
 				}
 				nativeLibraries.Add(p);
 			}
@@ -1254,7 +1280,7 @@ namespace IKVM.Internal
 				{
 					return new IntPtr[0];
 				}
-				return (IntPtr[])nativeLibraries.ToArray(typeof(IntPtr));
+				return nativeLibraries.ToArray();
 			}
 		}
 
@@ -1364,7 +1390,7 @@ namespace IKVM.Internal
 		private bool isReflectionOnly;
 		private bool[] isJavaModule;
 		private Module[] modules;
-		private Hashtable nameMap;
+		private Dictionary<string, string> nameMap;
 #if !STATIC_COMPILER
 		private Thread initializerThread;
 		private volatile object protectionDomain;
@@ -1393,7 +1419,7 @@ namespace IKVM.Internal
 						{
 							if(nameMap == null)
 							{
-								nameMap = new Hashtable();
+								nameMap = new Dictionary<string, string>();
 							}
 							for(int j = 0; j < map.Length; j += 2)
 							{
@@ -1465,7 +1491,7 @@ namespace IKVM.Internal
 				string n = null;
 				if(nameMap != null)
 				{
-					n = (string)nameMap[name];
+					nameMap.TryGetValue(name, out n);
 				}
 				Type t = GetType(mod, n != null ? n : name);
 				if(t == null)
@@ -1568,7 +1594,7 @@ namespace IKVM.Internal
 			//Tracer.Info(Tracer.Runtime, "GetWrapperFromAssemblyType: {0}", type.FullName);
 			Debug.Assert(!type.Name.EndsWith("[]"), "!type.IsArray", type.FullName);
 			Debug.Assert(type.Assembly == assembly);
-#if !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK && !IKVM_REF_EMIT
 			Debug.Assert(!(type.Assembly is AssemblyBuilder), "!(type.Assembly is AssemblyBuilder)", type.FullName);
 #endif
 			Module mod = type.Module;
@@ -1594,11 +1620,7 @@ namespace IKVM.Internal
 					return null;
 				}
 			}
-			TypeWrapper wrapper;
-			lock(types.SyncRoot)
-			{
-				wrapper = (TypeWrapper)types[name];
-			}
+			TypeWrapper wrapper = base.GetLoadedClass(name);
 			if(wrapper != null)
 			{
 				if(wrapper.TypeAsTBD != type && (!wrapper.IsRemapped || wrapper.TypeAsBaseType != type))
@@ -1713,7 +1735,7 @@ namespace IKVM.Internal
 #if !STATIC_COMPILER
 		internal Assembly[] FindResourceAssemblies(string name, bool firstOnly)
 		{
-			ArrayList list = null;
+			List<Assembly> list = null;
 			name = JVM.MangleResourceName(name);
 			if(assembly.GetManifestResourceInfo(name) != null)
 			{
@@ -1721,7 +1743,7 @@ namespace IKVM.Internal
 				{
 					return new Assembly[] { assembly };
 				}
-				list = new ArrayList();
+				list = new List<Assembly>();
 				list.Add(assembly);
 			}
 			for(int i = 0; i < delegates.Length; i++)
@@ -1759,7 +1781,7 @@ namespace IKVM.Internal
 						}
 						if(list == null)
 						{
-							list = new ArrayList();
+							list = new List<Assembly>();
 						}
 						list.Add(delegates[i].Assembly);
 					}
@@ -1785,7 +1807,7 @@ namespace IKVM.Internal
 					}
 					if(list == null)
 					{
-						list = new ArrayList();
+						list = new List<Assembly>();
 					}
 					if(!list.Contains(asm))
 					{
@@ -1797,7 +1819,7 @@ namespace IKVM.Internal
 			{
 				return null;
 			}
-			return (Assembly[])list.ToArray(typeof(Assembly));
+			return list.ToArray();
 		}
 
 		internal void SetInitInProgress()

@@ -21,11 +21,6 @@
   jeroen@frijters.net
   
 */
-#if IKVM_REF_EMIT
-// FXBUG multi target only work with our own Reflection.Emit implementation
-#define MULTI_TARGET
-#endif
-
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -38,7 +33,6 @@ using System.Reflection.Emit;
 using System.Threading;
 using ICSharpCode.SharpZipLib.Zip;
 using IKVM.Internal;
-using System.Text.RegularExpressions;
 
 class IkvmcCompiler
 {
@@ -82,7 +76,6 @@ class IkvmcCompiler
 		DateTime start = DateTime.Now;
 		AppDomain.CurrentDomain.ReflectionOnlyAssemblyResolve += new ResolveEventHandler(CurrentDomain_AssemblyResolve);
 		System.Threading.Thread.CurrentThread.Name = "compiler";
-		Tracer.EnableTraceConsoleListener();
 		Tracer.EnableTraceForDebug();
 		List<string> argList = GetArgs(args);
 		if (argList.Count == 0)
@@ -92,7 +85,7 @@ class IkvmcCompiler
 		}
 		IkvmcCompiler comp = new IkvmcCompiler();
 		List<CompilerOptions> targets = new List<CompilerOptions>();
-		int rc = comp.ParseCommandLine(argList.GetEnumerator(), targets);
+		int rc = comp.ParseCommandLine(argList.GetEnumerator(), targets, new CompilerOptions());
 		if (rc == 0)
 		{
 			try
@@ -203,25 +196,15 @@ class IkvmcCompiler
 		Console.Error.WriteLine("    -warnaserror:<warning[:key]>  Treat specified warnings as errors");
 		Console.Error.WriteLine("    -time                      Display timing statistics");
 		Console.Error.WriteLine("    -classloader:<class>       Set custom class loader class for assembly");
-#if MULTI_TARGET
-		Console.Error.WriteLine("    -sharedclassloader         All targets below this level share a common");
-		Console.Error.WriteLine("                               class loader");
-#endif
 	}
 
-	int ParseCommandLine(IEnumerator<string> arglist, List<CompilerOptions> targets)
+	int ParseCommandLine(IEnumerator<string> arglist, List<CompilerOptions> targets, CompilerOptions options)
 	{
-		CompilerOptions options = new CompilerOptions();
 		options.target = PEFileKinds.ConsoleApplication;
 		options.guessFileKind = true;
 		options.version = "0.0.0.0";
 		options.apartment = ApartmentState.STA;
 		options.props = new Dictionary<string, string>();
-		return ContinueParseCommandLine(arglist, targets, options);
-	}
-
-	int ContinueParseCommandLine(IEnumerator<string> arglist, List<CompilerOptions> targets, CompilerOptions options)
-	{
 		while(arglist.MoveNext())
 		{
 			string s = arglist.Current;
@@ -236,7 +219,7 @@ class IkvmcCompiler
 				nestedLevel.defaultAssemblyName = defaultAssemblyName;
 				nestedLevel.classesToExclude = new List<string>(classesToExclude);
 				nestedLevel.references = new List<string>(references);
-				int rc = nestedLevel.ContinueParseCommandLine(arglist, targets, options.Copy());
+				int rc = nestedLevel.ParseCommandLine(arglist, targets, options.Copy());
 				if(rc != 0)
 				{
 					return rc;
@@ -444,14 +427,7 @@ class IkvmcCompiler
 						try
 						{
 							DirectoryInfo dir = new DirectoryInfo(Path.GetDirectoryName(spec));
-							if(dir.Exists)
-							{
-								Recurse(dir, dir, Path.GetFileName(spec));
-							}
-							else
-							{
-								RecurseJar(spec);
-							}
+							Recurse(dir, dir, Path.GetFileName(spec));
 						}
 						catch(PathTooLongException)
 						{
@@ -644,15 +620,6 @@ class IkvmcCompiler
 				{
 					options.classLoader = s.Substring(13);
 				}
-#if MULTI_TARGET
-				else if(s == "-sharedclassloader")
-				{
-					if(options.sharedclassloader == null)
-					{
-						options.sharedclassloader = new List<CompilerClassLoader>();
-					}
-				}
-#endif
 				else
 				{
 					Console.Error.WriteLine("Warning: unrecognized option: {0}", s);
@@ -692,11 +659,6 @@ class IkvmcCompiler
 				{
 					ProcessFile(null, f);
 				}
-			}
-			if(options.targetIsModule && options.sharedclassloader != null)
-			{
-				Console.Error.WriteLine("Error: -target:module and -sharedclassloader options cannot be combined.");
-				return 1;
 			}
 		}
 #if MULTI_TARGET
@@ -786,7 +748,7 @@ class IkvmcCompiler
 		}
 	}
 
-	private void ProcessZipFile(string file, Predicate<ZipEntry> filter)
+	private void ProcessZipFile(string file)
 	{
 		ZipFile zf = new ZipFile(file);
 		try
@@ -794,10 +756,6 @@ class IkvmcCompiler
 			foreach(ZipEntry ze in zf)
 			{
 				if(ze.IsDirectory)
-				{
-					// skip
-				}
-				else if(filter != null && !filter(ze))
 				{
 					// skip
 				}
@@ -862,7 +820,7 @@ class IkvmcCompiler
 			case ".zip":
 				try
 				{
-					ProcessZipFile(file, null);
+					ProcessZipFile(file);
 				}
 				catch(ICSharpCode.SharpZipLib.SharpZipBaseException x)
 				{
@@ -913,30 +871,6 @@ class IkvmcCompiler
 		foreach(DirectoryInfo sub in dir.GetDirectories())
 		{
 			Recurse(baseDir, sub, spec);
-		}
-	}
-
-	private void RecurseJar(string path)
-	{
-		string file = "";
-		for (; ; )
-		{
-			file = Path.Combine(Path.GetFileName(path), file);
-			path = Path.GetDirectoryName(path);
-			if (Directory.Exists(path))
-			{
-				throw new DirectoryNotFoundException();
-			}
-			else if (File.Exists(path))
-			{
-				string pathFilter = Path.GetDirectoryName(file) + Path.DirectorySeparatorChar;
-				string fileFilter = "^" + Regex.Escape(Path.GetFileName(file)).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-				ProcessZipFile(path, delegate(ZipEntry ze) {
-					return (Path.GetDirectoryName(ze.Name) + Path.DirectorySeparatorChar).StartsWith(pathFilter)
-						&& Regex.IsMatch(Path.GetFileName(ze.Name), fileFilter);
-				});
-				return;
-			}
 		}
 	}
 

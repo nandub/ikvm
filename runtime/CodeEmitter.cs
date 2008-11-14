@@ -32,7 +32,6 @@ using System.Reflection.Emit;
 #endif
 using System.Runtime.InteropServices;
 using System.Diagnostics.SymbolStore;
-using System.Diagnostics;
 
 namespace IKVM.Internal
 {
@@ -76,8 +75,7 @@ namespace IKVM.Internal
 #if STATIC_COMPILER
 		private IKVM.Attributes.LineNumberTableAttribute.LineNumberWriter linenums;
 #endif // STATIC_COMPILER
-		private Expr[] stackArray = new Expr[8];
-		private int topOfStack;
+		private Expr stack;
 		private CodeEmitterLabel lazyBranch;
 		private LocalBuilder[] tempLocals = new LocalBuilder[32];
 #if LABELCHECK
@@ -104,42 +102,6 @@ namespace IKVM.Internal
 		private CodeEmitter(ILGenerator ilgen)
 		{
 			this.ilgen_real = ilgen;
-		}
-
-		private void PushStack(Expr expr)
-		{
-			Debug.Assert(expr != null);
-			if (topOfStack == stackArray.Length)
-			{
-				Array.Resize(ref stackArray, stackArray.Length * 2);
-			}
-			stackArray[topOfStack++] = expr;
-		}
-
-		private void PushStackMayBeNull(Expr expr)
-		{
-			if (expr != null)
-			{
-				PushStack(expr);
-			}
-		}
-
-		private Expr PopStack()
-		{
-			if (topOfStack == 0)
-			{
-				return null;
-			}
-			return stackArray[--topOfStack];
-		}
-
-		private Expr PeekStack()
-		{
-			if (topOfStack == 0)
-			{
-				return null;
-			}
-			return stackArray[topOfStack - 1];
 		}
 
 		internal LocalBuilder UnsafeAllocTempLocal(Type type)
@@ -198,7 +160,7 @@ namespace IKVM.Internal
 		{
 			get
 			{
-				return topOfStack == 0;
+				return stack == null;
 			}
 		}
 
@@ -578,66 +540,45 @@ namespace IKVM.Internal
 		}
 #endif // STATIC_COMPILER
 
-		internal void LazyEmitPop()
-		{
-			Expr exp = PeekStack();
-			if (exp == null || exp.HasSideEffect || exp.IsIncomplete)
-			{
-				Emit(OpCodes.Pop);
-			}
-			else
-			{
-				PopStack();
-			}
-		}
-
-		internal void LazyEmitLoadClass(TypeWrapper type)
-		{
-			PushStack(new ClassLiteralExpr(type));
-		}
-
 		internal void LazyEmitBox(Type type)
 		{
-			PushStack(new BoxExpr(PopStack(), type));
+			stack = new BoxExpr(stack, type);
 		}
 
 		internal void LazyEmitUnbox(Type type)
 		{
-			BoxExpr box = PeekStack() as BoxExpr;
+			BoxExpr box = stack as BoxExpr;
 			if(box != null)
 			{
-				PopStack();
-				PushStack(new BoxUnboxExpr(box.Expr, type));
+				stack = new BoxUnboxExpr(box.Expr, type);
 			}
 			else
 			{
-				PushStack(new UnboxExpr(PopStack(), type));
+				stack = new UnboxExpr(stack, type);
 			}
 		}
 
 		internal void LazyEmitLdobj(Type type)
 		{
-			BoxUnboxExpr boxunbox = PeekStack() as BoxUnboxExpr;
+			BoxUnboxExpr boxunbox = stack as BoxUnboxExpr;
 			if(boxunbox != null)
 			{
-				PopStack();
 				// box/unbox+ldobj annihilate each other
-				PushStackMayBeNull(boxunbox.Expr);
+				stack = boxunbox.Expr;
 			}
 			else
 			{
-				PushStack(new LdobjExpr(PopStack(), type));
+				stack = new LdobjExpr(stack, type);
 			}
 		}
 
 		internal void LazyEmitUnboxSpecial(Type type)
 		{
-			BoxExpr box = PeekStack() as BoxExpr;
+			BoxExpr box = stack as BoxExpr;
 			if(box != null)
 			{
-				PopStack();
 				// the unbox and lazy box cancel each other out
-				PushStackMayBeNull(box.Expr);
+				stack = box.Expr;
 			}
 			else
 			{
@@ -656,24 +597,22 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal void LazyEmitLdnull()
-		{
-			PushStack(new NullExpr());
-		}
-
 		internal void LazyEmitLdc_I4(int i)
 		{
-			PushStack(new ConstIntExpr(i));
+			LazyGen();
+			stack = new ConstIntExpr(i);
 		}
 
 		internal void LazyEmitLdc_I8(long l)
 		{
-			PushStack(new ConstLongExpr(l));
+			LazyGen();
+			stack = new ConstLongExpr(l);
 		}
 
 		internal void LazyEmitLdstr(string str)
 		{
-			PushStack(new ConstStringExpr(str));
+			LazyGen();
+			stack = new ConstStringExpr(str);
 		}
 
 		internal void LazyEmit_idiv()
@@ -681,12 +620,12 @@ namespace IKVM.Internal
 			// we need to special case dividing by -1, because the CLR div instruction
 			// throws an OverflowException when dividing Int32.MinValue by -1, and
 			// Java just silently overflows
-			ConstIntExpr v = PeekStack() as ConstIntExpr;
+			ConstIntExpr v = stack as ConstIntExpr;
 			if(v != null)
 			{
 				if(v.i == -1)
 				{
-					PopStack();
+					stack = null;
 					Emit(OpCodes.Neg);
 				}
 				else
@@ -715,12 +654,12 @@ namespace IKVM.Internal
 			// we need to special case dividing by -1, because the CLR div instruction
 			// throws an OverflowException when dividing Int32.MinValue by -1, and
 			// Java just silently overflows
-			ConstLongExpr v = PeekStack() as ConstLongExpr;
+			ConstLongExpr v = stack as ConstLongExpr;
 			if(v != null)
 			{
 				if(v.l == -1)
 				{
-					PopStack();
+					stack = null;
 					Emit(OpCodes.Neg);
 				}
 				else
@@ -747,7 +686,8 @@ namespace IKVM.Internal
 
 		internal void LazyEmit_instanceof(Type type)
 		{
-			PushStack(new InstanceOfExpr(type));
+			LazyGen();
+			stack = new InstanceOfExpr(type);
 		}
 
 		internal void LazyEmit_ifeq(CodeEmitterLabel label)
@@ -762,18 +702,18 @@ namespace IKVM.Internal
 
 		private void LazyEmit_if_ne_eq(CodeEmitterLabel label, bool brtrue)
 		{
-			InstanceOfExpr instanceof = PeekStack() as InstanceOfExpr;
+			InstanceOfExpr instanceof = stack as InstanceOfExpr;
 			if (instanceof != null)
 			{
-				PopStack();
+				stack = null;
 				Emit(OpCodes.Isinst, instanceof.Type);
 			}
 			else
 			{
-				CmpExpr cmp = PeekStack() as CmpExpr;
+				CmpExpr cmp = stack as CmpExpr;
 				if (cmp != null)
 				{
-					PopStack();
+					stack = null;
 					Emit(brtrue ? OpCodes.Bne_Un : OpCodes.Beq, label);
 					return;
 				}
@@ -810,10 +750,10 @@ namespace IKVM.Internal
 
 		internal void LazyEmit_if_le_lt_ge_gt(Comparison comp, CodeEmitterLabel label)
 		{
-			CmpExpr cmp = PeekStack() as CmpExpr;
+			CmpExpr cmp = stack as CmpExpr;
 			if (cmp != null)
 			{
-				PopStack();
+				stack = null;
 				cmp.EmitBcc(this, comp, label);
 			}
 			else
@@ -825,35 +765,40 @@ namespace IKVM.Internal
 
 		internal void LazyEmit_lcmp()
 		{
-			PushStack(new LCmpExpr());
+			LazyGen();
+			stack = new LCmpExpr();
 		}
 
 		internal void LazyEmit_fcmpl()
 		{
-			PushStack(new FCmplExpr());
+			LazyGen();
+			stack = new FCmplExpr();
 		}
 
 		internal void LazyEmit_fcmpg()
 		{
-			PushStack(new FCmpgExpr());
+			LazyGen();
+			stack = new FCmpgExpr();
 		}
 
 		internal void LazyEmit_dcmpl()
 		{
-			PushStack(new DCmplExpr());
+			LazyGen();
+			stack = new DCmplExpr();
 		}
 
 		internal void LazyEmit_dcmpg()
 		{
-			PushStack(new DCmpgExpr());
+			LazyGen();
+			stack = new DCmpgExpr();
 		}
 
 		internal void LazyEmitAnd_I4(int v2)
 		{
-			ConstIntExpr v1 = PeekStack() as ConstIntExpr;
+			ConstIntExpr v1 = stack as ConstIntExpr;
 			if (v1 != null)
 			{
-				PopStack();
+				stack = null;
 				LazyEmitLdc_I4(v1.i & v2);
 			}
 			else
@@ -865,38 +810,28 @@ namespace IKVM.Internal
 
 		internal string PopLazyLdstr()
 		{
-			ConstStringExpr str = PeekStack() as ConstStringExpr;
+			ConstStringExpr str = stack as ConstStringExpr;
 			if(str != null)
 			{
-				PopStack();
+				stack = null;
 				return str.str;
-			}
-			return null;
-		}
-
-		internal TypeWrapper PeekLazyClassLiteral()
-		{
-			ClassLiteralExpr lit = PeekStack() as ClassLiteralExpr;
-			if (lit != null)
-			{
-				return lit.Type;
 			}
 			return null;
 		}
 
 		private void LazyGen()
 		{
+			if(stack != null)
+			{
+				Expr exp = stack;
+				stack = null;
+				exp.Emit(this);
+			}
 			if(lazyBranch != null)
 			{
 				offset += OpCodes.Br.Size + 4;
 				ilgen_real.Emit(OpCodes.Br, lazyBranch.Label);
 				lazyBranch = null;
-			}
-			int len = topOfStack;
-			topOfStack = 0;
-			for(int i = 0; i < len; i++)
-			{
-				stackArray[i].Emit(this);
 			}
 		}
 
@@ -913,27 +848,24 @@ namespace IKVM.Internal
 
 		abstract class Expr
 		{
-			internal bool HasSideEffect { get { return false; } }	// for now we only have side-effect free expressions
+			internal readonly Type Type;
 
-			internal virtual bool IsIncomplete { get { return false; } }
+			protected Expr(Type type)
+			{
+				this.Type = type;
+			}
 
 			internal abstract void Emit(CodeEmitter ilgen);
 		}
 
-		abstract class ExprWithExprAndType : Expr
+		abstract class UnaryExpr : Expr
 		{
 			internal readonly Expr Expr;
-			internal readonly Type Type;
 
-			protected ExprWithExprAndType(Expr expr, Type type)
+			protected UnaryExpr(Expr expr, Type type)
+				: base(type)
 			{
 				this.Expr = expr;
-				this.Type = type;
-			}
-
-			internal override bool IsIncomplete
-			{
-				get { return Expr == null; }
 			}
 
 			internal override void Emit(CodeEmitter ilgen)
@@ -945,7 +877,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		class BoxExpr : ExprWithExprAndType
+		class BoxExpr : UnaryExpr
 		{
 			internal BoxExpr(Expr expr, Type type)
 				: base(expr, type)
@@ -959,7 +891,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		class UnboxExpr : ExprWithExprAndType
+		class UnboxExpr : UnaryExpr
 		{
 			internal UnboxExpr(Expr expr, Type type)
 				: base(expr, type)
@@ -973,7 +905,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		class BoxUnboxExpr : ExprWithExprAndType
+		class BoxUnboxExpr : UnaryExpr
 		{
 			internal BoxUnboxExpr(Expr expr, Type type)
 				: base(expr, type)
@@ -992,7 +924,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		class LdobjExpr : ExprWithExprAndType
+		class LdobjExpr : UnaryExpr
 		{
 			internal LdobjExpr(Expr expr, Type type)
 				: base(expr, type)
@@ -1006,19 +938,12 @@ namespace IKVM.Internal
 			}
 		}
 
-		class NullExpr : Expr
-		{
-			internal override void Emit(CodeEmitter ilgen)
-			{
-				ilgen.Emit(OpCodes.Ldnull);
-			}
-		}
-
 		class ConstIntExpr : Expr
 		{
 			internal readonly int i;
 
 			internal ConstIntExpr(int i)
+				: base(typeof(int))
 			{
 				this.i = i;
 			}
@@ -1076,6 +1001,7 @@ namespace IKVM.Internal
 			internal readonly long l;
 
 			internal ConstLongExpr(long l)
+				: base(typeof(long))
 			{
 				this.l = l;
 			}
@@ -1158,6 +1084,7 @@ namespace IKVM.Internal
 			internal readonly string str;
 
 			internal ConstStringExpr(string str)
+				: base(typeof(string))
 			{
 				this.str = str;
 			}
@@ -1170,19 +1097,9 @@ namespace IKVM.Internal
 
 		sealed class InstanceOfExpr : Expr
 		{
-			internal readonly Type Type;
-
 			internal InstanceOfExpr(Type type)
+				: base(type)
 			{
-				this.Type = type;
-			}
-
-			internal override bool IsIncomplete
-			{
-				get
-				{
-					return true;
-				}
 			}
 
 			internal override void Emit(CodeEmitter ilgen)
@@ -1196,15 +1113,8 @@ namespace IKVM.Internal
 		abstract class CmpExpr : Expr
 		{
 			internal CmpExpr()
+				: base(typeof(int))
 			{
-			}
-
-			internal override bool IsIncomplete
-			{
-				get
-				{
-					return true;
-				}
 			}
 
 			internal abstract void EmitBcc(CodeEmitter ilgen, Comparison comp, CodeEmitterLabel label);
@@ -1340,35 +1250,6 @@ namespace IKVM.Internal
 			protected override Type FloatOrDouble()
 			{
 				return typeof(double);
-			}
-		}
-
-		class ClassLiteralExpr : Expr
-		{
-			internal readonly TypeWrapper Type;
-
-			internal ClassLiteralExpr(TypeWrapper type)
-			{
-				this.Type = type;
-			}
-
-			internal override void Emit(CodeEmitter ilgen)
-			{
-				TypeWrapper tw = Type;
-				if (tw.IsGhostArray)
-				{
-					int rank = tw.ArrayRank;
-					while (tw.IsArray)
-					{
-						tw = tw.ElementTypeWrapper;
-					}
-					ilgen.Emit(OpCodes.Ldtoken, ArrayTypeWrapper.MakeArrayType(tw.TypeAsTBD, rank));
-				}
-				else
-				{
-					ilgen.Emit(OpCodes.Ldtoken, tw.IsRemapped ? tw.TypeAsBaseType : tw.TypeAsTBD);
-				}
-				Compiler.getClassFromTypeHandle.EmitCall(ilgen);
 			}
 		}
 	}
