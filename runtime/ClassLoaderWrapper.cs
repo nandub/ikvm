@@ -23,7 +23,9 @@
 */
 using System;
 using System.Reflection;
-#if !COMPACT_FRAMEWORK
+#if IKVM_REF_EMIT
+using IKVM.Reflection.Emit;
+#elif !COMPACT_FRAMEWORK
 using System.Reflection.Emit;
 #endif
 using System.IO;
@@ -614,7 +616,7 @@ namespace IKVM.Internal
 			Profiler.Enter("ClassLoader.loadClass");
 			try
 			{
-				java.lang.Class c = javaClassLoader.loadClass(name);
+				java.lang.Class c = javaClassLoader.loadClassInternal(name);
 				if(c == null)
 				{
 					return null;
@@ -1036,7 +1038,7 @@ namespace IKVM.Internal
 		// this method only supports .NET or pre-compiled Java assemblies
 		internal static AssemblyClassLoader GetAssemblyClassLoader(Assembly assembly)
 		{
-#if !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK && !IKVM_REF_EMIT
 			Debug.Assert(!(assembly is AssemblyBuilder));
 #endif // !COMPACT_FRAMEWORK
 
@@ -1171,7 +1173,7 @@ namespace IKVM.Internal
 				customClassLoaderRedirectsLoaded = true;
 				try
 				{
-					foreach(string key in System.Configuration.ConfigurationSettings.AppSettings.AllKeys)
+					foreach(string key in System.Configuration.ConfigurationManager.AppSettings.AllKeys)
 					{
 						const string prefix = "ikvm-classloader:";
 						if(key.StartsWith(prefix))
@@ -1592,7 +1594,7 @@ namespace IKVM.Internal
 			//Tracer.Info(Tracer.Runtime, "GetWrapperFromAssemblyType: {0}", type.FullName);
 			Debug.Assert(!type.Name.EndsWith("[]"), "!type.IsArray", type.FullName);
 			Debug.Assert(type.Assembly == assembly);
-#if !COMPACT_FRAMEWORK
+#if !COMPACT_FRAMEWORK && !IKVM_REF_EMIT
 			Debug.Assert(!(type.Assembly is AssemblyBuilder), "!(type.Assembly is AssemblyBuilder)", type.FullName);
 #endif
 			Module mod = type.Module;
