@@ -24,7 +24,11 @@
 
 using System;
 using System.Reflection;
+#if IKVM_REF_EMIT
+using IKVM.Reflection.Emit;
+#else
 using System.Reflection.Emit;
+#endif
 using System.Resources;
 using System.IO;
 using System.Collections.Generic;
@@ -69,6 +73,7 @@ namespace IKVM.Internal
 		private List<string> classesToCompile;
 		private List<CompilerClassLoader> peerReferences = new List<CompilerClassLoader>();
 		private Dictionary<string, string> peerLoading = new Dictionary<string, string>();
+		private Dictionary<string, TypeWrapper> importedStubTypes = new Dictionary<string, TypeWrapper>();
 
 		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, string keyfilename, string keycontainer, string version, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
 			: base(options.codegenoptions, null)
@@ -131,7 +136,13 @@ namespace IKVM.Internal
 				name.KeyPair = new StrongNameKeyPair(keycontainer);
 			}
 			name.Version = new Version(version);
-			assemblyBuilder = AppDomain.CurrentDomain.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir);
+			assemblyBuilder = 
+#if IKVM_REF_EMIT
+				AssemblyBuilder
+#else
+				AppDomain.CurrentDomain
+#endif
+				.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir);
 			ModuleBuilder moduleBuilder;
 			moduleBuilder = assemblyBuilder.DefineDynamicModule(assemblyName, assemblyFile, this.EmitDebugInfo);
 			if(this.EmitStackTraceInfo)
@@ -244,6 +255,10 @@ namespace IKVM.Internal
 					try
 					{
 						type = DefineClass(f, null);
+						if(f.IKVMAssemblyAttribute != null)
+						{
+							importedStubTypes.Add(f.Name, type);
+						}
 					}
 					catch (ClassFormatError x)
 					{
@@ -2566,7 +2581,7 @@ namespace IKVM.Internal
 					ClassLoaderWrapper loader = wrapper.GetClassLoader();
 					if(loader != this)
 					{
-						if(!(loader is GenericClassLoader || loader is CompilerClassLoader))
+						if(!(loader is GenericClassLoader || loader is CompilerClassLoader || (importedStubTypes.ContainsKey(s) && importedStubTypes[s] == wrapper)))
 						{
 							StaticCompiler.IssueMessage(Message.SkippingReferencedClass, s, ((AssemblyClassLoader)loader).Assembly.FullName);
 						}
@@ -2612,7 +2627,7 @@ namespace IKVM.Internal
 					Console.Error.WriteLine("Error: redirected main method not supported");
 					return 1;
 				}
-				if(!method.DeclaringType.Assembly.Equals(assemblyBuilder)
+				if(!ReflectUtil.IsFromAssembly(method.DeclaringType, assemblyBuilder)
 					&& (!method.IsPublic || !method.DeclaringType.IsPublic))
 				{
 					Console.Error.WriteLine("Error: external main method must be public and in a public class");
