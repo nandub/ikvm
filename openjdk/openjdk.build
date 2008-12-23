@@ -41,14 +41,21 @@
             <loadfile file="../tools/pubkey.txt" property="publickey" />
             <property name="IKVM.Runtime" value="IKVM.Runtime, PublicKey=${publickey}" />
         </if>
-        <copy file="AssemblyInfo.java.in" tofile="AssemblyInfo.java" overwrite="true">
+        <copy file="AssemblyInfo.java.in" tofile="AssemblyInfo.java" outputencoding="ascii" overwrite="true">
             <filterchain>
                 <replacetokens>
                     <token key="RUNTIME" value="${IKVM.Runtime}" />
                 </replacetokens>
             </filterchain>
         </copy>
-        <exec program="javac" commandline="-J-Xmx1536M -g -nowarn -bootclasspath ../classpath/mscorlib.jar${pathsep}../classpath/System.jar${pathsep}../classpath/IKVM.Runtime.jar @allsources.lst" useruntimeengine="false" />
+        <copy file="Configuration.java.in" tofile="Configuration.java" outputencoding="ascii" overwrite="true">
+            <filterchain>
+                <replacetokens>
+                    <token key="AWTASSEMBLY" value="${string::replace(assemblyname::get-full-name(assemblyname::get-assembly-name(path::combine(project::get-base-directory(), '../bin/IKVM.Runtime.dll'))), 'IKVM.Runtime', 'IKVM.AWT.WinForms')}" />
+                </replacetokens>
+            </filterchain>
+        </copy>
+        <exec program="javac" commandline="-J-Xmx1536M -g -nowarn -bootclasspath ../classpath/mscorlib.jar${pathsep}../classpath/System.jar${pathsep}../classpath/System.Core.jar${pathsep}../classpath/IKVM.Runtime.jar @allsources.lst" useruntimeengine="false" />
     </target>
 
     <target name="vfs">
@@ -67,43 +74,46 @@
     </target>
 
     <target name="core">
+        <property name="VERSION" value="${assemblyname::get-version(assemblyname::get-assembly-name(path::combine(project::get-base-directory(), '../bin/IKVM.Runtime.dll')))}" />
         <exec program="${project::get-base-directory()}/../bin/ikvmc.exe" useruntimeengine="true">
-            <arg value="-version:0.39.*" />
+            <arg value="-version:${VERSION}" />
             <arg value="${signoption}" />
             <arg value="-compressresources" />
             <arg value="-opt:fields" />
             <arg value="-strictfinalfieldsemantics" />
             <arg value="-removeassertions" />
-            <arg value="-out:IKVM.OpenJDK.ClassLibrary.dll" />
-            <arg value="-remap:map.xml" />
-            <arg value="-exclude:exclude.lst" />
             <arg value="-target:library" />
-            <arg value="-recurse:./*.class" />
-            <arg value="-recurse:../classpath/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/jdk/src/share/classes/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/jdk/src/solaris/classes/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/jdk/src/windows/classes/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/gensrc/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/impsrc/*.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/classes/*_Stub.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/classes/*_Tie.class" />
-            <arg value="-recurse:${OpenJDK.dir}/control/build/linux-amd64/classes/*_Skel.class" />
-            <arg value="-recurse:${Classpath.dir}/*.class" />
+            <arg value="-sharedclassloader" />
             <arg value="-r:mscorlib" />
             <arg value="-r:IKVM.Runtime" />
+            <!-- Instead of using -r:System.Core we add System.Core.jar (in response.txt)
+                 (containing only System.Runtime.CompilerServices.ExtensionAttribute).
+                 This allows compilation to succeed (though with warnings) when System.Core.dll is not available.
+                 It also prevents accidentally taking additional dependencies on System.Core.dll.
+            -->
             <arg value="-r:${framework::get-assembly-directory(framework::get-target-framework())}/System.dll" />
-            <arg value="${OpenJDK.dir}/control/build/linux-amd64/j2re-image/lib/resources.jar" />
-            <!-- this resource is somehow missing from OpenJDK6 b12's resources.jar -->
-            <arg value="-resource:com/sun/org/apache/xml/internal/serialize/HTMLEntities.res=${OpenJDK.dir}/control/build/linux-amd64/impsrc/com/sun/org/apache/xml/internal/serialize/HTMLEntities.res" />
             <!-- we already know that the JNI assembly is not available, so suppress the warning -->
             <arg value="-nowarn:110" />
+            <arg value="@response.txt" />
         </exec>
-        <copy file="IKVM.OpenJDK.ClassLibrary.dll" tofile="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
         <if test="${platform::is-win32()}">
-            <exec program="peverify" commandline="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
+            <copy file="../bin/IKVM.Runtime.dll" tofile="IKVM.Runtime.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Charsets.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Corba.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Core.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Management.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Misc.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Security.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.SwingAWT.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Text.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.Util.dll" />
+            <exec program="peverify" commandline="-quiet IKVM.OpenJDK.XML.dll" />
         </if>
-        <copy file="IKVM.OpenJDK.ClassLibrary.dll" todir="../bin" />
-        <delete file="../bin/IKVM.OpenJDK.ClassLibrary.dll.new" />
+        <copy todir="../bin">
+            <fileset basedir=".">
+                <include name="IKVM.OpenJDK.*.dll" />
+            </fileset>
+        </copy>
     </target>
 
 </project>
