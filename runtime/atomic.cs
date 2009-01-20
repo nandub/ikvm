@@ -25,14 +25,18 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+#if IKVM_REF_EMIT
+using IKVM.Reflection.Emit;
+#else
 using System.Reflection.Emit;
+#endif
 using IKVM.Internal;
 
 static class AtomicReferenceFieldUpdaterEmitter
 {
 	private static readonly Dictionary<FieldWrapper, ConstructorBuilder> map = new Dictionary<FieldWrapper, ConstructorBuilder>();
 
-	internal static bool Emit(TypeWrapper wrapper, CountingILGenerator ilgen, ClassFile classFile, int i, ClassFile.Method.Instruction[] code)
+	internal static bool Emit(DynamicTypeWrapper.FinishContext context, TypeWrapper wrapper, CodeEmitter ilgen, ClassFile classFile, int i, ClassFile.Method.Instruction[] code)
 	{
 		if (i >= 3
 			&& !code[i - 0].IsBranchTarget
@@ -52,7 +56,7 @@ static class AtomicReferenceFieldUpdaterEmitter
 				if (field != null && !field.IsStatic && field.IsVolatile && field.DeclaringType == wrapper && field.FieldTypeWrapper == vclass)
 				{
 					// everything matches up, now call the actual emitter
-					DoEmit(wrapper, ilgen, field);
+					DoEmit(context, wrapper, ilgen, field);
 					return true;
 				}
 			}
@@ -60,7 +64,7 @@ static class AtomicReferenceFieldUpdaterEmitter
 		return false;
 	}
 
-	private static void DoEmit(TypeWrapper wrapper, CountingILGenerator ilgen, FieldWrapper field)
+	private static void DoEmit(DynamicTypeWrapper.FinishContext context, TypeWrapper wrapper, CodeEmitter ilgen, FieldWrapper field)
 	{
 		ConstructorBuilder cb;
 		bool exists;
@@ -84,13 +88,13 @@ static class AtomicReferenceFieldUpdaterEmitter
 			{
 				map.Add(field, cb);
 			}
-			CountingILGenerator ctorilgen = cb.GetILGenerator();
+			CodeEmitter ctorilgen = CodeEmitter.Create(cb);
 			ctorilgen.Emit(OpCodes.Ldarg_0);
 			MethodWrapper basector = arfuTypeWrapper.GetMethodWrapper("<init>", "()V", false);
 			basector.Link();
 			basector.EmitCall(ctorilgen);
 			ctorilgen.Emit(OpCodes.Ret);
-			((DynamicTypeWrapper)wrapper).RegisterPostFinishProc(delegate
+			context.RegisterPostFinishProc(delegate
 			{
 				arfuTypeWrapper.Finish();
 				tb.CreateType();
@@ -113,6 +117,17 @@ static class AtomicReferenceFieldUpdaterEmitter
 		ilgen.Emit(OpCodes.Castclass, field.FieldType);
 		ilgen.Emit(OpCodes.Ldarg_2);
 		ilgen.Emit(OpCodes.Castclass, field.FieldType);
+		ilgen.Emit(OpCodes.Call, MakeCompareExchange(field.FieldType));
+		ilgen.Emit(OpCodes.Ldarg_2);
+		ilgen.Emit(OpCodes.Ceq);
+		ilgen.Emit(OpCodes.Ret);
+	}
+
+	private static MethodInfo MakeCompareExchange(Type type)
+	{
+		return new CompareExchangeMethodInfo(type);
+		// MONOBUG this doesn't work in Mono (because we're closing a generic method over our own Type implementation)
+		/*
 		MethodInfo interlockedCompareExchange = null;
 		foreach (MethodInfo m in typeof(System.Threading.Interlocked).GetMethods())
 		{
@@ -122,10 +137,143 @@ static class AtomicReferenceFieldUpdaterEmitter
 				break;
 			}
 		}
-		ilgen.Emit(OpCodes.Call, interlockedCompareExchange.MakeGenericMethod(field.FieldType));
-		ilgen.Emit(OpCodes.Ldarg_2);
-		ilgen.Emit(OpCodes.Ceq);
-		ilgen.Emit(OpCodes.Ret);
+		return interlockedCompareExchange.MakeGenericMethod(type);
+		 */
+	}
+
+	private sealed class CompareExchangeMethodInfo : MethodInfo
+	{
+		private readonly Type type;
+
+		internal CompareExchangeMethodInfo(Type type)
+		{
+			this.type = type;
+		}
+
+		public override MethodInfo GetBaseDefinition()
+		{
+			throw new NotImplementedException();
+		}
+
+		public override ICustomAttributeProvider ReturnTypeCustomAttributes
+		{
+			get { throw new NotImplementedException(); }
+		}
+
+		public override MethodAttributes Attributes
+		{
+			get { return MethodAttributes.Public; }
+		}
+
+		public override MethodImplAttributes GetMethodImplementationFlags()
+		{
+			throw new NotImplementedException();
+		}
+
+		private sealed class MyParameterInfo : ParameterInfo
+		{
+			private readonly Type type;
+
+			internal MyParameterInfo(Type type)
+			{
+				this.type = type;
+			}
+
+			public override Type ParameterType
+			{
+				get
+				{
+					return type;
+				}
+			}
+		}
+
+		public override ParameterInfo[] GetParameters()
+		{
+			return new ParameterInfo[] { 
+				new MyParameterInfo(type.MakeByRefType()),
+				new MyParameterInfo(type),
+				new MyParameterInfo(type)
+			};
+		}
+
+		public override ParameterInfo ReturnParameter
+		{
+			get
+			{
+				return new MyParameterInfo(type);
+			}
+		}
+
+		public override Type ReturnType
+		{
+			get
+			{
+				return type;
+			}
+		}
+
+		public override object Invoke(object obj, BindingFlags invokeAttr, Binder binder, object[] parameters, System.Globalization.CultureInfo culture)
+		{
+			throw new NotImplementedException();
+		}
+
+		public override RuntimeMethodHandle MethodHandle
+		{
+			get { throw new NotImplementedException(); }
+		}
+
+		public override Type DeclaringType
+		{
+			get { return typeof(System.Threading.Interlocked); }
+		}
+
+		public override object[] GetCustomAttributes(Type attributeType, bool inherit)
+		{
+			throw new NotImplementedException();
+		}
+
+		public override object[] GetCustomAttributes(bool inherit)
+		{
+			throw new NotImplementedException();
+		}
+
+		public override bool IsDefined(Type attributeType, bool inherit)
+		{
+			throw new NotImplementedException();
+		}
+
+		public override string Name
+		{
+			get { return "CompareExchange"; }
+		}
+
+		public override Type ReflectedType
+		{
+			get { return DeclaringType; }
+		}
+
+		public override bool IsGenericMethod
+		{
+			get { return true; }
+		}
+
+		public override Type[] GetGenericArguments()
+		{
+			return new Type[] { type };
+		}
+
+		public override MethodInfo GetGenericMethodDefinition()
+		{
+			foreach (MethodInfo m in typeof(System.Threading.Interlocked).GetMethods())
+			{
+				if (m.Name == "CompareExchange" && m.IsGenericMethodDefinition)
+				{
+					return m;
+				}
+			}
+			throw new InvalidOperationException();
+		}
 	}
 
 	private static void EmitGet(TypeBuilder tb, FieldInfo field)
