@@ -15,6 +15,8 @@ assembly.class
     java/lang/reflect/*.class
     java/net/*.class
     java/nio/*.class
+    java/security/*.class
+    java/util/*.class
     java/util/concurrent/locks/*.class
     sun/misc/*.class
     sun/net/www/protocol/file/*.class
@@ -617,6 +619,7 @@ assembly.class
     ../../openjdk6-b12/jdk/src/share/classes/java/awt/image/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/awt/image/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/java2d/*.class
+    ../../openjdk6-b12/jdk/src/share/classes/sun/java2d/cmm/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/swing/*.class
     ../classpath/gnu/java/awt/peer/*.class
     ../classpath/gnu/java/awt/peer/gtk/*.class
@@ -762,9 +765,9 @@ assembly.class
     -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/com/sun/jndi/cosnaming/jndiprovider.properties
     -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/com/sun/jndi/ldap/jndiprovider.properties
     -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/com/sun/rowset/*
-    -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/javax/sql/*
     -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/sun/print/*
     -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/sun/rmi/*
+	-r:System.Drawing
     com/sun/imageio/plugins/jpeg/*.class
     icedtea/rt/com/sun/media/sound/*.class
     sun/net/dns/*.class
@@ -834,7 +837,6 @@ assembly.class
     ../../openjdk6-b12/jdk/src/share/classes/java/rmi/dgc/*.class
     ../../openjdk6-b12/jdk/src/share/classes/java/rmi/registry/*.class
     ../../openjdk6-b12/jdk/src/share/classes/java/rmi/server/*.class
-    ../../openjdk6-b12/jdk/src/share/classes/java/sql/*.class
     ../../openjdk6-b12/jdk/src/share/classes/javax/accessibility/*.class
     ../../openjdk6-b12/jdk/src/share/classes/javax/imageio/*.class
     ../../openjdk6-b12/jdk/src/share/classes/javax/imageio/event/*.class
@@ -859,10 +861,6 @@ assembly.class
     ../../openjdk6-b12/jdk/src/share/classes/javax/sound/midi/spi/*.class
     ../../openjdk6-b12/jdk/src/share/classes/javax/sound/sampled/*.class
     ../../openjdk6-b12/jdk/src/share/classes/javax/sound/sampled/spi/*.class
-    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/*.class
-    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/rowset/*.class
-    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/rowset/serial/*.class
-    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/rowset/spi/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/beans/editors/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/beans/infos/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/io/ByteToCharASCII.class
@@ -938,4 +936,15 @@ assembly.class
     ../../openjdk6-b12/jdk/src/share/classes/sun/rmi/transport/tcp/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sunw/io/*.class
     ../../openjdk6-b12/jdk/src/share/classes/sunw/util/*.class
+}
+{
+    -out:IKVM.OpenJDK.Jdbc.dll
+    -recurse:../../openjdk6-b12/control/build/linux-amd64/j2re-image/lib/resources.jar/javax/sql/*
+    -r:System.Drawing
+    java/sql/*.class
+    ../../openjdk6-b12/jdk/src/share/classes/java/sql/*.class
+    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/*.class
+    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/rowset/*.class
+    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/rowset/serial/*.class
+    ../../openjdk6-b12/jdk/src/share/classes/javax/sql/rowset/spi/*.class
 }
