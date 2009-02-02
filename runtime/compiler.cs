@@ -3130,6 +3130,13 @@ class Compiler
 					{
 						ilGenerator.Emit(OpCodes.Br, block.GetLabel(m.Instructions[callsites[callsites.Length - 1] + 1].PC));
 					}
+					else
+					{
+						// this code location is unreachable, but the verifier doesn't know that, so we emit a branch to keep it happy
+						// (it would be a little nicer to rewrite the above for loop to dynamically find the last reachable callsite,
+						// but since this only happens with unreachable code, it's not a big deal).
+						ilGenerator.Emit(OpCodes.Br_S, (sbyte)-2);
+					}
 					break;
 				}
 				case NormalizedByteCode.__nop:
@@ -3292,7 +3299,7 @@ class Compiler
 				}
 				// if the stack contains an unloadable, we might need to cast it
 				// (e.g. if the argument type is a base class that is loadable)
-				if(ma.GetRawStackTypeWrapper(instructionIndex, i).IsUnloadable)
+				if(ma.GetRawStackTypeWrapper(instructionIndex, args.Length - 1 - i).IsUnloadable)
 				{
 					needsCast = true;
 					firstCastArg = i;
@@ -3406,6 +3413,7 @@ class Compiler
 		ilGenerator.Emit(OpCodes.Ldstr, cpi.Signature);
 		ilGenerator.Emit(OpCodes.Ldtoken, clazz.TypeAsTBD);
 		ilGenerator.Emit(OpCodes.Ldstr, wrapper.Name);
+		ilGenerator.Emit(OpCodes.Ldsfld, context.CallerIDField);
 		switch(bytecode)
 		{
 			case NormalizedByteCode.__dynamic_getfield:
@@ -3453,18 +3461,20 @@ class Compiler
 		}
 		else
 		{
-			ilgen.Emit(OpCodes.Castclass, typeWrapper.TypeAsTBD);
+			typeWrapper.EmitCheckcast(null, ilgen);
 		}
 	}
 
 	private class DynamicMethodWrapper : MethodWrapper
 	{
+		private DynamicTypeWrapper.FinishContext context;
 		private TypeWrapper wrapper;
 		private ClassFile.ConstantPoolItemMI cpi;
 
-		internal DynamicMethodWrapper(TypeWrapper wrapper, ClassFile.ConstantPoolItemMI cpi)
+		internal DynamicMethodWrapper(DynamicTypeWrapper.FinishContext context, TypeWrapper wrapper, ClassFile.ConstantPoolItemMI cpi)
 			: base(wrapper, cpi.Name, cpi.Signature, null, cpi.GetRetType(), cpi.GetArgTypes(), Modifiers.Public, MemberFlags.None)
 		{
+			this.context = context;
 			this.wrapper = wrapper;
 			this.cpi = cpi;
 		}
@@ -3510,6 +3520,7 @@ class Compiler
 			ilGenerator.Emit(OpCodes.Ldstr, cpi.Name);
 			ilGenerator.Emit(OpCodes.Ldstr, cpi.Signature);
 			ilGenerator.Emit(OpCodes.Ldloc, argarray);
+			ilGenerator.Emit(OpCodes.Ldsfld, context.CallerIDField);
 			ilGenerator.Emit(OpCodes.Call, helperMethod);
 			EmitReturnTypeConversion(ilGenerator, retTypeWrapper);
 		}
@@ -3580,13 +3591,13 @@ class Compiler
 			case NormalizedByteCode.__dynamic_invokestatic:
 			case NormalizedByteCode.__dynamic_invokevirtual:
 			case NormalizedByteCode.__dynamic_invokespecial:
-				return new DynamicMethodWrapper(clazz, cpi);
+				return new DynamicMethodWrapper(context, clazz, cpi);
 			default:
 				throw new InvalidOperationException();
 		}
 		if(mw.IsDynamicOnly)
 		{
-			return new DynamicMethodWrapper(clazz, cpi);
+			return new DynamicMethodWrapper(context, clazz, cpi);
 		}
 		return mw;
 	}
