@@ -634,8 +634,10 @@ namespace IKVM.NativeCode.java
 
 			public static void initNative()
 			{
+#if !FIRST_PASS
 				// HACK if we're being run from ikvmstub, don't run the static initializer
 				runClassInit = !"true".Equals(ClassLoaderWrapper.DoPrivileged(new global::sun.security.action.GetPropertyAction("ikvm.stubgen.serialver")));
+#endif
 			}
 
 			public static bool hasStaticInitializer(object cl)
@@ -7559,5 +7561,23 @@ namespace IKVM.NativeCode.com.sun.media.sound
 			return new global::java.util.ArrayList();
 #endif
 		}
+	}
+}
+
+namespace IKVM.NativeCode.java.awt.@event
+{
+	static class InputEvent
+	{
+		public static void initIDs() { }
+	}
+
+	static class MouseEvent
+	{
+		public static void initIDs() { }
+	}
+
+	static class KeyEvent
+	{
+		public static void initIDs() { }
 	}
 }
