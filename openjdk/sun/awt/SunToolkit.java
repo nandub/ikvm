@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2007 Jeroen Frijters
+  Copyright (C) 2009 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -24,41 +24,33 @@
 
 package sun.awt;
 
-import java.util.HashSet;
-import java.util.Set;
-import java.beans.PropertyChangeListener;
+import java.awt.AWTEvent;
+import java.awt.GraphicsEnvironment;
 
-public final class AppContext extends java.util.Hashtable
+public class SunToolkit
 {
-    public static final String DISPOSED_PROPERTY_NAME = "disposed";
-    private static final AppContext instance = new AppContext();
-
-    private AppContext() {}
-
-    public static AppContext getAppContext()
+    public static AppContext targetToAppContext(Object target)
     {
-        return instance;
+	if (target == null || GraphicsEnvironment.isHeadless())
+        {
+	    return null;
+        }
+	// we only support a single AppContext
+	return AppContext.getAppContext();
     }
     
-    public static Set<AppContext> getAppContexts()
-    {
-        HashSet<AppContext> set = new HashSet<AppContext>();
-        set.add(instance);
-        return set;
-    }
-    
-    public void addPropertyChangeListener(String propertyName, PropertyChangeListener listener)
+    public static String getDataTransfererClassName()
     {
         throw new Error("Not implemented");
     }
     
-    public void removePropertyChangeListener(String propertyName, PropertyChangeListener listener)
+    public static void executeOnEventHandlerThread(Object target, Runnable runnable)
     {
         throw new Error("Not implemented");
     }
     
-    public boolean isDisposed()
+    public static void postEvent(AppContext appContext, AWTEvent event)
     {
-        return false;
+        throw new Error("Not implemented");
     }
 }
