@@ -24,6 +24,7 @@
 
 package sun.awt;
 
+import java.awt.AWTEvent;
 import java.awt.GraphicsEnvironment;
 
 public class SunToolkit
@@ -36,5 +37,25 @@ public class SunToolkit
         }
 	// we only support a single AppContext
 	return AppContext.getAppContext();
+    }
+    
+    public static String getDataTransfererClassName()
+    {
+	return "sun.awt.IkvmDataTransferer";
+    }
+    
+    public static void executeOnEventHandlerThread(Object target, Runnable runnable)
+    {
+        throw new Error("Not implemented");
+    }
+    
+    public static void postEvent(AppContext appContext, AWTEvent event)
+    {
+        throw new Error("Not implemented");
+    }
+    
+    public static void invokeLaterOnAppContext(AppContext appContext, Runnable dispatcher)
+    {
+        throw new Error("Not implemented");
     }
 }
