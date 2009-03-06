@@ -47,12 +47,13 @@ namespace IKVM.Internal
 		PropertyAccessor = 64,
 		Intrinsic = 128,
 		CallerID = 256,
+		NonPublicTypeInSignature = 512,	// this flag is only available after linking
 	}
 
 	class MemberWrapper
 	{
 #if !STATIC_COMPILER && !FIRST_PASS
-		protected static readonly sun.reflect.ReflectionFactory reflectionFactory = (sun.reflect.ReflectionFactory)java.security.AccessController.doPrivileged(new sun.reflect.ReflectionFactory.GetReflectionFactoryAction());
+		protected static readonly sun.reflect.ReflectionFactory reflectionFactory = (sun.reflect.ReflectionFactory)ClassLoaderWrapper.DoPrivileged(new sun.reflect.ReflectionFactory.GetReflectionFactoryAction());
 #endif
 		private System.Runtime.InteropServices.GCHandle handle;
 		private TypeWrapper declaringType;
@@ -139,13 +140,31 @@ namespace IKVM.Internal
 		{
 			if(referencedType.IsAccessibleFrom(caller))
 			{
-				return IsPublic ||
+				return (IsPublic ||
 					caller == DeclaringType ||
 					(IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller))) ||
-					(IsInternal && DeclaringType.GetClassLoader().InternalsVisibleTo(caller.GetClassLoader())) ||
-					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller));
+					(IsInternal && DeclaringType.InternalsVisibleTo(caller)) ||
+					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller)))
+					// The JVM supports accessing members that have non-public types in their signature from another package,
+					// but the CLI doesn't. It would be nice if we worked around that by emitting extra accessors, but for now
+					// we'll simply disallow such access across assemblies (unless the appropriate InternalsVisibleToAttribute exists).
+					&& ((flags & MemberFlags.NonPublicTypeInSignature) == 0 || InPracticeInternalsVisibleTo(caller));
 			}
 			return false;
+		}
+
+		private bool InPracticeInternalsVisibleTo(TypeWrapper caller)
+		{
+#if !STATIC_COMPILER
+			if (DeclaringType.TypeAsTBD.Assembly.Equals(caller.TypeAsTBD.Assembly))
+			{
+				// both the caller and the declaring type are in the same assembly
+				// so we know that the internals are visible
+				// (this handles the case where we're running in dynamic mode)
+				return true;
+			}
+#endif
+			return DeclaringType.InternalsVisibleTo(caller);
 		}
 
 		internal bool IsHideFromReflection
@@ -211,6 +230,11 @@ namespace IKVM.Internal
 		protected void SetIntrinsicFlag()
 		{
 			flags |= MemberFlags.Intrinsic;
+		}
+
+		protected void SetNonPublicTypeInSignatureFlag()
+		{
+			flags |= MemberFlags.NonPublicTypeInSignature;
 		}
 
 		internal bool HasCallerID
@@ -403,6 +427,29 @@ namespace IKVM.Internal
 			{
 				SetIntrinsicFlag();
 			}
+			UpdateNonPublicTypeInSignatureFlag();
+		}
+
+		private void UpdateNonPublicTypeInSignatureFlag()
+		{
+			if ((IsPublic || IsProtected) && (returnTypeWrapper != null && parameterTypeWrappers != null))
+			{
+				if (!returnTypeWrapper.IsPublic && !returnTypeWrapper.IsUnloadable)
+				{
+					SetNonPublicTypeInSignatureFlag();
+				}
+				else
+				{
+					foreach (TypeWrapper tw in parameterTypeWrappers)
+					{
+						if (!tw.IsPublic && !tw.IsUnloadable)
+						{
+							SetNonPublicTypeInSignatureFlag();
+							break;
+						}
+					}
+				}
+			}
 		}
 
 		internal void SetDeclaredExceptions(string[] exceptions)
@@ -537,11 +584,12 @@ namespace IKVM.Internal
 					Debug.Assert(returnTypeWrapper == null || returnTypeWrapper == PrimitiveTypeWrapper.VOID);
 					returnTypeWrapper = ret;
 					parameterTypeWrappers = parameters;
+					UpdateNonPublicTypeInSignatureFlag();
 					if(method == null)
 					{
 						try
 						{
-							method = this.DeclaringType.LinkMethod(this);
+							DoLinkMethod();
 						}
 						catch
 						{
@@ -554,6 +602,11 @@ namespace IKVM.Internal
 					}
 				}
 			}
+		}
+
+		protected virtual void DoLinkMethod()
+		{
+			method = this.DeclaringType.LinkMethod(this);
 		}
 
 		[Conditional("DEBUG")]
@@ -1091,12 +1144,24 @@ namespace IKVM.Internal
 			Debug.Assert(sig != null);
 			this.fieldType = fieldType;
 			this.field = field;
+			UpdateNonPublicTypeInSignatureFlag();
 		}
 
 		internal FieldWrapper(TypeWrapper declaringType, TypeWrapper fieldType, string name, string sig, ExModifiers modifiers, FieldInfo field)
 			: this(declaringType, fieldType, name, sig, modifiers.Modifiers, field,
 					(modifiers.IsInternal ? MemberFlags.InternalAccess : MemberFlags.None))
 		{
+		}
+
+		private void UpdateNonPublicTypeInSignatureFlag()
+		{
+			if ((IsPublic || IsProtected) && fieldType != null)
+			{
+				if (!fieldType.IsPublic && !fieldType.IsUnloadable)
+				{
+					SetNonPublicTypeInSignatureFlag();
+				}
+			}
 		}
 
 		internal FieldInfo GetField()
@@ -1246,6 +1311,7 @@ namespace IKVM.Internal
 				if(fieldType == null)
 				{
 					fieldType = fld;
+					UpdateNonPublicTypeInSignatureFlag();
 					try
 					{
 						field = this.DeclaringType.LinkField(this);
