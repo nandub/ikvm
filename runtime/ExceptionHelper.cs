@@ -24,16 +24,22 @@
 using System;
 using System.Reflection;
 using System.Diagnostics;
-using System.Text;
-using System.Collections;
 using IKVM.Attributes;
 using IKVM.Internal;
-using NetSystem = System;
 
 namespace IKVM.NativeCode.java.lang
 {
 	static class ExceptionHelper
 	{
+		public static Exception MapExceptionImpl(Exception x)
+		{
+#if FIRST_PASS
+			return null;
+#else
+			return global::java.lang.Throwable.__mapImpl(x);
+#endif
+		}
+
 		public static string SafeGetEnvironmentVariable(string name)
 		{
 			try
@@ -44,16 +50,6 @@ namespace IKVM.NativeCode.java.lang
 			{
 				return null;
 			}
-		}
-
-		public static Exception getInnerException(Exception t)
-		{
-			return t.InnerException;
-		}
-
-		public static string getMessageFromCliException(Exception t)
-		{
-			return t.Message;
 		}
 
 		public static bool IsNative(MethodBase m)
@@ -126,13 +122,11 @@ namespace IKVM.NativeCode.java.lang
 #if !FIRST_PASS
 			if(cause == throwable)
 			{
-				MethodWrapper mw = CoreClasses.java.lang.Throwable.Wrapper.GetMethodWrapper("<init>", "(Ljava.lang.String;)V", false);
-				mw.Invoke(throwable, new object[] { detailMessage }, true, null);
+				typeof(global::java.lang.Throwable).GetConstructor(new Type[] { typeof(string) }).Invoke(throwable, new object[] { detailMessage });
 			}
 			else
 			{
-				MethodWrapper mw = CoreClasses.java.lang.Throwable.Wrapper.GetMethodWrapper("<init>", "(Ljava.lang.String;Ljava.lang.Throwable;)V", false);
-				mw.Invoke(throwable, new object[] { detailMessage, cause }, true, null);
+				typeof(global::java.lang.Throwable).GetConstructor(new Type[] { typeof(string), typeof(Exception) }).Invoke(throwable, new object[] { detailMessage, cause });
 			}
 #endif
 		}
