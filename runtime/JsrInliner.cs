@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002-2010 Jeroen Frijters
+  Copyright (C) 2002-2009 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -21,6 +21,7 @@
   jeroen@frijters.net
   
 */
+#if !COMPACT_FRAMEWORK
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -32,7 +33,6 @@ namespace IKVM.Internal
 	{
 		private ClassFile.Method.Instruction[] codeCopy;
 		private int codeLength;
-		private InstructionFlags[] flags;
 		private readonly ClassFile.Method m;
 		private readonly JsrMethodAnalyzer ma;
 
@@ -42,17 +42,15 @@ namespace IKVM.Internal
 			do
 			{
 				ClassFile.Method.Instruction[] codeCopy = (ClassFile.Method.Instruction[])m.Instructions.Clone();
-				InstructionFlags[] flags = new InstructionFlags[codeCopy.Length];
-				JsrMethodAnalyzer ma = new JsrMethodAnalyzer(mw, classFile, m, classLoader, flags);
-				inliner = new JsrInliner(codeCopy, flags, m, ma);
+				JsrMethodAnalyzer ma = new JsrMethodAnalyzer(mw, classFile, m, classLoader);
+				inliner = new JsrInliner(codeCopy, m, ma);
 			} while (inliner.InlineJsrs());
 		}
 
-		private JsrInliner(ClassFile.Method.Instruction[] codeCopy, InstructionFlags[] flags, ClassFile.Method m, JsrMethodAnalyzer ma)
+		private JsrInliner(ClassFile.Method.Instruction[] codeCopy, ClassFile.Method m, JsrMethodAnalyzer ma)
 		{
 			this.codeCopy = codeCopy;
 			codeLength = codeCopy.Length;
-			this.flags = flags;
 			this.m = m;
 			this.ma = ma;
 		}
@@ -62,7 +60,6 @@ namespace IKVM.Internal
 			if (codeLength == codeCopy.Length)
 			{
 				Array.Resize(ref codeCopy, codeLength * 2);
-				Array.Resize(ref flags, codeLength * 2);
 			}
 			codeCopy[codeLength++] = instr;
 		}
@@ -76,7 +73,7 @@ namespace IKVM.Internal
 			{
 				// note that we're also (needlessly) processing the subroutines here, but that shouldn't be a problem (just a minor waste of cpu)
 				// because the code is unreachable anyway
-				if ((flags[i] & InstructionFlags.Reachable) != 0 && m.Instructions[i].NormalizedOpCode == NormalizedByteCode.__jsr)
+				if (m.Instructions[i].IsReachable && m.Instructions[i].NormalizedOpCode == NormalizedByteCode.__jsr)
 				{
 					int subroutineId = m.Instructions[i].TargetIndex;
 					codeCopy[i].PatchOpCode(NormalizedByteCode.__goto, codeLength);
@@ -97,6 +94,10 @@ namespace IKVM.Internal
 			Array.Resize(ref codeCopy, codeLength);
 
 			m.Instructions = codeCopy;
+			for (int i = 0; i < m.Instructions.Length; i++)
+			{
+				m.Instructions[i].flags = 0;
+			}
 			return hasJsrs;
 		}
 
@@ -151,7 +152,7 @@ namespace IKVM.Internal
 				bool fallThru = false;
 				for (int instructionIndex = 0; instructionIndex < inliner.m.Instructions.Length; instructionIndex++)
 				{
-					if ((inliner.flags[instructionIndex] & InstructionFlags.Reachable) != 0
+					if (inliner.m.Instructions[instructionIndex].IsReachable
 						&& inliner.ma.IsSubroutineActive(instructionIndex, subroutineIndex))
 					{
 						fallThru = false;
@@ -266,7 +267,12 @@ namespace IKVM.Internal
 					int end = MapExceptionStartEnd(entry.endIndex);
 					if (start != end)
 					{
-						ClassFile.Method.ExceptionTableEntry newEntry = new ClassFile.Method.ExceptionTableEntry(start, end, branchMap[entry.handlerIndex], entry.catch_type, entry.ordinal);
+						ClassFile.Method.ExceptionTableEntry newEntry = new ClassFile.Method.ExceptionTableEntry();
+						newEntry.startIndex = start;
+						newEntry.endIndex = end;
+						newEntry.catch_type = entry.catch_type;
+						newEntry.handlerIndex = branchMap[entry.handlerIndex];
+						newEntry.ordinal = newExceptions.Count;
 						newExceptions.Add(newEntry);
 					}
 				}
@@ -334,9 +340,8 @@ namespace IKVM.Internal
 			private ClassFile classFile;
 			private InstructionState[] state;
 			private List<int>[] callsites;
-			private List<int>[] returnsites;
 
-			internal JsrMethodAnalyzer(MethodWrapper mw, ClassFile classFile, ClassFile.Method method, ClassLoaderWrapper classLoader, InstructionFlags[] flags)
+			internal JsrMethodAnalyzer(MethodWrapper mw, ClassFile classFile, ClassFile.Method method, ClassLoaderWrapper classLoader)
 			{
 				if (method.VerifyError != null)
 				{
@@ -346,7 +351,6 @@ namespace IKVM.Internal
 				this.classFile = classFile;
 				state = new InstructionState[method.Instructions.Length];
 				callsites = new List<int>[method.Instructions.Length];
-				returnsites = new List<int>[method.Instructions.Length];
 
 				// because types have to have identity, the subroutine return address types are cached here
 				Dictionary<int, SimpleType> returnAddressTypes = new Dictionary<int, SimpleType>();
@@ -1094,6 +1098,10 @@ namespace IKVM.Internal
 											break;
 										case NormalizedByteCode.__jsr:
 											{
+												if ((instr.flags & InstructionFlags.JsrHasRet) != 0)
+												{
+													state[i + 1] += s;
+												}
 												int index = instr.TargetIndex;
 												s.SetSubroutineId(index);
 												SimpleType retAddressType;
@@ -1104,14 +1112,6 @@ namespace IKVM.Internal
 												}
 												s.PushType(retAddressType);
 												state[index] += s;
-												List<int> returns = GetReturnSites(i);
-												if (returns != null)
-												{
-													foreach (int returnIndex in returns)
-													{
-														state[i + 1] = InstructionState.MergeSubroutineReturn(state[i + 1], s, state[returnIndex], state[returnIndex].GetLocalsModified(index));
-													}
-												}
 												AddCallSite(index, i);
 												break;
 											}
@@ -1122,11 +1122,11 @@ namespace IKVM.Internal
 												// for each subroutine instruction (see Instruction.AddCallSite())
 												int subroutineIndex = s.GetLocalRet(instr.Arg1);
 												int[] cs = GetCallSites(subroutineIndex);
-												bool[] locals_modified = s.GetLocalsModified(subroutineIndex);
+												bool[] locals_modified = s.ClearSubroutineId(subroutineIndex);
 												for (int j = 0; j < cs.Length; j++)
 												{
-													AddReturnSite(cs[j], i);
-													state[cs[j] + 1] = InstructionState.MergeSubroutineReturn(state[cs[j] + 1], state[cs[j]], s, locals_modified);
+													state[cs[j] + 1] = InstructionState.Merge(state[cs[j] + 1], s, locals_modified, state[cs[j]]);
+													instructions[cs[j]].flags |= InstructionFlags.JsrHasRet;
 												}
 												break;
 											}
@@ -1168,23 +1168,23 @@ namespace IKVM.Internal
 
 				// Now we do another pass to compute reachability
 				done = false;
-				flags[0] |= InstructionFlags.Reachable;
+				instructions[0].flags |= InstructionFlags.Reachable;
 				while (!done)
 				{
 					done = true;
 					bool didJsrOrRet = false;
 					for (int i = 0; i < instructions.Length; i++)
 					{
-						if ((flags[i] & (InstructionFlags.Reachable | InstructionFlags.Processed)) == InstructionFlags.Reachable)
+						if ((instructions[i].flags & (InstructionFlags.Reachable | InstructionFlags.Processed)) == InstructionFlags.Reachable)
 						{
 							done = false;
-							flags[i] |= InstructionFlags.Processed;
+							instructions[i].flags |= InstructionFlags.Processed;
 							// mark the exception handlers reachable from this instruction
 							for (int j = 0; j < method.ExceptionTable.Length; j++)
 							{
 								if (method.ExceptionTable[j].startIndex <= i && i < method.ExceptionTable[j].endIndex)
 								{
-									flags[method.ExceptionTable[j].handlerIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+									instructions[method.ExceptionTable[j].handlerIndex].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 								}
 							}
 							// mark the successor instructions
@@ -1197,14 +1197,14 @@ namespace IKVM.Internal
 										for (int j = 0; j < instructions[i].SwitchEntryCount; j++)
 										{
 											hasbackbranch |= instructions[i].GetSwitchTargetIndex(j) < i;
-											flags[instructions[i].GetSwitchTargetIndex(j)] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+											instructions[instructions[i].GetSwitchTargetIndex(j)].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 										}
 										hasbackbranch |= instructions[i].DefaultTarget < i;
-										flags[instructions[i].DefaultTarget] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+										instructions[instructions[i].DefaultTarget].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 										break;
 									}
 								case NormalizedByteCode.__goto:
-									flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+									instructions[instructions[i].TargetIndex].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 									break;
 								case NormalizedByteCode.__ifeq:
 								case NormalizedByteCode.__ifne:
@@ -1222,11 +1222,11 @@ namespace IKVM.Internal
 								case NormalizedByteCode.__if_acmpne:
 								case NormalizedByteCode.__ifnull:
 								case NormalizedByteCode.__ifnonnull:
-									flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
-									flags[i + 1] |= InstructionFlags.Reachable;
+									instructions[instructions[i].TargetIndex].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+									instructions[i + 1].flags |= InstructionFlags.Reachable;
 									break;
 								case NormalizedByteCode.__jsr:
-									flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+									instructions[instructions[i].TargetIndex].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 									// Note that we don't mark the next instruction as reachable,
 									// because that depends on the corresponding ret actually being
 									// reachable. We handle this in the loop below.
@@ -1248,7 +1248,7 @@ namespace IKVM.Internal
 								case NormalizedByteCode.__athrow:
 									break;
 								default:
-									flags[i + 1] |= InstructionFlags.Reachable;
+									instructions[i + 1].flags |= InstructionFlags.Reachable;
 									break;
 							}
 						}
@@ -1258,15 +1258,15 @@ namespace IKVM.Internal
 						for (int i = 0; i < instructions.Length; i++)
 						{
 							if (instructions[i].NormalizedOpCode == NormalizedByteCode.__ret
-								&& (flags[i] & InstructionFlags.Reachable) != 0)
+								&& instructions[i].IsReachable)
 							{
 								int subroutineIndex = state[i].GetLocalRet(instructions[i].Arg1);
 								int[] cs = GetCallSites(subroutineIndex);
 								for (int j = 0; j < cs.Length; j++)
 								{
-									if ((flags[cs[j]] & InstructionFlags.Reachable) != 0)
+									if (instructions[cs[j]].IsReachable)
 									{
-										flags[cs[j] + 1] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+										instructions[cs[j] + 1].flags |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 									}
 								}
 							}
@@ -1332,25 +1332,6 @@ namespace IKVM.Internal
 					// specified constant pool entry is empty (entry 0 or the filler following a wide entry)
 				}
 				throw new VerifyError("Illegal constant pool index");
-			}
-
-			private void AddReturnSite(int callSiteIndex, int returnSiteIndex)
-			{
-				if (returnsites[callSiteIndex] == null)
-				{
-					returnsites[callSiteIndex] = new List<int>();
-				}
-				List<int> l = returnsites[callSiteIndex];
-				if (l.IndexOf(returnSiteIndex) == -1)
-				{
-					state[callSiteIndex].changed = true;
-					l.Add(returnSiteIndex);
-				}
-			}
-
-			private List<int> GetReturnSites(int callSiteIndex)
-			{
-				return returnsites[callSiteIndex];
 			}
 
 			private void AddCallSite(int subroutineIndex, int callSiteIndex)
@@ -1502,6 +1483,11 @@ namespace IKVM.Internal
 					return n;
 				}
 
+				public static InstructionState operator +(InstructionState s1, InstructionState s2)
+				{
+					return Merge(s1, s2, null, null);
+				}
+
 				private void MergeSubroutineHelper(InstructionState s2)
 				{
 					if (subroutines == null || s2.subroutines == null)
@@ -1549,28 +1535,27 @@ namespace IKVM.Internal
 					}
 				}
 
-				internal static InstructionState MergeSubroutineReturn(InstructionState jsrSuccessor, InstructionState jsr, InstructionState ret, bool[] locals_modified)
-				{
-					InstructionState next = ret.Copy();
-					next.LocalsCopyOnWrite();
-					for (int i = 0; i < locals_modified.Length; i++)
-					{
-						if (!locals_modified[i])
-						{
-							next.locals[i] = jsr.locals[i];
-						}
-					}
-					next.flags |= ShareFlags.Subroutines;
-					next.subroutines = jsr.subroutines;
-					next.callsites = jsr.callsites;
-					return jsrSuccessor + next;
-				}
-
-				public static InstructionState operator+(InstructionState s1, InstructionState s2)
+				internal static InstructionState Merge(InstructionState s1, InstructionState s2, bool[] locals_modified, InstructionState s3)
 				{
 					if (s1 == null)
 					{
-						return s2.Copy();
+						s2 = s2.Copy();
+						if (locals_modified != null)
+						{
+							for (int i = 0; i < s2.locals.Length; i++)
+							{
+								if (!locals_modified[i])
+								{
+									s2.LocalsCopyOnWrite();
+									s2.locals[i] = s3.locals[i];
+								}
+							}
+						}
+						if (s3 != null)
+						{
+							s2.MergeSubroutineHelper(s3);
+						}
+						return s2;
 					}
 					if (s1.stackSize != s2.stackSize || s1.stackEnd != s2.stackEnd)
 					{
@@ -1618,7 +1603,15 @@ namespace IKVM.Internal
 					for (int i = 0; i < s.locals.Length; i++)
 					{
 						SimpleType type = s.locals[i];
-						SimpleType type2 = s2.locals[i];
+						SimpleType type2;
+						if (locals_modified == null || locals_modified[i])
+						{
+							type2 = s2.locals[i];
+						}
+						else
+						{
+							type2 = s3.locals[i];
+						}
 						SimpleType baseType = InstructionState.FindCommonBaseType(type, type2);
 						if (type != baseType)
 						{
@@ -1628,6 +1621,10 @@ namespace IKVM.Internal
 						}
 					}
 					s.MergeSubroutineHelper(s2);
+					if (s3 != null)
+					{
+						s.MergeSubroutineHelper(s3);
+					}
 					return s;
 				}
 
@@ -1658,14 +1655,20 @@ namespace IKVM.Internal
 					subroutines.Add(new Subroutine(subroutineIndex, locals.Length));
 				}
 
-				internal bool[] GetLocalsModified(int subroutineIndex)
+				internal bool[] ClearSubroutineId(int subroutineIndex)
 				{
+					SubroutinesCopyOnWrite();
 					if (subroutines != null)
 					{
 						foreach (Subroutine s in subroutines)
 						{
 							if (s.SubroutineIndex == subroutineIndex)
 							{
+								// TODO i'm not 100% sure about this, but I think we need to clear
+								// the subroutines here (because when you return you can never "become" inside a subroutine)
+								// UPDATE the above is incorrect, we only need to remove the subroutine we're actually
+								// returning from
+								subroutines.Remove(s);
 								return s.LocalsModified;
 							}
 						}
@@ -2046,3 +2049,4 @@ namespace IKVM.Internal
 		}
 	}
 }
+#endif
