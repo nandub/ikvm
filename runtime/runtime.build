@@ -75,6 +75,7 @@
                 <include name="ExceptionHelper.cs" />
                 <include name="intrinsics.cs" />
                 <include name="JavaException.cs" />
+                <include name="JsrInliner.cs" />
                 <include name="MemberWrapper.cs" />
                 <include name="openjdk.cs" />
                 <include name="PassiveWeakDictionary.cs" />
@@ -84,6 +85,7 @@
                 <include name="tracer.cs" />
                 <include name="TypeWrapper.cs" />
                 <include name="verifier.cs" />
+                <include name="vfs.cs" />
                 <include name="vm.cs" />
             </sources>
             <resources>
