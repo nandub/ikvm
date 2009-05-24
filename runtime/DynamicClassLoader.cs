@@ -47,6 +47,7 @@ namespace IKVM.Internal
 
 	sealed class DynamicClassLoader : TypeWrapperFactory
 	{
+		// note that MangleNestedTypeName() assumes that there are less than 16 special characters
 		private static readonly char[] specialCharacters = { '\\', '+', ',', '[', ']', '*', '&', '\u0000' };
 		private static readonly string specialCharactersString = new String(specialCharacters);
 #if !STATIC_COMPILER
@@ -215,7 +216,11 @@ namespace IKVM.Internal
 					types[f.Name] = type;
 #if !STATIC_COMPILER && !FIRST_PASS
 					java.lang.Class clazz = java.lang.Class.newClass();
+#if __MonoCS__
 					TypeWrapper.SetTypeWrapperHack(ref clazz.typeWrapper, type);
+#else
+					clazz.typeWrapper = type;
+#endif
 					clazz.pd = (java.security.ProtectionDomain)protectionDomain;
 					type.SetClassObject(clazz);
 #endif
@@ -255,19 +260,23 @@ namespace IKVM.Internal
 				int index = specialCharactersString.IndexOf(c);
 				if(c == '.')
 				{
-					sb.Append("%-");
+					sb.Append("_");
+				}
+				else if(c == '_')
+				{
+					sb.Append("^-");
 				}
 				else if(index == -1)
 				{
 					sb.Append(c);
-					if(c == '%')
+					if(c == '^')
 					{
 						sb.Append(c);
 					}
 				}
 				else
 				{
-					sb.Append('%').AppendFormat("{0:X2}", index);
+					sb.Append('^').AppendFormat("{0:X1}", index);
 				}
 			}
 			return sb.ToString();
@@ -384,7 +393,16 @@ namespace IKVM.Internal
 			}
 			DateTime now = DateTime.Now;
 			name.Version = new Version(now.Year, (now.Month * 100) + now.Day, (now.Hour * 100) + now.Minute, (now.Second * 1000) + now.Millisecond);
-			AssemblyBuilder assemblyBuilder = AppDomain.CurrentDomain.DefineDynamicAssembly(name, JVM.IsSaveDebugImage ? AssemblyBuilderAccess.RunAndSave : AssemblyBuilderAccess.Run, null, null, null, null, null, true);
+			List<CustomAttributeBuilder> attribs = new List<CustomAttributeBuilder>();
+			if(Environment.Version.Major == 4 && Environment.Version.Minor == 0 && Environment.Version.Build == 20506)
+			{
+				// FXBUG workaround for MethodImpl bug in .NET 4.0 beta 1
+				attribs.Add(
+					new CustomAttributeBuilder(
+						Type.GetType("System.Security.SecurityRulesAttribute").GetConstructor(new Type[] { Type.GetType("System.Security.SecurityRuleSet") }),
+						new object[] { Type.GetType("System.Security.SecurityRuleSet").GetField("Level1").GetValue(null) }));
+			}
+			AssemblyBuilder assemblyBuilder = AppDomain.CurrentDomain.DefineDynamicAssembly(name, JVM.IsSaveDebugImage ? AssemblyBuilderAccess.RunAndSave : AssemblyBuilderAccess.Run, null, null, null, null, null, true, attribs);
 			bool debug = System.Diagnostics.Debugger.IsAttached;
 			CustomAttributeBuilder debugAttr = new CustomAttributeBuilder(typeof(DebuggableAttribute).GetConstructor(new Type[] { typeof(bool), typeof(bool) }), new object[] { true, debug });
 			assemblyBuilder.SetCustomAttribute(debugAttr);
