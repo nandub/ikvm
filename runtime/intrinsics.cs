@@ -1,5 +1,5 @@
 ﻿/*
-  Copyright (C) 2008 Jeroen Frijters
+  Copyright (C) 2008, 2009 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -84,16 +84,22 @@ namespace IKVM.Internal
 		private static Dictionary<IntrinsicKey, Emitter> Register()
 		{
 			Dictionary<IntrinsicKey, Emitter> intrinsics = new Dictionary<IntrinsicKey, Emitter>();
+			intrinsics.Add(new IntrinsicKey("java.lang.Object", "getClass", "()Ljava.lang.Class;"), Object_getClass);
+			intrinsics.Add(new IntrinsicKey("java.lang.Class", "desiredAssertionStatus", "()Z"), Class_desiredAssertionStatus);
 			intrinsics.Add(new IntrinsicKey("java.lang.Float", "floatToRawIntBits", "(F)I"), Float_floatToRawIntBits);
 			intrinsics.Add(new IntrinsicKey("java.lang.Float", "intBitsToFloat", "(I)F"), Float_intBitsToFloat);
 			intrinsics.Add(new IntrinsicKey("java.lang.Double", "doubleToRawLongBits", "(D)J"), Double_doubleToRawLongBits);
 			intrinsics.Add(new IntrinsicKey("java.lang.Double", "longBitsToDouble", "(J)D"), Double_longBitsToDouble);
 			intrinsics.Add(new IntrinsicKey("java.lang.System", "arraycopy", "(Ljava.lang.Object;ILjava.lang.Object;II)V"), System_arraycopy);
 			intrinsics.Add(new IntrinsicKey("java.util.concurrent.atomic.AtomicReferenceFieldUpdater", "newUpdater", "(Ljava.lang.Class;Ljava.lang.Class;Ljava.lang.String;)Ljava.util.concurrent.atomic.AtomicReferenceFieldUpdater;"), AtomicReferenceFieldUpdater_newUpdater);
+#if STATIC_COMPILER
+			// String_toCharArray relies on globals, which aren't usable in dynamic mode
 			intrinsics.Add(new IntrinsicKey("java.lang.String", "toCharArray", "()[C"), String_toCharArray);
+#endif
 			intrinsics.Add(new IntrinsicKey("sun.reflect.Reflection", "getCallerClass", "(I)Ljava.lang.Class;"), Reflection_getCallerClass);
 			intrinsics.Add(new IntrinsicKey("java.lang.ClassLoader", "getCallerClassLoader", "()Ljava.lang.ClassLoader;"), ClassLoader_getCallerClassLoader);
 			intrinsics.Add(new IntrinsicKey("ikvm.internal.CallerID", "getCallerID", "()Likvm.internal.CallerID;"), CallerID_getCallerID);
+			intrinsics.Add(new IntrinsicKey("ikvm.runtime.Util", "getInstanceTypeFromClass", "(Ljava.lang.Class;)Lcli.System.Type;"), Util_getInstanceTypeFromClass);
 			return intrinsics;
 		}
 
@@ -106,6 +112,57 @@ namespace IKVM.Internal
 		{
 			// note that intrinsics can always refuse to emit code and the code generator will fall back to a normal method call
 			return intrinsics[new IntrinsicKey(method)](context, ilgen, method, ma, opcodeIndex, caller, classFile, code);
+		}
+
+		private static bool Object_getClass(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, ClassFile.Method.Instruction[] code)
+		{
+			// this is the null-check idiom that javac uses (both in its own source and in the code it generates)
+			if (code[opcodeIndex + 1].NormalizedOpCode == NormalizedByteCode.__pop)
+			{
+				ilgen.Emit(OpCodes.Dup);
+				EmitHelper.NullCheck(ilgen);
+				return true;
+			}
+			// this optimizes obj1.getClass() ==/!= obj2.getClass()
+			else if (opcodeIndex + 3 < code.Length
+				&& !code[opcodeIndex + 1].IsBranchTarget && code[opcodeIndex + 1].NormalizedOpCode == NormalizedByteCode.__aload
+				&& !code[opcodeIndex + 2].IsBranchTarget && code[opcodeIndex + 2].NormalizedOpCode == NormalizedByteCode.__invokevirtual
+				&& !code[opcodeIndex + 3].IsBranchTarget && (code[opcodeIndex + 3].NormalizedOpCode == NormalizedByteCode.__if_acmpeq || code[opcodeIndex + 3].NormalizedOpCode == NormalizedByteCode.__if_acmpne)
+				&& (IsSafeForGetClassOptimization(ma.GetStackTypeWrapper(opcodeIndex, 0)) || IsSafeForGetClassOptimization(ma.GetStackTypeWrapper(opcodeIndex + 2, 0))))
+			{
+				ClassFile.ConstantPoolItemMI cpi = classFile.GetMethodref(code[opcodeIndex + 2].Arg1);
+				if (cpi.Class == "java.lang.Object" && cpi.Name == "getClass" && cpi.Signature == "()Ljava.lang.Class;")
+				{
+					// we can't patch the current opcode, so we have to emit the first call to GetTypeHandle here
+					ilgen.Emit(OpCodes.Dup);
+					EmitHelper.NullCheck(ilgen);
+					EmitHelper.GetTypeHandleValue(ilgen);
+					code[opcodeIndex + 2].PatchOpCode(NormalizedByteCode.__intrinsic_gettypehandlevalue);
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private static bool Class_desiredAssertionStatus(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, ClassFile.Method.Instruction[] code)
+		{
+			TypeWrapper classLiteral = ilgen.PeekLazyClassLiteral();
+			if (classLiteral != null && classLiteral.GetClassLoader().RemoveAsserts)
+			{
+				ilgen.LazyEmitPop();
+				ilgen.LazyEmitLdc_I4(0);
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+
+		private static bool IsSafeForGetClassOptimization(TypeWrapper tw)
+		{
+			// because of ghost arrays, we don't optimize if both types are either java.lang.Object or an array
+			return tw != CoreClasses.java.lang.Object.Wrapper && !tw.IsArray;
 		}
 
 		private static bool Float_floatToRawIntBits(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, ClassFile.Method.Instruction[] code)
@@ -256,7 +313,8 @@ namespace IKVM.Internal
 			// NOTE this also means that this will only work during static compilation, because ModuleBuilder.CreateGlobalFunctions() must
 			// be called before the field can be used.
 			FieldBuilder fb = mod.DefineInitializedData("__<str>", data, FieldAttributes.Static | FieldAttributes.PrivateScope);
-			if (!fb.FieldType.Equals(type))
+			// MONOBUG Type.Equals(Type) is broken on Mono. We have to use the virtual method that ends up in our implementation
+			if (!fb.FieldType.Equals((object)type))
 			{
 				// this is actually relatively harmless, but I would like to know about it, so we abort and hope that users report this when they encounter it
 				JVM.CriticalFailure("Unsupported runtime: ModuleBuilder.DefineInitializedData() field type mispredicted", null);
@@ -273,7 +331,7 @@ namespace IKVM.Internal
 				&& code[opcodeIndex - 1].NormalizedOpCode == NormalizedByteCode.__iconst
 				&& code[opcodeIndex - 1].Arg1 == 2)
 			{
-				ilgen.Emit(OpCodes.Pop);
+				ilgen.LazyEmitPop();
 				int arg = caller.GetParametersForDefineMethod().Length - 1;
 				if (!caller.IsStatic)
 				{
@@ -316,6 +374,30 @@ namespace IKVM.Internal
 					arg++;
 				}
 				ilgen.Emit(OpCodes.Ldarg, (short)arg);
+				return true;
+			}
+			else
+			{
+				JVM.CriticalFailure("CallerID.getCallerID() requires a HasCallerID annotation", null);
+			}
+			return false;
+		}
+
+		private static bool Util_getInstanceTypeFromClass(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, ClassFile.Method.Instruction[] code)
+		{
+			TypeWrapper tw = ilgen.PeekLazyClassLiteral();
+			if (tw != null)
+			{
+				ilgen.LazyEmitPop();
+				if (tw.IsRemapped && tw.IsFinal)
+				{
+					ilgen.Emit(OpCodes.Ldtoken, tw.TypeAsTBD);
+				}
+				else
+				{
+					ilgen.Emit(OpCodes.Ldtoken, tw.TypeAsBaseType);
+				}
+				ilgen.Emit(OpCodes.Call, Compiler.getTypeFromHandleMethod);
 				return true;
 			}
 			return false;
