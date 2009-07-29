@@ -2365,6 +2365,11 @@ namespace IKVM.NativeCode.java
 				return tw.Name;
 			}
 
+			public static string getSigName(object thisClass)
+			{
+				return TypeWrapper.FromClass(thisClass).SigName;
+			}
+
 			public static object getClassLoader0(object thisClass)
 			{
 				return TypeWrapper.FromClass(thisClass).GetClassLoader().GetJavaClassLoader();
@@ -2500,6 +2505,8 @@ namespace IKVM.NativeCode.java
 
 			public static object getPrimitiveClass(string name)
 			{
+				// note that this method isn't used anymore (because it is an intrinsic (during core class library compilation))
+				// it still remains for compat because it might be invoked through reflection by evil code
 				switch (name)
 				{
 					case "byte":
