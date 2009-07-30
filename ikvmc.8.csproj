@@ -113,6 +113,7 @@
     <Compile Include="runtime\JavaException.cs">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="runtime\JsrInliner.cs" />
     <Compile Include="runtime\MemberWrapper.cs">
       <SubType>Code</SubType>
     </Compile>
@@ -121,6 +122,7 @@
     </Compile>
     <Compile Include="runtime\ReflectUtil.cs" />
     <Compile Include="runtime\RuntimeHelperTypes.cs" />
+    <Compile Include="runtime\Serialization.cs" />
     <Compile Include="runtime\tracer.cs" />
     <Compile Include="runtime\TypeWrapper.cs">
       <SubType>Code</SubType>
