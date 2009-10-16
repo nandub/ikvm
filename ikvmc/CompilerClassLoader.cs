@@ -23,9 +23,12 @@
 */
 
 using System;
-using IKVM.Reflection;
+using System.Reflection;
+#if IKVM_REF_EMIT
 using IKVM.Reflection.Emit;
-using Type = IKVM.Reflection.Type;
+#else
+using System.Reflection.Emit;
+#endif
 using System.Resources;
 using System.IO;
 using System.Collections.Generic;
@@ -49,6 +52,8 @@ namespace IKVM.Internal
 		private string assemblyName;
 		private string assemblyFile;
 		private string assemblyDir;
+		private string keyfilename;
+		private string keycontainer;
 		private string version;
 		private bool targetIsModule;
 		private AssemblyBuilder assemblyBuilder;
@@ -73,7 +78,7 @@ namespace IKVM.Internal
 		private List<ClassLoaderWrapper> internalsVisibleTo = new List<ClassLoaderWrapper>();
 		private List<TypeWrapper> dynamicallyImportedTypes = new List<TypeWrapper>();
 
-		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, string version, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
+		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, string keyfilename, string keycontainer, string version, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
 			: base(options.codegenoptions, null)
 		{
 			this.referencedAssemblies = referencedAssemblies;
@@ -85,12 +90,9 @@ namespace IKVM.Internal
 			this.assemblyDir = assemblyPath.DirectoryName;
 			this.targetIsModule = targetIsModule;
 			this.version = version;
+			this.keyfilename = keyfilename;
+			this.keycontainer = keycontainer;
 			Tracer.Info(Tracer.Compiler, "Instantiate CompilerClassLoader for {0}", assemblyName);
-		}
-
-		internal bool ReserveName(string javaName)
-		{
-			return !classes.ContainsKey(javaName) && GetTypeWrapperFactory().ReserveName(javaName);
 		}
 
 		internal void AddNameMapping(string javaName, string typeName)
@@ -137,15 +139,78 @@ namespace IKVM.Internal
 			return p1.Union(p2);
 		}
 
+#if !NET_4_0
+		private void GetAssemblyPermissions(out PermissionSet requiredPermissions, out PermissionSet optionalPermissions, out PermissionSet refusedPermissions)
+		{
+			requiredPermissions = null;
+			optionalPermissions = null;
+			refusedPermissions = null;
+			foreach (object[] def in assemblyAnnotations)
+			{
+				string annotationClass = (string)def[1];
+				annotationClass = annotationClass.Replace('/', '.').Substring(1, annotationClass.Length - 2);
+				if (annotationClass.EndsWith(DotNetTypeWrapper.AttributeAnnotationSuffix))
+				{
+					Type annot = JVM.GetType(DotNetTypeWrapper.DemangleTypeName(annotationClass.Substring(0, annotationClass.Length - DotNetTypeWrapper.AttributeAnnotationSuffix.Length)), false);
+					if (annot != null && annot.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
+					{
+						SecurityAction action;
+						PermissionSet permSet;
+						if (Annotation.MakeDeclSecurity(annot, def, out action, out permSet))
+						{
+							switch (action)
+							{
+								case SecurityAction.RequestMinimum:
+									requiredPermissions = Combine(requiredPermissions, permSet);
+									break;
+								case SecurityAction.RequestOptional:
+									optionalPermissions = Combine(optionalPermissions, permSet);
+									break;
+								case SecurityAction.RequestRefuse:
+									refusedPermissions = Combine(refusedPermissions, permSet);
+									break;
+							}
+						}
+					}
+				}
+			}
+		}
+#endif
+
 		internal ModuleBuilder CreateModuleBuilder()
 		{
 			AssemblyName name = new AssemblyName();
 			name.Name = assemblyName;
-			name.KeyPair = options.key;
+			if(keyfilename != null) 
+			{
+				name.KeyPair = new StrongNameKeyPair(File.ReadAllBytes(keyfilename));
+			}
+			if(keycontainer != null)
+			{
+				name.KeyPair = new StrongNameKeyPair(keycontainer);
+			}
 			name.Version = new Version(version);
+#if NET_4_0
 			assemblyBuilder = 
-				StaticCompiler.Universe
+#if IKVM_REF_EMIT
+				AssemblyBuilder
+#else
+				AppDomain.CurrentDomain
+#endif
 					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir);
+#else
+			PermissionSet requiredPermissions;
+			PermissionSet optionalPermissions;
+			PermissionSet refusedPermissions;
+			GetAssemblyPermissions(out requiredPermissions, out optionalPermissions, out refusedPermissions);
+			assemblyBuilder = 
+#if IKVM_REF_EMIT
+				AssemblyBuilder
+#else
+				AppDomain.CurrentDomain
+#endif
+					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir, requiredPermissions, optionalPermissions, refusedPermissions);
+#endif
 			ModuleBuilder moduleBuilder;
 			moduleBuilder = assemblyBuilder.DefineDynamicModule(assemblyName, assemblyFile, this.EmitDebugInfo);
 			if(this.EmitStackTraceInfo)
@@ -158,6 +223,14 @@ namespace IKVM.Internal
 				assemblyBuilder.SetCustomAttribute(debugAttr);
 			}
 			AttributeHelper.SetRuntimeCompatibilityAttribute(assemblyBuilder);
+			if(Environment.Version.Major == 4 && Environment.Version.Minor == 0 && Environment.Version.Build == 20506)
+			{
+				// FXBUG workaround for MethodImpl bug in .NET 4.0 beta 1
+				assemblyBuilder.SetCustomAttribute(
+					new CustomAttributeBuilder(
+						Type.GetType("System.Security.SecurityRulesAttribute").GetConstructor(new Type[] { Type.GetType("System.Security.SecurityRuleSet") }),
+						new object[] { Type.GetType("System.Security.SecurityRuleSet").GetField("Level1").GetValue(null) }));
+			}
 			if(options.baseAddress != 0)
 			{
 				moduleBuilder.__ImageBase = options.baseAddress;
@@ -187,18 +260,16 @@ namespace IKVM.Internal
 				{
 					foreach(CompilerClassLoader ccl in peerReferences)
 					{
-						TypeWrapper tw = ccl.PeerLoad(name);
-						if(tw != null)
+						// To keep the performance acceptable in cases where we're compiling many targets, we first check if the load can
+						// possibly succeed on this class loader, otherwise we'll end up doing a lot of futile recursive loading attempts.
+						if (ccl.classes.ContainsKey(name) || ccl.remapped.ContainsKey(name) || ccl.GetLoadedClass(name) != null)
 						{
-							return tw;
-						}
-					}
-					if(options.sharedclassloader != null && options.sharedclassloader[0] != this)
-					{
-						TypeWrapper tw = options.sharedclassloader[0].PeerLoad(name);
-						if(tw != null)
-						{
-							return tw;
+							TypeWrapper tw = ccl.LoadClassByDottedNameFast(name);
+							// HACK we don't want to load classes referenced by peers, hence the "is CompilerClassLoader" check
+							if (tw != null && tw.GetClassLoader() is CompilerClassLoader)
+							{
+								return tw;
+							}
 						}
 					}
 				}
@@ -212,44 +283,7 @@ namespace IKVM.Internal
 			{
 				return tw1;
 			}
-			// HACK the peer loading mess above may have indirectly loaded the classes without returning it,
-			// so we try once more here
-			tw1 = GetLoadedClass(name);
-			if(tw1 != null)
-			{
-				return tw1;
-			}
 			return LoadGenericClass(name);
-		}
-
-		private TypeWrapper PeerLoad(string name)
-		{
-			// To keep the performance acceptable in cases where we're compiling many targets, we first check if the load can
-			// possibly succeed on this class loader, otherwise we'll end up doing a lot of futile recursive loading attempts.
-			if(classes.ContainsKey(name) || remapped.ContainsKey(name) || GetLoadedClass(name) != null)
-			{
-				TypeWrapper tw = LoadClassByDottedNameFast(name);
-				// HACK we don't want to load classes referenced by peers, hence the "== this" check
-				if(tw != null && tw.GetClassLoader() == this)
-				{
-					return tw;
-				}
-			}
-			if(options.sharedclassloader != null && options.sharedclassloader[0] == this)
-			{
-				foreach(CompilerClassLoader ccl in options.sharedclassloader)
-				{
-					if(ccl != this)
-					{
-						TypeWrapper tw = ccl.PeerLoad(name);
-						if(tw != null)
-						{
-							return tw;
-						}
-					}
-				}
-			}
-			return null;
 		}
 
 		private TypeWrapper GetTypeWrapperCompilerHook(string name)
@@ -293,22 +327,6 @@ namespace IKVM.Internal
 								f.SetInternal();
 								break;
 							}
-						}
-					}
-					if(f.IsPublic && options.publicPackages != null)
-					{
-						bool found = false;
-						foreach(string package in options.publicPackages)
-						{
-							if(f.Name.StartsWith(package))
-							{
-								found = true;
-								break;
-							}
-						}
-						if(!found)
-						{
-							f.SetInternal();
 						}
 					}
 					if(!f.IsInterface
@@ -371,26 +389,6 @@ namespace IKVM.Internal
 			return null;
 		}
 
-		// HACK when we're compiling multiple targets with -sharedclassloader, each target will have its own CompilerClassLoader,
-		// so we need to consider them equivalent (because they represent the same class loader).
-		internal bool IsEquivalentTo(ClassLoaderWrapper other)
-		{
-			if (this == other)
-			{
-				return true;
-			}
-			CompilerClassLoader ccl = other as CompilerClassLoader;
-			if (ccl != null && options.sharedclassloader != null && options.sharedclassloader.Contains(ccl))
-			{
-				if (!internalsVisibleTo.Contains(ccl))
-				{
-					AddInternalsVisibleToAttribute(ccl);
-				}
-				return true;
-			}
-			return false;
-		}
-
 		internal override bool InternalsVisibleToImpl(TypeWrapper wrapper, TypeWrapper friend)
 		{
 			Debug.Assert(wrapper.GetClassLoader() == this);
@@ -401,18 +399,19 @@ namespace IKVM.Internal
 				return true;
 			}
 			CompilerClassLoader ccl = other as CompilerClassLoader;
-			if (ccl != null)
+			if (ccl != null
+				&& options.sharedclassloader != null
+				&& options.sharedclassloader.Contains(ccl))
 			{
-				AddInternalsVisibleToAttribute(ccl);
+				AddInternalsVisibleToAttribute(ccl.assemblyBuilder);
+				internalsVisibleTo.Add(other);
 				return true;
 			}
 			return false;
 		}
 
-		private void AddInternalsVisibleToAttribute(CompilerClassLoader ccl)
+		private void AddInternalsVisibleToAttribute(AssemblyBuilder asm)
 		{
-			internalsVisibleTo.Add(ccl);
-			AssemblyBuilder asm = ccl.assemblyBuilder;
 			AssemblyName asmName = asm.GetName();
 			string name = asmName.Name;
 			byte[] pubkey = asmName.GetPublicKey();
@@ -567,14 +566,14 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static void AddExportMapEntry(Dictionary<string, List<string>> map, CompilerClassLoader ccl, string name)
+		private static void AddExportMapEntry(Dictionary<AssemblyName, List<string>> map, CompilerClassLoader ccl, string name)
 		{
-			string assemblyName = ccl.assemblyBuilder.FullName;
+			AssemblyName asm = ccl.assemblyBuilder.GetName();
 			List<string> list;
-			if (!map.TryGetValue(assemblyName, out list))
+			if (!map.TryGetValue(asm, out list))
 			{
 				list = new List<string>();
-				map.Add(assemblyName, list);
+				map.Add(asm, list);
 			}
 			if (list != null) // if list is null, we already have a wildcard export for this assembly
 			{
@@ -582,30 +581,23 @@ namespace IKVM.Internal
 			}
 		}
 
-		private void AddWildcardExports(Dictionary<string, List<string>> exportedNamesPerAssembly)
+		private void AddWildcardExports(Dictionary<AssemblyName, List<string>> exportedNamesPerAssembly)
 		{
 			foreach (AssemblyClassLoader acl in referencedAssemblies)
 			{
-				exportedNamesPerAssembly[acl.MainAssembly.FullName] = null;
+				exportedNamesPerAssembly[acl.MainAssembly.GetName()] = null;
 			}
 		}
 
 		private void WriteExportMap()
 		{
-			Dictionary<string, List<string>> exportedNamesPerAssembly = new Dictionary<string, List<string>>();
+			Dictionary<AssemblyName, List<string>> exportedNamesPerAssembly = new Dictionary<AssemblyName, List<string>>();
 			AddWildcardExports(exportedNamesPerAssembly);
 			foreach (TypeWrapper tw in dynamicallyImportedTypes)
 			{
 				AddExportMapEntry(exportedNamesPerAssembly, (CompilerClassLoader)tw.GetClassLoader(), tw.Name);
 			}
-			if (options.sharedclassloader == null)
-			{
-				foreach (CompilerClassLoader ccl in peerReferences)
-				{
-					exportedNamesPerAssembly[ccl.assemblyBuilder.FullName] = null;
-				}
-			}
-			else
+			if (options.sharedclassloader != null)
 			{
 				foreach (CompilerClassLoader ccl in options.sharedclassloader)
 				{
@@ -632,9 +624,9 @@ namespace IKVM.Internal
 			MemoryStream ms = new MemoryStream();
 			BinaryWriter bw = new BinaryWriter(ms);
 			bw.Write(exportedNamesPerAssembly.Count);
-			foreach (KeyValuePair<string, List<string>> kv in exportedNamesPerAssembly)
+			foreach (KeyValuePair<AssemblyName, List<string>> kv in exportedNamesPerAssembly)
 			{
-				bw.Write(kv.Key);
+				bw.Write(kv.Key.FullName);
 				if (kv.Value == null)
 				{
 					// wildcard export
@@ -754,7 +746,7 @@ namespace IKVM.Internal
 				this.classLoader = classLoader;
 				classDef = c;
 				bool baseIsSealed = false;
-				shadowType = JVM.GetType(c.Shadows, true);
+				shadowType = Type.GetType(c.Shadows, true);
 				classLoader.SetRemappedType(shadowType, this);
 				Type baseType = shadowType;
 				Type baseInterface = null;
@@ -1854,11 +1846,17 @@ namespace IKVM.Internal
 
 			private static void CopyLinkDemands(MethodBuilder mb, MethodInfo mi)
 			{
-				foreach (CustomAttributeData cad in CustomAttributeData.__GetDeclarativeSecurity(mi))
+				foreach (object attr in mi.GetCustomAttributes(false))
 				{
-					if (cad.ConstructorArguments.Count == 0 || (int)cad.ConstructorArguments[0].Value == (int)SecurityAction.LinkDemand)
+					CodeAccessSecurityAttribute cas = attr as CodeAccessSecurityAttribute;
+					if (cas != null)
 					{
-						mb.__AddDeclarativeSecurity(cad.__ToBuilder());
+						if (cas.Action == SecurityAction.LinkDemand)
+						{
+							PermissionSet pset = new PermissionSet(PermissionState.None);
+							pset.AddPermission(cas.CreatePermission());
+							mb.AddDeclarativeSecurity(SecurityAction.LinkDemand, pset);
+						}
 					}
 				}
 			}
@@ -2188,12 +2186,13 @@ namespace IKVM.Internal
 				MethodWrapper mwSuppressFillInStackTrace = CoreClasses.java.lang.Throwable.Wrapper.GetMethodWrapper("__<suppressFillInStackTrace>", "()V", false);
 				mwSuppressFillInStackTrace.Link();
 				ilgen.Emit(OpCodes.Ldarg_0);
-				ilgen.Emit(OpCodes.Callvirt, Compiler.getTypeMethod);
+				ilgen.Emit(OpCodes.Callvirt, Types.Object.GetMethod("GetType"));
+				MethodInfo GetTypeFromHandle = Types.Type.GetMethod("GetTypeFromHandle");
 				for(int i = 0; i < map.Length; i++)
 				{
 					ilgen.Emit(OpCodes.Dup);
 					ilgen.Emit(OpCodes.Ldtoken, JVM.GetType(map[i].src, true));
-					ilgen.Emit(OpCodes.Call, Compiler.getTypeFromHandleMethod);
+					ilgen.Emit(OpCodes.Call, GetTypeFromHandle);
 					ilgen.Emit(OpCodes.Ceq);
 					CodeEmitterLabel label = ilgen.DefineLabel();
 					ilgen.Emit(OpCodes.Brfalse_S, label);
@@ -2408,7 +2407,7 @@ namespace IKVM.Internal
 
 		private static bool IsCoreAssembly(Assembly asm)
 		{
-			return AttributeHelper.IsDefined(asm, StaticCompiler.GetRuntimeType("IKVM.Attributes.RemappedClassAttribute"));
+			return AttributeHelper.IsDefined(asm, StaticCompiler.GetType("IKVM.Attributes.RemappedClassAttribute"));
 		}
 
 		private bool CheckCompilingCoreAssembly()
@@ -2426,28 +2425,8 @@ namespace IKVM.Internal
 			return false;
 		}
 
-		internal static int Compile(string runtimeAssembly, List<CompilerOptions> optionsList)
+		internal static int Compile(List<CompilerOptions> optionsList)
 		{
-			try
-			{
-				if(runtimeAssembly == null)
-				{
-					// we assume that the runtime is in the same directory as the compiler
-					runtimeAssembly = Path.Combine(typeof(CompilerClassLoader).Assembly.Location, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.dll");
-				}
-				StaticCompiler.runtimeAssembly = StaticCompiler.LoadFile(runtimeAssembly);
-				StaticCompiler.runtimeJniAssembly = StaticCompiler.LoadFile(Path.Combine(StaticCompiler.runtimeAssembly.Location, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
-			}
-			catch(FileNotFoundException)
-			{
-				if(StaticCompiler.runtimeAssembly == null)
-				{
-					Console.Error.WriteLine("Error: unable to load runtime assembly");
-					return 1;
-				}
-				StaticCompiler.IssueMessage(Message.NoJniRuntime);
-			}
-			Tracer.Info(Tracer.Compiler, "Loaded runtime assembly: {0}", StaticCompiler.runtimeAssembly.FullName);
 			bool compilingCoreAssembly = false;
 			List<CompilerClassLoader> compilers = new List<CompilerClassLoader>();
 			foreach (CompilerOptions options in optionsList)
@@ -2468,8 +2447,7 @@ namespace IKVM.Internal
 			{
 				foreach (CompilerClassLoader compiler2 in compilers)
 				{
-					if (compiler1 != compiler2
-						&& (compiler1.options.crossReferenceAllPeers || (compiler1.options.peerReferences != null && Array.IndexOf(compiler1.options.peerReferences, compiler2.options.assembly) != -1)))
+					if (compiler1 != compiler2)
 					{
 						compiler1.AddReference(compiler2);
 					}
@@ -2517,16 +2495,47 @@ namespace IKVM.Internal
 		private static int CreateCompiler(CompilerOptions options, ref CompilerClassLoader loader, ref bool compilingCoreAssembly)
 		{
 			Tracer.Info(Tracer.Compiler, "JVM.Compile path: {0}, assembly: {1}", options.path, options.assembly);
+			try
+			{
+				if(options.runtimeAssembly == null)
+				{
+					// HACK based on our assembly name we create the default runtime assembly name
+					Assembly compilerAssembly = typeof(CompilerClassLoader).Assembly;
+					StaticCompiler.runtimeAssembly = Assembly.ReflectionOnlyLoad(compilerAssembly.FullName.Replace(compilerAssembly.GetName().Name, "IKVM.Runtime"));
+					StaticCompiler.runtimeJniAssembly = Assembly.ReflectionOnlyLoad(compilerAssembly.FullName.Replace(compilerAssembly.GetName().Name, "IKVM.Runtime.JNI"));
+				}
+				else
+				{
+					StaticCompiler.runtimeAssembly = Assembly.ReflectionOnlyLoadFrom(options.runtimeAssembly);
+					StaticCompiler.runtimeJniAssembly = Assembly.ReflectionOnlyLoadFrom(Path.Combine(StaticCompiler.runtimeAssembly.CodeBase, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
+				}
+			}
+			catch(FileNotFoundException)
+			{
+				if(StaticCompiler.runtimeAssembly == null)
+				{
+					Console.Error.WriteLine("Error: unable to load runtime assembly");
+					return 1;
+				}
+				StaticCompiler.IssueMessage(Message.NoJniRuntime);
+			}
+			Tracer.Info(Tracer.Compiler, "Loaded runtime assembly: {0}", StaticCompiler.runtimeAssembly.FullName);
 			AssemblyName runtimeAssemblyName = StaticCompiler.runtimeAssembly.GetName();
 			bool allReferencesAreStrongNamed = IsSigned(StaticCompiler.runtimeAssembly);
 			List<Assembly> references = new List<Assembly>();
-			foreach(Assembly reference in options.references ?? new Assembly[0])
+			foreach(string r in options.references)
 			{
 				try
 				{
+					Assembly reference = LoadReferencedAssembly(r);
 					if(IsCoreAssembly(reference))
 					{
 						JVM.CoreAssembly = reference;
+					}
+					if(reference == null)
+					{
+						Console.Error.WriteLine("Error: reference not found: {0}", r);
+						return 1;
 					}
 					references.Add(reference);
 					allReferencesAreStrongNamed &= IsSigned(reference);
@@ -2541,7 +2550,7 @@ namespace IKVM.Internal
 							{
 								if(asmref.FullName != runtimeAssemblyName.FullName)
 								{
-									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible IKVM.Runtime version ({1})", reference.Location, asmref.Version);
+									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible IKVM.Runtime version ({1})", r, asmref.Version);
 									Console.Error.WriteLine("   Current runtime: {0}", runtimeAssemblyName.FullName);
 									Console.Error.WriteLine("   Referenced assembly runtime: {0}", asmref.FullName);
 									return 1;
@@ -2551,7 +2560,7 @@ namespace IKVM.Internal
 							{
 								if(asmref.GetPublicKeyToken() != null && asmref.GetPublicKeyToken().Length != 0)
 								{
-									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible (signed) IKVM.Runtime version", reference.Location);
+									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible (signed) IKVM.Runtime version", r);
 									Console.Error.WriteLine("   Current runtime: {0}", runtimeAssemblyName.FullName);
 									Console.Error.WriteLine("   Referenced assembly runtime: {0}", asmref.FullName);
 									return 1;
@@ -2562,9 +2571,54 @@ namespace IKVM.Internal
 				}
 				catch(Exception x)
 				{
-					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", reference.Location, x.Message);
+					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", r, x.Message);
 					return 1;
 				}
+			}
+			bool err = false;
+			foreach(Assembly reference in references)
+			{
+				try
+				{
+					reference.GetTypes();
+				}
+				catch(ReflectionTypeLoadException x)
+				{
+					err = true;
+					foreach(Exception n in x.LoaderExceptions)
+					{
+						FileNotFoundException f = n as FileNotFoundException;
+						if(f != null)
+						{
+							Console.Error.WriteLine("Error: referenced assembly {0} has a missing dependency: {1}", reference.GetName().Name, f.FileName);
+							goto next;
+						}
+					}
+					Console.Error.WriteLine("Error: referenced assembly produced the following loader exceptions:");
+					foreach(Exception n in x.LoaderExceptions)
+					{
+						Console.WriteLine(n.Message);
+					}
+				}
+			next:;
+			}
+			if(err)
+			{
+				return 1;
+			}
+			// If the "System" assembly wasn't explicitly referenced, load it automatically
+			bool systemIsLoaded = false;
+			foreach(Assembly asm in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
+			{
+				if(asm.GetType("System.ComponentModel.EditorBrowsableAttribute", false, false) != null)
+				{
+					systemIsLoaded = true;
+					break;
+				}
+			}
+			if(!systemIsLoaded)
+			{
+				Assembly.ReflectionOnlyLoadFrom(JVM.Import(typeof(System.ComponentModel.EditorBrowsableAttribute)).Assembly.Location);
 			}
 			List<object> assemblyAnnotations = new List<object>();
 			Dictionary<string, string> baseClasses = new Dictionary<string, string>();
@@ -2703,7 +2757,7 @@ namespace IKVM.Internal
 			{
 				referencedAssemblies[i] = AssemblyClassLoader.FromAssembly(references[i]);
 			}
-			loader = new CompilerClassLoader(referencedAssemblies, options, options.path, options.version, options.targetIsModule, options.assembly, h);
+			loader = new CompilerClassLoader(referencedAssemblies, options, options.path, options.keyfilename, options.keycontainer, options.version, options.targetIsModule, options.assembly, h);
 			loader.baseClasses = baseClasses;
 			loader.assemblyAnnotations = assemblyAnnotations;
 			loader.classesToCompile = new List<string>(h.Keys);
@@ -2718,10 +2772,7 @@ namespace IKVM.Internal
 					XmlTextReader rdr = new XmlTextReader(fs);
 					IKVM.Internal.MapXml.Root.xmlReader = rdr;
 					IKVM.Internal.MapXml.Root.filename = new FileInfo(fs.Name).Name;
-					if (!loader.ValidateAndSetMap((IKVM.Internal.MapXml.Root)ser.Deserialize(rdr)))
-					{
-						return 1;
-					}
+					loader.map = (IKVM.Internal.MapXml.Root)ser.Deserialize(rdr);
 				}
 				if(loader.CheckCompilingCoreAssembly())
 				{
@@ -2739,10 +2790,17 @@ namespace IKVM.Internal
 					Assembly asm = null;
 					try
 					{
-						asm = LoadReferencedAssembly(StaticCompiler.runtimeAssembly.Location + "/../" + name.Name + ".dll");
+						asm = Assembly.ReflectionOnlyLoad(name.FullName);
 					}
 					catch(FileNotFoundException)
 					{
+						try
+						{
+							asm = LoadReferencedAssembly(StaticCompiler.runtimeAssembly.CodeBase + "/../" + name.Name + ".dll");
+						}
+						catch(FileNotFoundException)
+						{
+						}
 					}
 					if(asm != null && IsCoreAssembly(asm))
 					{
@@ -2765,7 +2823,7 @@ namespace IKVM.Internal
 				loader.AddReference(AssemblyClassLoader.FromAssembly(JVM.CoreAssembly));
 			}
 
-			if(options.key != null && !allReferencesAreStrongNamed)
+			if((options.keycontainer != null || options.keyfilename != null) && !allReferencesAreStrongNamed)
 			{
 				Console.Error.WriteLine("Error: all referenced assemblies must be strong named, to be able to sign the output assembly");
 				return 1;
@@ -2785,7 +2843,36 @@ namespace IKVM.Internal
 
 		private static Assembly LoadReferencedAssembly(string r)
 		{
-			Assembly asm = StaticCompiler.LoadFile(r);
+			Assembly asm = Assembly.ReflectionOnlyLoadFrom(r);
+			if (asm.GetManifestResourceInfo("ikvm.exports") != null)
+			{
+				// If this is the main assembly in a multi assembly group, try to pre-load all the assemblies.
+				// (This is required to make Assembly.ReflectionOnlyLoad() work later on (because it doesn't fire the ReflectionOnlyAssemblyResolve event).)
+				using (Stream stream = asm.GetManifestResourceStream("ikvm.exports"))
+				{
+					BinaryReader rdr = new BinaryReader(stream);
+					int assemblyCount = rdr.ReadInt32();
+					for (int i = 0; i < assemblyCount; i++)
+					{
+						AssemblyName name = new AssemblyName(rdr.ReadString());
+						int typeCount = rdr.ReadInt32();
+						if (typeCount > 0)
+						{
+							for (int j = 0; j < typeCount; j++)
+							{
+								rdr.ReadInt32();
+							}
+							try
+							{
+								Assembly.ReflectionOnlyLoadFrom(asm.CodeBase + "/../" + name.Name + ".dll");
+							}
+							catch
+							{
+							}
+						}
+					}
+				}
+			}
 			return asm;
 		}
 
@@ -2918,7 +3005,6 @@ namespace IKVM.Internal
 				Annotation annotation = Annotation.Load(this, def);
 				if(annotation != null)
 				{
-					// TODO we should support pseudo custom attributes that Ref.Emit doesn't support (e.g. AssemblyVersionAttribute)
 					annotation.Apply(this, assemblyBuilder, def);
 				}
 			}
@@ -2960,19 +3046,6 @@ namespace IKVM.Internal
 				}
 				ConstructorInfo ci = JVM.LoadType(typeof(CustomAssemblyClassLoaderAttribute)).GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { Types.Type }, null);
 				assemblyBuilder.SetCustomAttribute(new CustomAttributeBuilder(ci, new object[] { wrapper.TypeAsTBD }));
-				// TODO it would be better to do this for all assemblies in a shared class loader group (because options.classloader is relevant only for the main assembly),
-				// but since it is probably common to specify the custom assembly class loader at the group level, it hopefully won't make much difference in practice.
-				MethodWrapper mwModuleInit = wrapper.GetMethodWrapper("InitializeModule", "(Lcli.System.Reflection.Module;)V", false);
-				if(mwModuleInit != null && !mwModuleInit.IsStatic)
-				{
-					MethodBuilder moduleInitializer = GetTypeWrapperFactory().ModuleBuilder.DefineGlobalMethod(".cctor", MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, null, Type.EmptyTypes);
-					ILGenerator ilgen = moduleInitializer.GetILGenerator();
-					ilgen.Emit(OpCodes.Ldtoken, moduleInitializer);
-					ilgen.Emit(OpCodes.Call, JVM.Import(typeof(MethodBase)).GetMethod("GetMethodFromHandle", new Type[] { JVM.Import(typeof(RuntimeMethodHandle)) }));
-					ilgen.Emit(OpCodes.Callvirt, JVM.Import(typeof(MemberInfo)).GetMethod("get_Module"));
-					ilgen.Emit(OpCodes.Call, StaticCompiler.GetRuntimeType("IKVM.Runtime.ByteCodeHelper").GetMethod("InitializeModule"));
-					ilgen.Emit(OpCodes.Ret);
-				}
 			}
 			assemblyBuilder.DefineVersionInfoResource();
 			return 0;
@@ -2989,99 +3062,13 @@ namespace IKVM.Internal
 			Console.Error.WriteLine("Unknown attribute {0} in XML mapping file, line {1}, column {2}", e.Attr.Name, e.LineNumber, e.LinePosition);
 			Environment.Exit(1);
 		}
-
-		private bool ValidateAndSetMap(IKVM.Internal.MapXml.Root map)
-		{
-			bool valid = true;
-			if (map.assembly != null)
-			{
-				if (map.assembly.Classes != null)
-				{
-					foreach (IKVM.Internal.MapXml.Class c in map.assembly.Classes)
-					{
-						if (c.Fields != null)
-						{
-							foreach (IKVM.Internal.MapXml.Field f in c.Fields)
-							{
-								ValidateNameSig("field", c.Name, f.Name, f.Sig, ref valid, true);
-							}
-						}
-						if (c.Methods != null)
-						{
-							foreach (IKVM.Internal.MapXml.Method m in c.Methods)
-							{
-								ValidateNameSig("method", c.Name, m.Name, m.Sig, ref valid, false);
-							}
-						}
-						if (c.Constructors != null)
-						{
-							foreach (IKVM.Internal.MapXml.Constructor ctor in c.Constructors)
-							{
-								ValidateNameSig("constructor", c.Name, "<init>", ctor.Sig, ref valid, false);
-							}
-						}
-						if (c.Properties != null)
-						{
-							foreach (IKVM.Internal.MapXml.Property prop in c.Properties)
-							{
-								ValidateNameSig("property", c.Name, prop.Name, prop.Sig, ref valid, false);
-								ValidatePropertyGetterSetter("getter", c.Name, prop.Name, prop.getter, ref valid);
-								ValidatePropertyGetterSetter("setter", c.Name, prop.Name, prop.setter, ref valid);
-							}
-						}
-					}
-				}
-			}
-			this.map = map;
-			return valid;
-		}
-
-		private static void ValidateNameSig(string member, string clazz, string name, string sig, ref bool valid, bool field)
-		{
-			if (!IsValidName(name))
-			{
-				valid = false;
-				Console.Error.WriteLine("Error: Invalid {0} name '{2}' in remap file in class {1}", member, clazz, name, sig);
-			}
-			if (!IsValidSig(sig, field))
-			{
-				valid = false;
-				Console.Error.WriteLine("Error: Invalid {0} signature '{3}' in remap file for {0} {1}.{2}", member, clazz, name, sig);
-			}
-		}
-
-		private static void ValidatePropertyGetterSetter(string getterOrSetter, string clazz, string property, IKVM.Internal.MapXml.Method method, ref bool valid)
-		{
-			if (method != null)
-			{
-				if (!IsValidName(method.Name))
-				{
-					valid = false;
-					Console.Error.WriteLine("Error: Invalid property {0} name '{3}' in remap file for property {1}.{2}", getterOrSetter, clazz, property, method.Name, method.Sig);
-				}
-				if (!ClassFile.IsValidMethodSig(method.Sig))
-				{
-					valid = false;
-					Console.Error.WriteLine("Error: Invalid property {0} signature '{4}' in remap file for property {1}.{2}", getterOrSetter, clazz, property, method.Name, method.Sig);
-				}
-			}
-		}
-
-		private static bool IsValidName(string name)
-		{
-			return name != null && name.Length != 0;
-		}
-
-		private static bool IsValidSig(string sig, bool field)
-		{
-			return sig != null && (field ? ClassFile.IsValidFieldSig(sig) : ClassFile.IsValidMethodSig(sig));
-		}
 	}
 
 	class CompilerOptions
 	{
 		internal string path;
-		internal StrongNameKeyPair key;
+		internal string keyfilename;
+		internal string keycontainer;
 		internal string version;
 		internal string fileversion;
 		internal bool targetIsModule;
@@ -3091,10 +3078,7 @@ namespace IKVM.Internal
 		internal PEFileKinds target;
 		internal bool guessFileKind;
 		internal Dictionary<string, byte[]> classes;
-		internal string[] unresolvedReferences;	// only used during command line parsing
-		internal Assembly[] references;
-		internal string[] peerReferences;
-		internal bool crossReferenceAllPeers = true;
+		internal string[] references;
 		internal Dictionary<string, byte[]> resources;
 		internal string[] classesToExclude;
 		internal string remapfile;
@@ -3103,8 +3087,8 @@ namespace IKVM.Internal
 		internal CodeGenOptions codegenoptions;
 		internal bool removeUnusedFields;
 		internal bool compressedResources;
+		internal string runtimeAssembly;
 		internal string[] privatePackages;
-		internal string[] publicPackages;
 		internal string sourcepath;
 		internal Dictionary<string, string> externalResources;
 		internal string classLoader;
@@ -3168,48 +3152,16 @@ namespace IKVM.Internal
 		EmittedClassFormatError = 120,
 	}
 
-	static class StaticCompiler
+	class StaticCompiler
 	{
-		internal static readonly Universe Universe = new Universe();
 		internal static Assembly runtimeAssembly;
 		internal static Assembly runtimeJniAssembly;
 
-		internal static Assembly Load(string assemblyString)
-		{
-			return Universe.Load(assemblyString);
-		}
-
-		internal static Assembly LoadFile(string path)
-		{
-			return Universe.LoadFile(path);
-		}
-
-		internal static Type GetRuntimeType(string name)
-		{
-			Type type = runtimeAssembly.GetType(name);
-			if (type != null)
-			{
-				return type;
-			}
-			if (runtimeJniAssembly != null)
-			{
-				return runtimeJniAssembly.GetType(name, true);
-			}
-			else
-			{
-				throw new TypeLoadException();
-			}
-		}
-
-		// TODO this method should be removed, because it is not multi target aware (it looks inside all loaded ReflectionOnly assemblies,
-		// instead of just the ones that are supposed to be visible to a particular target)
 		internal static Type GetType(string name)
 		{
 			return GetType(name, true);
 		}
 
-		// TODO this method should be removed, because it is not multi target aware (it looks inside all loaded ReflectionOnly assemblies,
-		// instead of just the ones that are supposed to be visible to a particular target)
 		internal static Type GetType(string name, bool throwOnError)
 		{
 			if(runtimeAssembly.GetType(name) != null)
@@ -3220,7 +3172,7 @@ namespace IKVM.Internal
 			{
 				return runtimeJniAssembly.GetType(name);
 			}
-			foreach(Assembly asm in Universe.GetAssemblies())
+			foreach(Assembly asm in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
 			{
 				Type t = asm.GetType(name, false);
 				if(t != null)

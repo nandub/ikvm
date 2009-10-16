@@ -25,12 +25,10 @@
 using System;
 using System.Collections.Generic;
 using System.Xml.Serialization;
-#if IKVM_REF_EMIT
-using IKVM.Reflection;
-using IKVM.Reflection.Emit;
-using Type = IKVM.Reflection.Type;
-#else
 using System.Reflection;
+#if IKVM_REF_EMIT
+using IKVM.Reflection.Emit;
+#else
 using System.Reflection.Emit;
 #endif
 using System.Diagnostics;
