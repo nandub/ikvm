@@ -151,7 +151,7 @@ namespace IKVM.Internal
 				annotationClass = annotationClass.Replace('/', '.').Substring(1, annotationClass.Length - 2);
 				if (annotationClass.EndsWith(DotNetTypeWrapper.AttributeAnnotationSuffix))
 				{
-					Type annot = Type.GetType(DotNetTypeWrapper.DemangleTypeName(annotationClass.Substring(0, annotationClass.Length - DotNetTypeWrapper.AttributeAnnotationSuffix.Length)));
+					Type annot = JVM.GetType(DotNetTypeWrapper.DemangleTypeName(annotationClass.Substring(0, annotationClass.Length - DotNetTypeWrapper.AttributeAnnotationSuffix.Length)), false);
 					if (annot != null && annot.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
 					{
 						SecurityAction action;
@@ -746,7 +746,7 @@ namespace IKVM.Internal
 				this.classLoader = classLoader;
 				classDef = c;
 				bool baseIsSealed = false;
-				shadowType = Type.GetType(c.Shadows, true);
+				shadowType = JVM.GetType(c.Shadows, true);
 				classLoader.SetRemappedType(shadowType, this);
 				Type baseType = shadowType;
 				Type baseInterface = null;
@@ -1575,7 +1575,7 @@ namespace IKVM.Internal
 					if(m.redirect.Class == null || m.redirect.Class.IndexOf(',') >= 0)
 					{
 						// TODO better error handling
-						Type type = m.redirect.Class == null ? baseType : Type.GetType(m.redirect.Class, true);
+						Type type = m.redirect.Class == null ? baseType : JVM.GetType(m.redirect.Class, true);
 						Type[] redirParamTypes = classLoader.ArgTypeListFromSig(redirSig);
 						MethodInfo mi = type.GetMethod(m.redirect.Name, redirParamTypes);
 						if(mi == null)
@@ -2191,7 +2191,7 @@ namespace IKVM.Internal
 				for(int i = 0; i < map.Length; i++)
 				{
 					ilgen.Emit(OpCodes.Dup);
-					ilgen.Emit(OpCodes.Ldtoken, Type.GetType(map[i].src));
+					ilgen.Emit(OpCodes.Ldtoken, JVM.GetType(map[i].src, true));
 					ilgen.Emit(OpCodes.Call, GetTypeFromHandle);
 					ilgen.Emit(OpCodes.Ceq);
 					CodeEmitterLabel label = ilgen.DefineLabel();
@@ -2523,19 +2523,13 @@ namespace IKVM.Internal
 			AssemblyName runtimeAssemblyName = StaticCompiler.runtimeAssembly.GetName();
 			bool allReferencesAreStrongNamed = IsSigned(StaticCompiler.runtimeAssembly);
 			List<Assembly> references = new List<Assembly>();
-			foreach(string r in options.references)
+			foreach(Assembly reference in options.references)
 			{
 				try
 				{
-					Assembly reference = LoadReferencedAssembly(r);
 					if(IsCoreAssembly(reference))
 					{
 						JVM.CoreAssembly = reference;
-					}
-					if(reference == null)
-					{
-						Console.Error.WriteLine("Error: reference not found: {0}", r);
-						return 1;
 					}
 					references.Add(reference);
 					allReferencesAreStrongNamed &= IsSigned(reference);
@@ -2550,7 +2544,7 @@ namespace IKVM.Internal
 							{
 								if(asmref.FullName != runtimeAssemblyName.FullName)
 								{
-									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible IKVM.Runtime version ({1})", r, asmref.Version);
+									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible IKVM.Runtime version ({1})", reference.Location, asmref.Version);
 									Console.Error.WriteLine("   Current runtime: {0}", runtimeAssemblyName.FullName);
 									Console.Error.WriteLine("   Referenced assembly runtime: {0}", asmref.FullName);
 									return 1;
@@ -2560,7 +2554,7 @@ namespace IKVM.Internal
 							{
 								if(asmref.GetPublicKeyToken() != null && asmref.GetPublicKeyToken().Length != 0)
 								{
-									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible (signed) IKVM.Runtime version", r);
+									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible (signed) IKVM.Runtime version", reference.Location);
 									Console.Error.WriteLine("   Current runtime: {0}", runtimeAssemblyName.FullName);
 									Console.Error.WriteLine("   Referenced assembly runtime: {0}", asmref.FullName);
 									return 1;
@@ -2571,7 +2565,7 @@ namespace IKVM.Internal
 				}
 				catch(Exception x)
 				{
-					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", r, x.Message);
+					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", reference.Location, x.Message);
 					return 1;
 				}
 			}
@@ -3078,7 +3072,7 @@ namespace IKVM.Internal
 		internal PEFileKinds target;
 		internal bool guessFileKind;
 		internal Dictionary<string, byte[]> classes;
-		internal string[] references;
+		internal Assembly[] references;
 		internal Dictionary<string, byte[]> resources;
 		internal string[] classesToExclude;
 		internal string remapfile;
