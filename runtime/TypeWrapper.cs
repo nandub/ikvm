@@ -118,7 +118,7 @@ namespace IKVM.Internal
 				{
 					return valtw.TypeAsBaseType;
 				}
-				return Type.GetType(val, true);
+				return JVM.GetType(val, true);
 			}
 			else if(tw == PrimitiveTypeWrapper.BOOLEAN)
 			{
@@ -323,7 +323,7 @@ namespace IKVM.Internal
 				ConstructorInfo ci = t.GetConstructor(argTypes);
 				if(ci == null)
 				{
-					throw new InvalidOperationException(string.Format("Constructor missing: {0}::<init>{1}", attr.Class, attr.Sig));
+					throw new InvalidOperationException(string.Format("Constructor missing: {0}::<init>{1}", attr.Type, attr.Sig));
 				}
 				PropertyInfo[] namedProperties;
 				object[] propertyValues;
