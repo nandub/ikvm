@@ -289,10 +289,10 @@ namespace IKVM.Internal
 				else
 				{
 					name = DotNetTypeWrapper.GetName(type);
-					if (name == null)
-					{
-						return null;
-					}
+				}
+				if (name == null)
+				{
+					return null;
 				}
 				if (isJavaModule[moduleIndex])
 				{
@@ -465,6 +465,9 @@ namespace IKVM.Internal
 			}
 			try
 			{
+#if STATIC_COMPILER
+				return StaticCompiler.Load(name);
+#else
 				if (isReflectionOnly)
 				{
 					return Assembly.ReflectionOnlyLoad(name);
@@ -473,6 +476,7 @@ namespace IKVM.Internal
 				{
 					return Assembly.Load(name);
 				}
+#endif
 			}
 			catch
 			{
@@ -1078,7 +1082,7 @@ namespace IKVM.Internal
 		internal override TypeWrapper GetWrapperFromAssemblyType(Type type)
 		{
 			// we have to special case the fake types here
-			if (type.IsGenericType)
+			if (type.IsGenericType && !type.IsGenericTypeDefinition)
 			{
 				TypeWrapper outer = ClassLoaderWrapper.GetWrapperFromType(type.GetGenericArguments()[0]);
 				foreach (TypeWrapper inner in outer.InnerClasses)
