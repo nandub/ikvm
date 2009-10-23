@@ -223,14 +223,6 @@ namespace IKVM.Internal
 				assemblyBuilder.SetCustomAttribute(debugAttr);
 			}
 			AttributeHelper.SetRuntimeCompatibilityAttribute(assemblyBuilder);
-			if(Environment.Version.Major == 4 && Environment.Version.Minor == 0 && Environment.Version.Build == 20506)
-			{
-				// FXBUG workaround for MethodImpl bug in .NET 4.0 beta 1
-				assemblyBuilder.SetCustomAttribute(
-					new CustomAttributeBuilder(
-						Type.GetType("System.Security.SecurityRulesAttribute").GetConstructor(new Type[] { Type.GetType("System.Security.SecurityRuleSet") }),
-						new object[] { Type.GetType("System.Security.SecurityRuleSet").GetField("Level1").GetValue(null) }));
-			}
 			if(options.baseAddress != 0)
 			{
 				moduleBuilder.__ImageBase = options.baseAddress;
@@ -746,7 +738,7 @@ namespace IKVM.Internal
 				this.classLoader = classLoader;
 				classDef = c;
 				bool baseIsSealed = false;
-				shadowType = Type.GetType(c.Shadows, true);
+				shadowType = JVM.GetType(c.Shadows, true);
 				classLoader.SetRemappedType(shadowType, this);
 				Type baseType = shadowType;
 				Type baseInterface = null;
@@ -2186,13 +2178,12 @@ namespace IKVM.Internal
 				MethodWrapper mwSuppressFillInStackTrace = CoreClasses.java.lang.Throwable.Wrapper.GetMethodWrapper("__<suppressFillInStackTrace>", "()V", false);
 				mwSuppressFillInStackTrace.Link();
 				ilgen.Emit(OpCodes.Ldarg_0);
-				ilgen.Emit(OpCodes.Callvirt, Types.Object.GetMethod("GetType"));
-				MethodInfo GetTypeFromHandle = Types.Type.GetMethod("GetTypeFromHandle");
+				ilgen.Emit(OpCodes.Callvirt, Compiler.getTypeMethod);
 				for(int i = 0; i < map.Length; i++)
 				{
 					ilgen.Emit(OpCodes.Dup);
 					ilgen.Emit(OpCodes.Ldtoken, JVM.GetType(map[i].src, true));
-					ilgen.Emit(OpCodes.Call, GetTypeFromHandle);
+					ilgen.Emit(OpCodes.Call, Compiler.getTypeFromHandleMethod);
 					ilgen.Emit(OpCodes.Ceq);
 					CodeEmitterLabel label = ilgen.DefineLabel();
 					ilgen.Emit(OpCodes.Brfalse_S, label);
@@ -2407,7 +2398,7 @@ namespace IKVM.Internal
 
 		private static bool IsCoreAssembly(Assembly asm)
 		{
-			return AttributeHelper.IsDefined(asm, StaticCompiler.GetType("IKVM.Attributes.RemappedClassAttribute"));
+			return AttributeHelper.IsDefined(asm, StaticCompiler.GetRuntimeType("IKVM.Attributes.RemappedClassAttribute"));
 		}
 
 		private bool CheckCompilingCoreAssembly()
@@ -2500,14 +2491,14 @@ namespace IKVM.Internal
 				if(options.runtimeAssembly == null)
 				{
 					// HACK based on our assembly name we create the default runtime assembly name
-					Assembly compilerAssembly = typeof(CompilerClassLoader).Assembly;
-					StaticCompiler.runtimeAssembly = Assembly.ReflectionOnlyLoad(compilerAssembly.FullName.Replace(compilerAssembly.GetName().Name, "IKVM.Runtime"));
-					StaticCompiler.runtimeJniAssembly = Assembly.ReflectionOnlyLoad(compilerAssembly.FullName.Replace(compilerAssembly.GetName().Name, "IKVM.Runtime.JNI"));
+					AssemblyName compilerAssembly = typeof(CompilerClassLoader).Assembly.GetName();
+					StaticCompiler.runtimeAssembly = StaticCompiler.Load(compilerAssembly.FullName.Replace(compilerAssembly.Name, "IKVM.Runtime"));
+					StaticCompiler.runtimeJniAssembly = StaticCompiler.Load(compilerAssembly.FullName.Replace(compilerAssembly.Name, "IKVM.Runtime.JNI"));
 				}
 				else
 				{
-					StaticCompiler.runtimeAssembly = Assembly.ReflectionOnlyLoadFrom(options.runtimeAssembly);
-					StaticCompiler.runtimeJniAssembly = Assembly.ReflectionOnlyLoadFrom(Path.Combine(StaticCompiler.runtimeAssembly.CodeBase, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
+					StaticCompiler.runtimeAssembly = StaticCompiler.LoadFile(options.runtimeAssembly);
+					StaticCompiler.runtimeJniAssembly = StaticCompiler.LoadFile(Path.Combine(StaticCompiler.runtimeAssembly.CodeBase, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
 				}
 			}
 			catch(FileNotFoundException)
@@ -2523,19 +2514,13 @@ namespace IKVM.Internal
 			AssemblyName runtimeAssemblyName = StaticCompiler.runtimeAssembly.GetName();
 			bool allReferencesAreStrongNamed = IsSigned(StaticCompiler.runtimeAssembly);
 			List<Assembly> references = new List<Assembly>();
-			foreach(string r in options.references)
+			foreach(Assembly reference in options.references)
 			{
 				try
 				{
-					Assembly reference = LoadReferencedAssembly(r);
 					if(IsCoreAssembly(reference))
 					{
 						JVM.CoreAssembly = reference;
-					}
-					if(reference == null)
-					{
-						Console.Error.WriteLine("Error: reference not found: {0}", r);
-						return 1;
 					}
 					references.Add(reference);
 					allReferencesAreStrongNamed &= IsSigned(reference);
@@ -2550,7 +2535,7 @@ namespace IKVM.Internal
 							{
 								if(asmref.FullName != runtimeAssemblyName.FullName)
 								{
-									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible IKVM.Runtime version ({1})", r, asmref.Version);
+									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible IKVM.Runtime version ({1})", reference.Location, asmref.Version);
 									Console.Error.WriteLine("   Current runtime: {0}", runtimeAssemblyName.FullName);
 									Console.Error.WriteLine("   Referenced assembly runtime: {0}", asmref.FullName);
 									return 1;
@@ -2560,7 +2545,7 @@ namespace IKVM.Internal
 							{
 								if(asmref.GetPublicKeyToken() != null && asmref.GetPublicKeyToken().Length != 0)
 								{
-									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible (signed) IKVM.Runtime version", r);
+									Console.Error.WriteLine("Error: referenced assembly {0} was compiled with an incompatible (signed) IKVM.Runtime version", reference.Location);
 									Console.Error.WriteLine("   Current runtime: {0}", runtimeAssemblyName.FullName);
 									Console.Error.WriteLine("   Referenced assembly runtime: {0}", asmref.FullName);
 									return 1;
@@ -2571,7 +2556,7 @@ namespace IKVM.Internal
 				}
 				catch(Exception x)
 				{
-					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", r, x.Message);
+					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", reference.Location, x.Message);
 					return 1;
 				}
 			}
@@ -2610,7 +2595,7 @@ namespace IKVM.Internal
 			bool systemIsLoaded = false;
 			foreach(Assembly asm in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
 			{
-				if(asm.GetType("System.ComponentModel.EditorBrowsableAttribute", false, false) != null)
+				if(asm.GetType("System.ComponentModel.EditorBrowsableAttribute") != null)
 				{
 					systemIsLoaded = true;
 					break;
@@ -2790,7 +2775,7 @@ namespace IKVM.Internal
 					Assembly asm = null;
 					try
 					{
-						asm = Assembly.ReflectionOnlyLoad(name.FullName);
+						asm = StaticCompiler.Load(name.FullName);
 					}
 					catch(FileNotFoundException)
 					{
@@ -2843,7 +2828,7 @@ namespace IKVM.Internal
 
 		private static Assembly LoadReferencedAssembly(string r)
 		{
-			Assembly asm = Assembly.ReflectionOnlyLoadFrom(r);
+			Assembly asm = StaticCompiler.LoadFile(r);
 			if (asm.GetManifestResourceInfo("ikvm.exports") != null)
 			{
 				// If this is the main assembly in a multi assembly group, try to pre-load all the assemblies.
@@ -3078,7 +3063,7 @@ namespace IKVM.Internal
 		internal PEFileKinds target;
 		internal bool guessFileKind;
 		internal Dictionary<string, byte[]> classes;
-		internal string[] references;
+		internal Assembly[] references;
 		internal Dictionary<string, byte[]> resources;
 		internal string[] classesToExclude;
 		internal string remapfile;
@@ -3152,16 +3137,47 @@ namespace IKVM.Internal
 		EmittedClassFormatError = 120,
 	}
 
-	class StaticCompiler
+	static class StaticCompiler
 	{
 		internal static Assembly runtimeAssembly;
 		internal static Assembly runtimeJniAssembly;
 
+		internal static Assembly Load(string assemblyString)
+		{
+			return Assembly.ReflectionOnlyLoad(assemblyString);
+		}
+
+		internal static Assembly LoadFile(string path)
+		{
+			return Assembly.ReflectionOnlyLoadFrom(path);
+		}
+
+		internal static Type GetRuntimeType(string name)
+		{
+			Type type = runtimeAssembly.GetType(name);
+			if (type != null)
+			{
+				return type;
+			}
+			if (runtimeJniAssembly != null)
+			{
+				return runtimeJniAssembly.GetType(name, true);
+			}
+			else
+			{
+				throw new TypeLoadException();
+			}
+		}
+
+		// TODO this method should be removed, because it is not multi target aware (it looks inside all loaded ReflectionOnly assemblies,
+		// instead of just the ones that are supposed to be visible to a particular target)
 		internal static Type GetType(string name)
 		{
 			return GetType(name, true);
 		}
 
+		// TODO this method should be removed, because it is not multi target aware (it looks inside all loaded ReflectionOnly assemblies,
+		// instead of just the ones that are supposed to be visible to a particular target)
 		internal static Type GetType(string name, bool throwOnError)
 		{
 			if(runtimeAssembly.GetType(name) != null)
