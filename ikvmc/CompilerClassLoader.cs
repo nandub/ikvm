@@ -589,7 +589,14 @@ namespace IKVM.Internal
 			{
 				AddExportMapEntry(exportedNamesPerAssembly, (CompilerClassLoader)tw.GetClassLoader(), tw.Name);
 			}
-			if (options.sharedclassloader != null)
+			if (options.sharedclassloader == null)
+			{
+				foreach (CompilerClassLoader ccl in peerReferences)
+				{
+					exportedNamesPerAssembly[ccl.assemblyBuilder.GetName()] = null;
+				}
+			}
+			else
 			{
 				foreach (CompilerClassLoader ccl in options.sharedclassloader)
 				{
@@ -2178,13 +2185,12 @@ namespace IKVM.Internal
 				MethodWrapper mwSuppressFillInStackTrace = CoreClasses.java.lang.Throwable.Wrapper.GetMethodWrapper("__<suppressFillInStackTrace>", "()V", false);
 				mwSuppressFillInStackTrace.Link();
 				ilgen.Emit(OpCodes.Ldarg_0);
-				ilgen.Emit(OpCodes.Callvirt, Types.Object.GetMethod("GetType"));
-				MethodInfo GetTypeFromHandle = Types.Type.GetMethod("GetTypeFromHandle");
+				ilgen.Emit(OpCodes.Callvirt, Compiler.getTypeMethod);
 				for(int i = 0; i < map.Length; i++)
 				{
 					ilgen.Emit(OpCodes.Dup);
 					ilgen.Emit(OpCodes.Ldtoken, JVM.GetType(map[i].src, true));
-					ilgen.Emit(OpCodes.Call, GetTypeFromHandle);
+					ilgen.Emit(OpCodes.Call, Compiler.getTypeFromHandleMethod);
 					ilgen.Emit(OpCodes.Ceq);
 					CodeEmitterLabel label = ilgen.DefineLabel();
 					ilgen.Emit(OpCodes.Brfalse_S, label);
