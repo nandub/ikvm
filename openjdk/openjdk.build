@@ -148,7 +148,6 @@
             <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.Bind.dll" />
             <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.Crypto.dll" />
             <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.Parse.dll" />
-            <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.RelaxNG.dll" />
             <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.Transform.dll" />
             <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.WebServices.dll" />
             <exec program="peverify" commandline="-nologo IKVM.OpenJDK.XML.XPath.dll" />
@@ -162,6 +161,14 @@
         </copy>
         <!-- update base addresses in response.txt for next build -->
         <exec program="${project::get-base-directory()}/../tools/updbaseaddresses.exe" commandline="response.txt" useruntimeengine="true" />
+    </target>
+
+    <target name="tools" depends="version">
+        <exec program="${project::get-base-directory()}/../bin/ikvmc.exe" useruntimeengine="true">
+            <arg value="-version:${VERSION}" />
+            <arg value="${signoption}" />
+            <arg value="@tools.rsp" />
+        </exec>
     </target>
 
 </project>
