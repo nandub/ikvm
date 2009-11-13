@@ -100,7 +100,7 @@ namespace IKVM.Internal
 			}
 			else if(tw.TypeAsTBD.IsEnum)
 			{
-				return ParseEnumValue(tw.TypeAsTBD, val);
+				return EnumHelper.Parse(tw.TypeAsTBD, val);
 			}
 			else if(tw.TypeAsTBD == Types.Type)
 			{
@@ -147,28 +147,6 @@ namespace IKVM.Internal
 			{
 				throw new NotImplementedException();
 			}
-		}
-
-		private static object ParseEnumValue(Type type, string val)
-		{
-			object retval = null;
-			foreach (string str in val.Split(','))
-			{
-				FieldInfo field = type.GetField(str.Trim(), BindingFlags.Public | BindingFlags.Static);
-				if (field == null)
-				{
-					throw new InvalidOperationException("Enum value '" + str + "' not found in " + type.FullName);
-				}
-				if (retval == null)
-				{
-					retval = field.GetRawConstantValue();
-				}
-				else
-				{
-					retval = Annotation.OrBoxedIntegrals(retval, field.GetRawConstantValue());
-				}
-			}
-			return retval;
 		}
 
 #if !IKVM_REF_EMIT
@@ -1044,6 +1022,12 @@ namespace IKVM.Internal
 			fb.SetCustomAttribute(customAttributeBuilder);
 		}
 
+		internal static void SetNameSig(PropertyBuilder pb, string name, string sig)
+		{
+			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
+			pb.SetCustomAttribute(customAttributeBuilder);
+		}
+
 		internal static byte[] FreezeDryType(Type type)
 		{
 			System.IO.MemoryStream mem = new System.IO.MemoryStream();
@@ -1178,6 +1162,29 @@ namespace IKVM.Internal
 #endif
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(field))
+				{
+					if(MatchTypes(cad.Constructor.DeclaringType, typeofNameSigAttribute))
+					{
+						IList<CustomAttributeTypedArgument> args = cad.ConstructorArguments;
+						return new NameSigAttribute((string)args[0].Value, (string)args[1].Value);
+					}
+				}
+				return null;
+			}
+		}
+
+		internal static NameSigAttribute GetNameSig(PropertyInfo property)
+		{
+#if !STATIC_COMPILER
+			if(!property.DeclaringType.Assembly.ReflectionOnly)
+			{
+				object[] attr = property.GetCustomAttributes(typeof(NameSigAttribute), false);
+				return attr.Length == 1 ? (NameSigAttribute)attr[0] : null;
+			}
+			else
+#endif
+			{
+				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(property))
 				{
 					if(MatchTypes(cad.Constructor.DeclaringType, typeofNameSigAttribute))
 					{
@@ -1765,6 +1772,107 @@ namespace IKVM.Internal
 		}
 	}
 
+	static class EnumHelper
+	{
+		internal static Type GetUnderlyingType(Type enumType)
+		{
+			return Enum.GetUnderlyingType(enumType);
+		}
+
+#if STATIC_COMPILER
+		internal static object Parse(Type type, string value)
+		{
+			object retval = null;
+			foreach (string str in value.Split(','))
+			{
+				FieldInfo field = type.GetField(str.Trim(), BindingFlags.Public | BindingFlags.Static);
+				if (field == null)
+				{
+					throw new InvalidOperationException("Enum value '" + str + "' not found in " + type.FullName);
+				}
+				if (retval == null)
+				{
+					retval = field.GetRawConstantValue();
+				}
+				else
+				{
+					retval = OrBoxedIntegrals(retval, field.GetRawConstantValue());
+				}
+			}
+			return retval;
+		}
+#endif
+
+		// note that we only support the integer types that C# supports
+		// (the CLI also supports bool, char, IntPtr & UIntPtr)
+		internal static object OrBoxedIntegrals(object v1, object v2)
+		{
+			Debug.Assert(v1.GetType() == v2.GetType());
+			if (v1 is ulong)
+			{
+				ulong l1 = (ulong)v1;
+				ulong l2 = (ulong)v2;
+				return l1 | l2;
+			}
+			else
+			{
+				long v = ((IConvertible)v1).ToInt64(null) | ((IConvertible)v2).ToInt64(null);
+				switch (Type.GetTypeCode(v1.GetType()))
+				{
+					case TypeCode.SByte:
+						return (sbyte)v;
+					case TypeCode.Byte:
+						return (byte)v;
+					case TypeCode.Int16:
+						return (short)v;
+					case TypeCode.UInt16:
+						return (ushort)v;
+					case TypeCode.Int32:
+						return (int)v;
+					case TypeCode.UInt32:
+						return (uint)v;
+					case TypeCode.Int64:
+						return (long)v;
+					default:
+						throw new InvalidOperationException();
+				}
+			}
+		}
+
+		// this method can be used to convert an enum value or its underlying value to a Java primitive
+		internal static object GetPrimitiveValue(Type underlyingType, object obj)
+		{
+			if (underlyingType == Types.SByte || underlyingType == Types.Byte)
+			{
+				return unchecked((byte)((IConvertible)obj).ToInt32(null));
+			}
+			else if (underlyingType == Types.Int16 || underlyingType == Types.UInt16)
+			{
+				return unchecked((short)((IConvertible)obj).ToInt32(null));
+			}
+			else if (underlyingType == Types.Int32)
+			{
+				return ((IConvertible)obj).ToInt32(null);
+			}
+			else if (underlyingType == Types.UInt32)
+			{
+				return unchecked((int)((IConvertible)obj).ToUInt32(null));
+			}
+			else if (underlyingType == Types.Int64)
+			{
+				return ((IConvertible)obj).ToInt64(null);
+			}
+			else if (underlyingType == Types.UInt64)
+			{
+				return unchecked((long)((IConvertible)obj).ToUInt64(null));
+			}
+			else
+			{
+				throw new InvalidOperationException();
+			}
+		}
+	}
+
 	abstract class Annotation
 	{
 		// NOTE this method returns null if the type could not be found
@@ -1810,43 +1918,7 @@ namespace IKVM.Internal
 				return field.GetRawConstantValue();
 			}
 			// both __unspecified and missing values end up here
-			return Activator.CreateInstance(Enum.GetUnderlyingType(enumType));
-		}
-
-		// note that we only support the integer types that C# supports
-		// (the CLI also supports bool, char, IntPtr & UIntPtr)
-		internal static object OrBoxedIntegrals(object v1, object v2)
-		{
-			Debug.Assert(v1.GetType() == v2.GetType());
-			if(v1 is ulong)
-			{
-				ulong l1 = (ulong)v1;
-				ulong l2 = (ulong)v2;
-				return l1 | l2;
-			}
-			else
-			{
-				long v = ((IConvertible)v1).ToInt64(null) | ((IConvertible)v2).ToInt64(null);
-				switch(Type.GetTypeCode(v1.GetType()))
-				{
-					case TypeCode.SByte:
-						return (sbyte)v;
-					case TypeCode.Byte:
-						return (byte)v;
-					case TypeCode.Int16:
-						return (short)v;
-					case TypeCode.UInt16:
-						return (ushort)v;
-					case TypeCode.Int32:
-						return (int)v;
-					case TypeCode.UInt32:
-						return (uint)v;
-					case TypeCode.Int64:
-						return (long)v;
-					default:
-						throw new InvalidOperationException();
-				}
-			}
+			return Activator.CreateInstance(EnumHelper.GetUnderlyingType(enumType));
 		}
 
 		protected static object ConvertValue(ClassLoaderWrapper loader, Type targetType, object obj)
@@ -1869,7 +1941,7 @@ namespace IKVM.Internal
 						}
 						else
 						{
-							value = OrBoxedIntegrals(value, newval);
+							value = EnumHelper.OrBoxedIntegrals(value, newval);
 						}
 					}
 					return value;
@@ -2888,7 +2960,23 @@ namespace IKVM.Internal
 
 		internal bool IsPackageAccessibleFrom(TypeWrapper wrapper)
 		{
-			return MatchingPackageNames(name, wrapper.name) && InternalsVisibleTo(wrapper);
+			if (MatchingPackageNames(name, wrapper.name))
+			{
+#if STATIC_COMPILER
+				CompilerClassLoader ccl = GetClassLoader() as CompilerClassLoader;
+				if (ccl != null)
+				{
+					// this is a hack for multi target -sharedclassloader compilation
+					// (during compilation we have multiple CompilerClassLoader instances to represent the single shared runtime class loader)
+					return ccl.IsEquivalentTo(wrapper.GetClassLoader());
+				}
+#endif
+				return GetClassLoader() == wrapper.GetClassLoader();
+			}
+			else
+			{
+				return false;
+			}
 		}
 
 		private static bool MatchingPackageNames(string name1, string name2)
@@ -3480,6 +3568,21 @@ namespace IKVM.Internal
 				}
 			}
 			return interfaces;
+		}
+
+		internal TypeWrapper GetPublicBaseTypeWrapper()
+		{
+			if (this.IsInterface)
+			{
+				return CoreClasses.java.lang.Object.Wrapper;
+			}
+			for (TypeWrapper tw = this; ; tw = tw.BaseTypeWrapper)
+			{
+				if (tw.IsPublic)
+				{
+					return tw;
+				}
+			}
 		}
 	}
 
@@ -4379,11 +4482,12 @@ namespace IKVM.Internal
 							PropertyInfo property = m as PropertyInfo;
 							if(property != null)
 							{
-								// Only AccessStub properties (marked by HideFromReflectionAttribute)
+								// Only AccessStub properties (marked by HideFromReflectionAttribute or NameSigAttribute)
 								// are considered here
-								if(AttributeHelper.IsHideFromReflection(property))
+								FieldWrapper accessStub;
+								if(CompiledAccessStubFieldWrapper.TryGet(this, property, out accessStub))
 								{
-									fields.Add(new CompiledAccessStubFieldWrapper(this, property));
+									fields.Add(accessStub);
 								}
 								else
 								{
