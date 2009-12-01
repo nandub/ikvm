@@ -23,12 +23,10 @@
 */
 using System;
 using System.Collections.Generic;
-#if IKVM_REF_EMIT
-using IKVM.Reflection;
-using IKVM.Reflection.Emit;
-using Type = IKVM.Reflection.Type;
-#else
 using System.Reflection;
+#if IKVM_REF_EMIT
+using IKVM.Reflection.Emit;
+#else
 using System.Reflection.Emit;
 #endif
 using System.Diagnostics;
@@ -1370,6 +1368,12 @@ namespace IKVM.Internal
 						field.SetCustomAttribute(transientAttrib);
 					}
 #if STATIC_COMPILER
+					// Instance fields can also have a ConstantValue attribute (and are inlined by the compiler),
+					// and ikvmstub has to export them, so we have to add a custom attribute.
+					if (constantValue != null)
+					{
+						AttributeHelper.SetConstantValue(field, constantValue);
+					}
 					if (hideFromJava)
 					{
 						AttributeHelper.HideFromJava(field);
@@ -4458,7 +4462,7 @@ namespace IKVM.Internal
 						// are public and so we can get away with replacing all other types with object.
 						argTypes[i + instance] = (args[i].IsPrimitive || args[i].IsGhost || args[i].IsNonPrimitiveValueType) ? args[i].TypeAsSignatureType : typeof(object);
 					}
-					argTypes[argTypes.Length - 1] = ClassLoaderWrapper.LoadClassCritical("ikvm.internal.CallerID").TypeAsSignatureType;
+					argTypes[argTypes.Length - 1] = typeof(RuntimeMethodHandle);
 					Type retType = (mw.ReturnType.IsPrimitive || mw.ReturnType.IsGhost || mw.ReturnType.IsNonPrimitiveValueType) ? mw.ReturnType.TypeAsSignatureType : typeof(object);
 					MethodBuilder mb = tb.DefineMethod("method", MethodAttributes.Public | MethodAttributes.Static, retType, argTypes);
 					AttributeHelper.HideFromJava(mb);
@@ -4468,7 +4472,7 @@ namespace IKVM.Internal
 					{
 						ilGenerator.Emit(OpCodes.Ldarg, (short)i);
 					}
-					context.EmitCallerID(ilGenerator);
+					ilGenerator.Emit(OpCodes.Ldtoken, (MethodInfo)mw.GetMethod());
 					ilGenerator.Emit(OpCodes.Call, mb);
 					if (!mw.ReturnType.IsPrimitive && !mw.ReturnType.IsGhost && !mw.ReturnType.IsNonPrimitiveValueType)
 					{
@@ -4524,7 +4528,7 @@ namespace IKVM.Internal
 					}
 					else
 					{
-						context.EmitCallerID(ilGenerator);
+						ilGenerator.Emit(OpCodes.Ldtoken, (MethodInfo)mw.GetMethod());
 					}
 					ilGenerator.Emit(OpCodes.Ldstr, classFile.Name.Replace('.', '/'));
 					ilGenerator.Emit(OpCodes.Ldstr, m.Name);
@@ -4539,7 +4543,7 @@ namespace IKVM.Internal
 					}
 					else
 					{
-						context.EmitCallerID(ilGenerator);
+						ilGenerator.Emit(OpCodes.Ldtoken, (MethodInfo)mw.GetMethod());
 					}
 					ilGenerator.Emit(OpCodes.Call, enterLocalRefStruct);
 					LocalBuilder jnienv = ilGenerator.DeclareLocal(Types.IntPtr);
@@ -4865,7 +4869,6 @@ namespace IKVM.Internal
 							if (iface.IsGhost && wrapper.IsPublic)
 							{
 								MethodBuilder mb = typeBuilder.DefineMethod("op_Implicit", MethodAttributes.HideBySig | MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName, iface.TypeAsSignatureType, new Type[] { wrapper.TypeAsSignatureType });
-								AttributeHelper.HideFromJava(mb);
 								CodeEmitter ilgen = CodeEmitter.Create(mb);
 								LocalBuilder local = ilgen.DeclareLocal(iface.TypeAsSignatureType);
 								ilgen.Emit(OpCodes.Ldloca, local);
@@ -5307,7 +5310,6 @@ namespace IKVM.Internal
 			return null;
 		}
 
-#if !STATIC_COMPILER
 		internal override string[] GetEnclosingMethod()
 		{
 			return impl.GetEnclosingMethod();
@@ -5318,6 +5320,7 @@ namespace IKVM.Internal
 			return sourceFileName;
 		}
 
+#if !STATIC_COMPILER
 		private int GetMethodBaseToken(MethodBase mb)
 		{
 			ConstructorInfo ci = mb as ConstructorInfo;

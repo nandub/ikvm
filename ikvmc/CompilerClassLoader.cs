@@ -95,6 +95,11 @@ namespace IKVM.Internal
 			Tracer.Info(Tracer.Compiler, "Instantiate CompilerClassLoader for {0}", assemblyName);
 		}
 
+		internal bool ReserveName(string javaName)
+		{
+			return !classes.ContainsKey(javaName) && GetTypeWrapperFactory().ReserveName(javaName);
+		}
+
 		internal void AddNameMapping(string javaName, string typeName)
 		{
 			nameMappings.Add(javaName, typeName);
@@ -139,7 +144,7 @@ namespace IKVM.Internal
 			return p1.Union(p2);
 		}
 
-#if !NET_4_0
+#if !NET_4_0 && !IKVM_REF_EMIT
 		private void GetAssemblyPermissions(out PermissionSet requiredPermissions, out PermissionSet optionalPermissions, out PermissionSet refusedPermissions)
 		{
 			requiredPermissions = null;
@@ -190,7 +195,7 @@ namespace IKVM.Internal
 				name.KeyPair = new StrongNameKeyPair(keycontainer);
 			}
 			name.Version = new Version(version);
-#if NET_4_0
+#if NET_4_0 || IKVM_REF_EMIT
 			assemblyBuilder = 
 #if IKVM_REF_EMIT
 				AssemblyBuilder
@@ -204,11 +209,7 @@ namespace IKVM.Internal
 			PermissionSet refusedPermissions;
 			GetAssemblyPermissions(out requiredPermissions, out optionalPermissions, out refusedPermissions);
 			assemblyBuilder = 
-#if IKVM_REF_EMIT
-				AssemblyBuilder
-#else
 				AppDomain.CurrentDomain
-#endif
 					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir, requiredPermissions, optionalPermissions, refusedPermissions);
 #endif
 			ModuleBuilder moduleBuilder;
@@ -252,16 +253,18 @@ namespace IKVM.Internal
 				{
 					foreach(CompilerClassLoader ccl in peerReferences)
 					{
-						// To keep the performance acceptable in cases where we're compiling many targets, we first check if the load can
-						// possibly succeed on this class loader, otherwise we'll end up doing a lot of futile recursive loading attempts.
-						if (ccl.classes.ContainsKey(name) || ccl.remapped.ContainsKey(name) || ccl.GetLoadedClass(name) != null)
+						TypeWrapper tw = ccl.PeerLoad(name);
+						if(tw != null)
 						{
-							TypeWrapper tw = ccl.LoadClassByDottedNameFast(name);
-							// HACK we don't want to load classes referenced by peers, hence the "is CompilerClassLoader" check
-							if (tw != null && tw.GetClassLoader() is CompilerClassLoader)
-							{
-								return tw;
-							}
+							return tw;
+						}
+					}
+					if(options.sharedclassloader != null && options.sharedclassloader[0] != this)
+					{
+						TypeWrapper tw = options.sharedclassloader[0].PeerLoad(name);
+						if(tw != null)
+						{
+							return tw;
 						}
 					}
 				}
@@ -275,7 +278,44 @@ namespace IKVM.Internal
 			{
 				return tw1;
 			}
+			// HACK the peer loading mess above may have indirectly loaded the classes without returning it,
+			// so we try once more here
+			tw1 = GetLoadedClass(name);
+			if(tw1 != null)
+			{
+				return tw1;
+			}
 			return LoadGenericClass(name);
+		}
+
+		private TypeWrapper PeerLoad(string name)
+		{
+			// To keep the performance acceptable in cases where we're compiling many targets, we first check if the load can
+			// possibly succeed on this class loader, otherwise we'll end up doing a lot of futile recursive loading attempts.
+			if(classes.ContainsKey(name) || remapped.ContainsKey(name) || GetLoadedClass(name) != null)
+			{
+				TypeWrapper tw = LoadClassByDottedNameFast(name);
+				// HACK we don't want to load classes referenced by peers, hence the "== this" check
+				if(tw != null && tw.GetClassLoader() == this)
+				{
+					return tw;
+				}
+			}
+			if(options.sharedclassloader != null && options.sharedclassloader[0] == this)
+			{
+				foreach(CompilerClassLoader ccl in options.sharedclassloader)
+				{
+					if(ccl != this)
+					{
+						TypeWrapper tw = ccl.PeerLoad(name);
+						if(tw != null)
+						{
+							return tw;
+						}
+					}
+				}
+			}
+			return null;
 		}
 
 		private TypeWrapper GetTypeWrapperCompilerHook(string name)
@@ -319,6 +359,22 @@ namespace IKVM.Internal
 								f.SetInternal();
 								break;
 							}
+						}
+					}
+					if(f.IsPublic && options.publicPackages != null)
+					{
+						bool found = false;
+						foreach(string package in options.publicPackages)
+						{
+							if(f.Name.StartsWith(package))
+							{
+								found = true;
+								break;
+							}
+						}
+						if(!found)
+						{
+							f.SetInternal();
 						}
 					}
 					if(!f.IsInterface
@@ -381,6 +437,26 @@ namespace IKVM.Internal
 			return null;
 		}
 
+		// HACK when we're compiling multiple targets with -sharedclassloader, each target will have its own CompilerClassLoader,
+		// so we need to consider them equivalent (because they represent the same class loader).
+		internal bool IsEquivalentTo(ClassLoaderWrapper other)
+		{
+			if (this == other)
+			{
+				return true;
+			}
+			CompilerClassLoader ccl = other as CompilerClassLoader;
+			if (ccl != null && options.sharedclassloader != null && options.sharedclassloader.Contains(ccl))
+			{
+				if (!internalsVisibleTo.Contains(ccl))
+				{
+					AddInternalsVisibleToAttribute(ccl);
+				}
+				return true;
+			}
+			return false;
+		}
+
 		internal override bool InternalsVisibleToImpl(TypeWrapper wrapper, TypeWrapper friend)
 		{
 			Debug.Assert(wrapper.GetClassLoader() == this);
@@ -391,19 +467,18 @@ namespace IKVM.Internal
 				return true;
 			}
 			CompilerClassLoader ccl = other as CompilerClassLoader;
-			if (ccl != null
-				&& options.sharedclassloader != null
-				&& options.sharedclassloader.Contains(ccl))
+			if (ccl != null)
 			{
-				AddInternalsVisibleToAttribute(ccl.assemblyBuilder);
-				internalsVisibleTo.Add(other);
+				AddInternalsVisibleToAttribute(ccl);
 				return true;
 			}
 			return false;
 		}
 
-		private void AddInternalsVisibleToAttribute(AssemblyBuilder asm)
+		private void AddInternalsVisibleToAttribute(CompilerClassLoader ccl)
 		{
+			internalsVisibleTo.Add(ccl);
+			AssemblyBuilder asm = ccl.assemblyBuilder;
 			AssemblyName asmName = asm.GetName();
 			string name = asmName.Name;
 			byte[] pubkey = asmName.GetPublicKey();
@@ -558,14 +633,14 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static void AddExportMapEntry(Dictionary<AssemblyName, List<string>> map, CompilerClassLoader ccl, string name)
+		private static void AddExportMapEntry(Dictionary<string, List<string>> map, CompilerClassLoader ccl, string name)
 		{
-			AssemblyName asm = ccl.assemblyBuilder.GetName();
+			string assemblyName = ccl.assemblyBuilder.FullName;
 			List<string> list;
-			if (!map.TryGetValue(asm, out list))
+			if (!map.TryGetValue(assemblyName, out list))
 			{
 				list = new List<string>();
-				map.Add(asm, list);
+				map.Add(assemblyName, list);
 			}
 			if (list != null) // if list is null, we already have a wildcard export for this assembly
 			{
@@ -573,23 +648,30 @@ namespace IKVM.Internal
 			}
 		}
 
-		private void AddWildcardExports(Dictionary<AssemblyName, List<string>> exportedNamesPerAssembly)
+		private void AddWildcardExports(Dictionary<string, List<string>> exportedNamesPerAssembly)
 		{
 			foreach (AssemblyClassLoader acl in referencedAssemblies)
 			{
-				exportedNamesPerAssembly[acl.MainAssembly.GetName()] = null;
+				exportedNamesPerAssembly[acl.MainAssembly.FullName] = null;
 			}
 		}
 
 		private void WriteExportMap()
 		{
-			Dictionary<AssemblyName, List<string>> exportedNamesPerAssembly = new Dictionary<AssemblyName, List<string>>();
+			Dictionary<string, List<string>> exportedNamesPerAssembly = new Dictionary<string, List<string>>();
 			AddWildcardExports(exportedNamesPerAssembly);
 			foreach (TypeWrapper tw in dynamicallyImportedTypes)
 			{
 				AddExportMapEntry(exportedNamesPerAssembly, (CompilerClassLoader)tw.GetClassLoader(), tw.Name);
 			}
-			if (options.sharedclassloader != null)
+			if (options.sharedclassloader == null)
+			{
+				foreach (CompilerClassLoader ccl in peerReferences)
+				{
+					exportedNamesPerAssembly[ccl.assemblyBuilder.FullName] = null;
+				}
+			}
+			else
 			{
 				foreach (CompilerClassLoader ccl in options.sharedclassloader)
 				{
@@ -616,9 +698,9 @@ namespace IKVM.Internal
 			MemoryStream ms = new MemoryStream();
 			BinaryWriter bw = new BinaryWriter(ms);
 			bw.Write(exportedNamesPerAssembly.Count);
-			foreach (KeyValuePair<AssemblyName, List<string>> kv in exportedNamesPerAssembly)
+			foreach (KeyValuePair<string, List<string>> kv in exportedNamesPerAssembly)
 			{
-				bw.Write(kv.Key.FullName);
+				bw.Write(kv.Key);
 				if (kv.Value == null)
 				{
 					// wildcard export
@@ -2438,7 +2520,8 @@ namespace IKVM.Internal
 			{
 				foreach (CompilerClassLoader compiler2 in compilers)
 				{
-					if (compiler1 != compiler2)
+					if (compiler1 != compiler2
+						&& (compiler1.options.crossReferenceAllPeers || (compiler1.options.peerReferences != null && Array.IndexOf(compiler1.options.peerReferences, compiler2.options.assembly) != -1)))
 					{
 						compiler1.AddReference(compiler2);
 					}
@@ -2514,7 +2597,7 @@ namespace IKVM.Internal
 			AssemblyName runtimeAssemblyName = StaticCompiler.runtimeAssembly.GetName();
 			bool allReferencesAreStrongNamed = IsSigned(StaticCompiler.runtimeAssembly);
 			List<Assembly> references = new List<Assembly>();
-			foreach(Assembly reference in options.references)
+			foreach(Assembly reference in options.references ?? new Assembly[0])
 			{
 				try
 				{
@@ -2990,6 +3073,7 @@ namespace IKVM.Internal
 				Annotation annotation = Annotation.Load(this, def);
 				if(annotation != null)
 				{
+					// TODO we should support pseudo custom attributes that Ref.Emit doesn't support (e.g. AssemblyVersionAttribute)
 					annotation.Apply(this, assemblyBuilder, def);
 				}
 			}
@@ -3031,6 +3115,19 @@ namespace IKVM.Internal
 				}
 				ConstructorInfo ci = JVM.LoadType(typeof(CustomAssemblyClassLoaderAttribute)).GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new Type[] { Types.Type }, null);
 				assemblyBuilder.SetCustomAttribute(new CustomAttributeBuilder(ci, new object[] { wrapper.TypeAsTBD }));
+				// TODO it would be better to do this for all assemblies in a shared class loader group (because options.classloader is relevant only for the main assembly),
+				// but since it is probably common to specify the custom assembly class loader at the group level, it hopefully won't make much difference in practice.
+				MethodWrapper mwModuleInit = wrapper.GetMethodWrapper("InitializeModule", "(Lcli.System.Reflection.Module;)V", false);
+				if(mwModuleInit != null && !mwModuleInit.IsStatic)
+				{
+					MethodBuilder moduleInitializer = GetTypeWrapperFactory().ModuleBuilder.DefineGlobalMethod(".cctor", MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName, null, Type.EmptyTypes);
+					ILGenerator ilgen = moduleInitializer.GetILGenerator();
+					ilgen.Emit(OpCodes.Ldtoken, moduleInitializer);
+					ilgen.Emit(OpCodes.Call, JVM.Import(typeof(MethodBase)).GetMethod("GetMethodFromHandle", new Type[] { JVM.Import(typeof(RuntimeMethodHandle)) }));
+					ilgen.Emit(OpCodes.Callvirt, JVM.Import(typeof(MemberInfo)).GetMethod("get_Module"));
+					ilgen.Emit(OpCodes.Call, StaticCompiler.GetRuntimeType("IKVM.Runtime.ByteCodeHelper").GetMethod("InitializeModule"));
+					ilgen.Emit(OpCodes.Ret);
+				}
 			}
 			assemblyBuilder.DefineVersionInfoResource();
 			return 0;
@@ -3063,7 +3160,10 @@ namespace IKVM.Internal
 		internal PEFileKinds target;
 		internal bool guessFileKind;
 		internal Dictionary<string, byte[]> classes;
+		internal string[] unresolvedReferences;	// only used during command line parsing
 		internal Assembly[] references;
+		internal string[] peerReferences;
+		internal bool crossReferenceAllPeers = true;
 		internal Dictionary<string, byte[]> resources;
 		internal string[] classesToExclude;
 		internal string remapfile;
@@ -3074,6 +3174,7 @@ namespace IKVM.Internal
 		internal bool compressedResources;
 		internal string runtimeAssembly;
 		internal string[] privatePackages;
+		internal string[] publicPackages;
 		internal string sourcepath;
 		internal Dictionary<string, string> externalResources;
 		internal string classLoader;
