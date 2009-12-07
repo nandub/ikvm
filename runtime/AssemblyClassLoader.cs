@@ -369,7 +369,7 @@ namespace IKVM.Internal
 							exportedLoaders = new Dictionary<Assembly, AssemblyLoader>();
 							for (int i = 0; i < assemblyCount; i++)
 							{
-								exportedAssemblyNames[i] = rdr.ReadString();
+								exportedAssemblyNames[i] = String.Intern(rdr.ReadString());
 								int typeCount = rdr.ReadInt32();
 								if (typeCount == 0 && references == null)
 								{
@@ -465,6 +465,9 @@ namespace IKVM.Internal
 			}
 			try
 			{
+#if STATIC_COMPILER
+				return StaticCompiler.Load(name);
+#else
 				if (isReflectionOnly)
 				{
 					return Assembly.ReflectionOnlyLoad(name);
@@ -473,6 +476,7 @@ namespace IKVM.Internal
 				{
 					return Assembly.Load(name);
 				}
+#endif
 			}
 			catch
 			{
