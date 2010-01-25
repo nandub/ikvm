@@ -25,10 +25,12 @@
 using System;
 using System.Collections.Generic;
 using System.Xml.Serialization;
-using System.Reflection;
 #if IKVM_REF_EMIT
+using IKVM.Reflection;
 using IKVM.Reflection.Emit;
+using Type = IKVM.Reflection.Type;
 #else
+using System.Reflection;
 using System.Reflection.Emit;
 #endif
 using System.Diagnostics;
@@ -1314,7 +1316,7 @@ namespace IKVM.Internal.MapXml
 			// HACK if the class name contains a comma, we assume it is a .NET type
 			if(Class.IndexOf(',') >= 0)
 			{
-				Type type = System.Type.GetType(Class, true);
+				Type type = JVM.GetType(Class, true);
 				MethodInfo mi = type.GetMethod(Name, redirParamTypes);
 				if(mi == null)
 				{

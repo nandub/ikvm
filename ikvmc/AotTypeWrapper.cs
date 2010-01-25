@@ -24,10 +24,12 @@
 
 using System;
 using System.Collections.Generic;
-using System.Reflection;
 #if IKVM_REF_EMIT
+using IKVM.Reflection;
 using IKVM.Reflection.Emit;
+using Type = IKVM.Reflection.Type;
 #else
+using System.Reflection;
 using System.Reflection.Emit;
 #endif
 using System.Diagnostics;
@@ -81,7 +83,7 @@ namespace IKVM.Internal
 				if (methods != null)
 				{
 					string name = "__WorkaroundBaseClass__." + Name;
-					while (!classLoader.GetTypeWrapperFactory().ReserveName(name))
+					while (!classLoader.ReserveName(name))
 					{
 						name = "_" + name;
 					}
@@ -97,6 +99,7 @@ namespace IKVM.Internal
 							constructors.Add(new ConstructorForwarder(typeBuilder, mw));
 						}
 					}
+					Serialization.AddAutomagicSerializationToWorkaroundBaseClass(typeBuilder);
 					replacedMethods = constructors.ToArray();
 					return typeBuilder;
 				}
@@ -507,7 +510,7 @@ namespace IKVM.Internal
 							{
 								foreach(IKVM.Internal.MapXml.Attribute attr in method.Attributes)
 								{
-									if(Type.GetType(attr.Type) == typeof(System.Runtime.InteropServices.DllImportAttribute))
+									if(JVM.GetType(attr.Type, false) == JVM.Import(typeof(System.Runtime.InteropServices.DllImportAttribute)))
 									{
 										return true;
 									}
@@ -848,6 +851,7 @@ namespace IKVM.Internal
 					for(int i = 0; i < implementers.Length; i++)
 					{
 						mb = typeBuilder.DefineMethod("op_Implicit", MethodAttributes.HideBySig | MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName, TypeAsSignatureType, new Type[] { implementers[i].TypeAsSignatureType });
+						AttributeHelper.HideFromJava(mb);
 						ilgen = CodeEmitter.Create(mb);
 						local = ilgen.DeclareLocal(TypeAsSignatureType);
 						ilgen.Emit(OpCodes.Ldloca, local);
@@ -891,7 +895,7 @@ namespace IKVM.Internal
 					ilgen.Emit(OpCodes.Ret);
 					ilgen.MarkLabel(skip);
 					ilgen.Emit(OpCodes.Ldarg_0);
-					ilgen.Emit(OpCodes.Call, Types.Object.GetMethod("GetType"));
+					ilgen.Emit(OpCodes.Call, Compiler.getTypeMethod);
 					ilgen.Emit(OpCodes.Stloc, localType);
 					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Stloc, localRank);
