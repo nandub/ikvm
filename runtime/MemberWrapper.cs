@@ -312,14 +312,14 @@ namespace IKVM.Internal
 
 	interface ICustomInvoke
 	{
-#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
+#if !STATIC_COMPILER && !FIRST_PASS
 		object Invoke(object obj, object[] args, ikvm.@internal.CallerID callerID);
 #endif
 	}
 
 	abstract class MethodWrapper : MemberWrapper
 	{
-#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
+#if !STATIC_COMPILER && !FIRST_PASS
 		private static Dictionary<MethodWrapper, sun.reflect.MethodAccessor> invokenonvirtualCache;
 		private volatile object reflectionMethod;
 #endif
@@ -329,7 +329,6 @@ namespace IKVM.Internal
 		private TypeWrapper returnTypeWrapper;
 		private TypeWrapper[] parameterTypeWrappers;
 
-#if !STUB_GENERATOR
 		internal virtual void EmitCall(CodeEmitter ilgen)
 		{
 			throw new InvalidOperationException();
@@ -354,7 +353,6 @@ namespace IKVM.Internal
 		{
 			throw new InvalidOperationException();
 		}
-#endif // STUB_GENERATOR
 
 		internal virtual bool IsDynamicOnly
 		{
@@ -387,13 +385,11 @@ namespace IKVM.Internal
 				}
 			}
 
-#if !STUB_GENERATOR
 			protected override void CallvirtImpl(CodeEmitter ilgen)
 			{
 				ResolveGhostMethod();
 				ilgen.Emit(OpCodes.Call, ghostMethod);
 			}
-#endif
 		}
 
 		internal static MethodWrapper Create(TypeWrapper declaringType, string name, string sig, MethodBase method, TypeWrapper returnType, TypeWrapper[] parameterTypes, Modifiers modifiers, MemberFlags flags)
@@ -470,7 +466,7 @@ namespace IKVM.Internal
 			this.declaredExceptions = (string[])exceptions.Clone();
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR
+#if !STATIC_COMPILER
 		internal object ToMethodOrConstructor(bool copy)
 		{
 #if FIRST_PASS
@@ -595,7 +591,7 @@ namespace IKVM.Internal
 			return TypeWrapper.FromClass(constructor.getDeclaringClass()).GetMethods()[constructor._slot()];
 #endif
 		}
-#endif // !STATIC_COMPILER && !STUB_GENERATOR
+#endif // !STATIC_COMPILER
 
 		internal static MethodWrapper FromCookie(IntPtr cookie)
 		{
@@ -774,7 +770,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR
+#if !STATIC_COMPILER
 		[HideFromJava]
 		internal object InvokeJNI(object obj, object[] args, bool nonVirtual, object callerID)
 		{
@@ -898,9 +894,9 @@ namespace IKVM.Internal
 			}
 			return args;
 		}
-#endif // !STATIC_COMPILER && !STUB_GENERATOR
+#endif // !STATIC_COMPILER
 
-#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
+#if !STATIC_COMPILER && !FIRST_PASS
 		internal void ResolveMethod()
 		{
 			// if we've still got the builder object, we need to replace it with the real thing before we can call it
@@ -985,7 +981,7 @@ namespace IKVM.Internal
 				return args;
 			}
 		}
-#endif // !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
+#endif // !STATIC_COMPILER && !FIRST_PASS
 
 		internal static OpCode SimpleOpCodeToOpCode(SimpleOpCode opc)
 		{
@@ -1000,11 +996,6 @@ namespace IKVM.Internal
 				default:
 					throw new InvalidOperationException();
 			}
-		}
-
-		internal virtual bool IsOptionalAttributeAnnotationValue
-		{
-			get { return false; }
 		}
 	}
 
@@ -1031,7 +1022,6 @@ namespace IKVM.Internal
 		{
 		}
 
-#if !STUB_GENERATOR
 		protected virtual void PreEmit(CodeEmitter ilgen)
 		{
 		}
@@ -1084,7 +1074,6 @@ namespace IKVM.Internal
 		{
 			throw new InvalidOperationException();
 		}
-#endif // STUB_GENERATOR
 	}
 
 	enum SimpleOpCode : byte
@@ -1106,7 +1095,6 @@ namespace IKVM.Internal
 			this.callvirt = callvirt;
 		}
 
-#if !STUB_GENERATOR
 		internal override void EmitCall(CodeEmitter ilgen)
 		{
 			ilgen.Emit(SimpleOpCodeToOpCode(call), (MethodInfo)GetMethod());
@@ -1116,7 +1104,6 @@ namespace IKVM.Internal
 		{
 			ilgen.Emit(SimpleOpCodeToOpCode(callvirt), (MethodInfo)GetMethod());
 		}
-#endif // !STUB_GENERATOR
 	}
 
 	sealed class SmartCallMethodWrapper : SmartMethodWrapper
@@ -1131,7 +1118,6 @@ namespace IKVM.Internal
 			this.callvirt = callvirt;
 		}
 
-#if !STUB_GENERATOR
 		protected override void CallImpl(CodeEmitter ilgen)
 		{
 			ilgen.Emit(SimpleOpCodeToOpCode(call), (MethodInfo)GetMethod());
@@ -1141,7 +1127,6 @@ namespace IKVM.Internal
 		{
 			ilgen.Emit(SimpleOpCodeToOpCode(callvirt), (MethodInfo)GetMethod());
 		}
-#endif // !STUB_GENERATOR
 	}
 
 	sealed class SmartConstructorMethodWrapper : SmartMethodWrapper
@@ -1151,7 +1136,6 @@ namespace IKVM.Internal
 		{
 		}
 
-#if !STUB_GENERATOR
 		protected override void CallImpl(CodeEmitter ilgen)
 		{
 			ilgen.Emit(OpCodes.Call, (ConstructorInfo)GetMethod());
@@ -1161,12 +1145,11 @@ namespace IKVM.Internal
 		{
 			ilgen.Emit(OpCodes.Newobj, (ConstructorInfo)GetMethod());
 		}
-#endif // !STUB_GENERATOR
 	}
 
 	abstract class FieldWrapper : MemberWrapper
 	{
-#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
+#if !STATIC_COMPILER && !FIRST_PASS
 		private static readonly FieldInfo slotField = typeof(java.lang.reflect.Field).GetField("slot", BindingFlags.Instance | BindingFlags.NonPublic);
 		private volatile java.lang.reflect.Field reflectionField;
 		private sun.reflect.FieldAccessor jniAccessor;
@@ -1218,22 +1201,34 @@ namespace IKVM.Internal
 			Debug.Assert(fieldType != null, this.DeclaringType.Name + "::" + this.Name + " (" + this.Signature+ ")");
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR
+#if !STATIC_COMPILER
 		// NOTE used (thru IKVM.Runtime.Util.GetFieldConstantValue) by ikvmstub to find out if the
 		// field is a constant (and if it is, to get its value)
 		internal object GetConstant()
 		{
 			AssertLinked();
-			// only primitives and string can be literals in Java (because the other "primitives" (like uint),
+			// only pritimives and string can be literals in Java (because the other "primitives" (like uint),
 			// are treated as NonPrimitiveValueTypes)
-			if(field != null && field.IsLiteral && (fieldType.IsPrimitive || fieldType == CoreClasses.java.lang.String.Wrapper))
+			if(field != null && (fieldType.IsPrimitive || fieldType == CoreClasses.java.lang.String.Wrapper))
 			{
-				object val = field.GetRawConstantValue();
-				if(field.FieldType.IsEnum)
+				object val = null;
+				if(field.IsLiteral)
 				{
-					val = EnumHelper.GetPrimitiveValue(EnumHelper.GetUnderlyingType(field.FieldType), val);
+					val = field.GetRawConstantValue();
+					if(field.FieldType.IsEnum)
+					{
+						val = EnumHelper.GetPrimitiveValue(EnumHelper.GetUnderlyingType(field.FieldType), val);
+					}
 				}
-				if(fieldType.IsPrimitive)
+				else
+				{
+					// NOTE instance fields can also be "constant" and we round trip this information to make the Japi results look
+					// nice (but otherwise this has no practical value), but note that this only works when the code is compiled
+					// with -strictfieldfieldsemantics (because the ConstantValueAttribute is on the field and when we're a GetterFieldWrapper
+					// we don't have access to the corresponding field).
+					val = AttributeHelper.GetConstantValue(field);
+				}
+				if(val != null && !(val is string))
 				{
 					return JVM.Box(val);
 				}
@@ -1288,7 +1283,7 @@ namespace IKVM.Internal
 			return field;
 #endif // FIRST_PASS
 		}
-#endif // !STATIC_COMPILER && !STUB_GENERATOR
+#endif // !STATIC_COMPILER
 
 		internal static FieldWrapper FromCookie(IntPtr cookie)
 		{
@@ -1304,7 +1299,6 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STUB_GENERATOR
 		internal void EmitGet(CodeEmitter ilgen)
 		{
 			AssertLinked();
@@ -1320,7 +1314,6 @@ namespace IKVM.Internal
 		}
 
 		protected abstract void EmitSetImpl(CodeEmitter ilgen);
-#endif // !STUB_GENERATOR
 
 		internal void Link()
 		{
@@ -1371,7 +1364,7 @@ namespace IKVM.Internal
 			return new SimpleFieldWrapper(declaringType, fieldType, fi, name, sig, modifiers);
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR
+#if !STATIC_COMPILER
 		internal virtual void ResolveField()
 		{
 			FieldBuilder fb = field as FieldBuilder;
@@ -1393,7 +1386,7 @@ namespace IKVM.Internal
 			return jniAccessor;
 #endif
 		}
-#endif // !STATIC_COMPILER && !STUB_GENERATOR
+#endif // !STATIC_COMPILER
 	}
 
 	sealed class SimpleFieldWrapper : FieldWrapper
@@ -1404,7 +1397,6 @@ namespace IKVM.Internal
 			Debug.Assert(!(fieldType == PrimitiveTypeWrapper.DOUBLE || fieldType == PrimitiveTypeWrapper.LONG) || !IsVolatile);
 		}
 
-#if !STUB_GENERATOR
 		protected override void EmitGetImpl(CodeEmitter ilgen)
 		{
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
@@ -1434,7 +1426,6 @@ namespace IKVM.Internal
 			}
 			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
 		}
-#endif // !STUB_GENERATOR
 	}
 
 	sealed class VolatileLongDoubleFieldWrapper : FieldWrapper
@@ -1446,7 +1437,6 @@ namespace IKVM.Internal
 			Debug.Assert(sig == "J" || sig == "D");
 		}
 
-#if !STUB_GENERATOR
 		protected override void EmitGetImpl(CodeEmitter ilgen)
 		{
 			FieldInfo fi = GetField();
@@ -1501,7 +1491,6 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Call, ByteCodeHelperMethods.volatileWriteLong);
 			}
 		}
-#endif // !STUB_GENERATOR
 	}
 
 	sealed class GetterFieldWrapper : FieldWrapper
@@ -1534,7 +1523,6 @@ namespace IKVM.Internal
 			return prop;
 		}
 
-#if !STUB_GENERATOR
 		protected override void EmitGetImpl(CodeEmitter ilgen)
 		{
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
@@ -1573,10 +1561,8 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Call, prop.GetSetMethod(true));
 			}
 		}
-#endif // !STUB_GENERATOR
 	}
 
-#if !STUB_GENERATOR
 	// this class represents a .NET property defined in Java with the ikvm.lang.Property annotation
 	sealed class DynamicPropertyFieldWrapper : FieldWrapper
 	{
@@ -1723,7 +1709,6 @@ namespace IKVM.Internal
 			}
 		}
 	}
-#endif // !STUB_GENERATOR
 
 	// this class represents a .NET property defined in Java with the ikvm.lang.Property annotation
 	sealed class CompiledPropertyFieldWrapper : FieldWrapper
@@ -1736,7 +1721,6 @@ namespace IKVM.Internal
 			this.property = property;
 		}
 
-#if !STUB_GENERATOR
 		protected override void EmitGetImpl(CodeEmitter ilgen)
 		{
 			MethodInfo getter = property.GetGetMethod(true);
@@ -1781,7 +1765,6 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Callvirt, setter);
 			}
 		}
-#endif // !STUB_GENERATOR
 
 		internal PropertyInfo GetProperty()
 		{
@@ -1802,7 +1785,6 @@ namespace IKVM.Internal
 			this.constant = constant;
 		}
 
-#if !STUB_GENERATOR
 		protected override void EmitGetImpl(CodeEmitter ilgen)
 		{
 			// Reading a field should trigger the cctor, but since we're inlining the value
@@ -1863,7 +1845,6 @@ namespace IKVM.Internal
 			// constant value is inlined), so we emulate that behavior by emitting a Pop
 			ilgen.LazyEmitPop();
 		}
-#endif // !STUB_GENERATOR
 
 		internal object GetConstantValue()
 		{
@@ -1904,7 +1885,6 @@ namespace IKVM.Internal
 			this.setter = property.GetSetMethod(true);
 		}
 
-#if !STUB_GENERATOR
 		protected override void EmitGetImpl(CodeEmitter ilgen)
 		{
 			ilgen.Emit(OpCodes.Call, getter);
@@ -1914,7 +1894,6 @@ namespace IKVM.Internal
 		{
 			ilgen.Emit(OpCodes.Call, setter);
 		}
-#endif // !STUB_GENERATOR
 
 		internal static bool TryGet(TypeWrapper wrapper, PropertyInfo property, out FieldWrapper accessStub)
 		{
