@@ -23,12 +23,9 @@
 */
 
 using System;
-using System.Reflection;
-#if IKVM_REF_EMIT
+using IKVM.Reflection;
 using IKVM.Reflection.Emit;
-#else
-using System.Reflection.Emit;
-#endif
+using Type = IKVM.Reflection.Type;
 using System.Resources;
 using System.IO;
 using System.Collections.Generic;
@@ -144,44 +141,6 @@ namespace IKVM.Internal
 			return p1.Union(p2);
 		}
 
-#if !NET_4_0 && !IKVM_REF_EMIT
-		private void GetAssemblyPermissions(out PermissionSet requiredPermissions, out PermissionSet optionalPermissions, out PermissionSet refusedPermissions)
-		{
-			requiredPermissions = null;
-			optionalPermissions = null;
-			refusedPermissions = null;
-			foreach (object[] def in assemblyAnnotations)
-			{
-				string annotationClass = (string)def[1];
-				annotationClass = annotationClass.Replace('/', '.').Substring(1, annotationClass.Length - 2);
-				if (annotationClass.EndsWith(DotNetTypeWrapper.AttributeAnnotationSuffix))
-				{
-					Type annot = JVM.GetType(DotNetTypeWrapper.DemangleTypeName(annotationClass.Substring(0, annotationClass.Length - DotNetTypeWrapper.AttributeAnnotationSuffix.Length)), false);
-					if (annot != null && annot.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
-					{
-						SecurityAction action;
-						PermissionSet permSet;
-						if (Annotation.MakeDeclSecurity(annot, def, out action, out permSet))
-						{
-							switch (action)
-							{
-								case SecurityAction.RequestMinimum:
-									requiredPermissions = Combine(requiredPermissions, permSet);
-									break;
-								case SecurityAction.RequestOptional:
-									optionalPermissions = Combine(optionalPermissions, permSet);
-									break;
-								case SecurityAction.RequestRefuse:
-									refusedPermissions = Combine(refusedPermissions, permSet);
-									break;
-							}
-						}
-					}
-				}
-			}
-		}
-#endif
-
 		internal ModuleBuilder CreateModuleBuilder()
 		{
 			AssemblyName name = new AssemblyName();
@@ -195,23 +154,9 @@ namespace IKVM.Internal
 				name.KeyPair = new StrongNameKeyPair(keycontainer);
 			}
 			name.Version = new Version(version);
-#if NET_4_0 || IKVM_REF_EMIT
 			assemblyBuilder = 
-#if IKVM_REF_EMIT
-				AssemblyBuilder
-#else
-				AppDomain.CurrentDomain
-#endif
+				StaticCompiler.Universe
 					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir);
-#else
-			PermissionSet requiredPermissions;
-			PermissionSet optionalPermissions;
-			PermissionSet refusedPermissions;
-			GetAssemblyPermissions(out requiredPermissions, out optionalPermissions, out refusedPermissions);
-			assemblyBuilder = 
-				AppDomain.CurrentDomain
-					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir, requiredPermissions, optionalPermissions, refusedPermissions);
-#endif
 			ModuleBuilder moduleBuilder;
 			moduleBuilder = assemblyBuilder.DefineDynamicModule(assemblyName, assemblyFile, this.EmitDebugInfo);
 			if(this.EmitStackTraceInfo)
@@ -1920,17 +1865,11 @@ namespace IKVM.Internal
 
 			private static void CopyLinkDemands(MethodBuilder mb, MethodInfo mi)
 			{
-				foreach (object attr in mi.GetCustomAttributes(false))
+				foreach (CustomAttributeData cad in CustomAttributeData.__GetDeclarativeSecurity(mi))
 				{
-					CodeAccessSecurityAttribute cas = attr as CodeAccessSecurityAttribute;
-					if (cas != null)
+					if (cad.ConstructorArguments.Count == 0 || (int)cad.ConstructorArguments[0].Value == (int)SecurityAction.LinkDemand)
 					{
-						if (cas.Action == SecurityAction.LinkDemand)
-						{
-							PermissionSet pset = new PermissionSet(PermissionState.None);
-							pset.AddPermission(cas.CreatePermission());
-							mb.AddDeclarativeSecurity(SecurityAction.LinkDemand, pset);
-						}
+						mb.__AddDeclarativeSecurity(cad.__ToBuilder());
 					}
 				}
 			}
@@ -2498,8 +2437,28 @@ namespace IKVM.Internal
 			return false;
 		}
 
-		internal static int Compile(List<CompilerOptions> optionsList)
+		internal static int Compile(string runtimeAssembly, List<CompilerOptions> optionsList)
 		{
+			try
+			{
+				if(runtimeAssembly == null)
+				{
+					// we assume that the runtime is in the same directory as the compiler
+					runtimeAssembly = Path.Combine(typeof(CompilerClassLoader).Assembly.Location, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.dll");
+				}
+				StaticCompiler.runtimeAssembly = StaticCompiler.LoadFile(runtimeAssembly);
+				StaticCompiler.runtimeJniAssembly = StaticCompiler.LoadFile(Path.Combine(StaticCompiler.runtimeAssembly.Location, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
+			}
+			catch(FileNotFoundException)
+			{
+				if(StaticCompiler.runtimeAssembly == null)
+				{
+					Console.Error.WriteLine("Error: unable to load runtime assembly");
+					return 1;
+				}
+				StaticCompiler.IssueMessage(Message.NoJniRuntime);
+			}
+			Tracer.Info(Tracer.Compiler, "Loaded runtime assembly: {0}", StaticCompiler.runtimeAssembly.FullName);
 			bool compilingCoreAssembly = false;
 			List<CompilerClassLoader> compilers = new List<CompilerClassLoader>();
 			foreach (CompilerOptions options in optionsList)
@@ -2569,31 +2528,6 @@ namespace IKVM.Internal
 		private static int CreateCompiler(CompilerOptions options, ref CompilerClassLoader loader, ref bool compilingCoreAssembly)
 		{
 			Tracer.Info(Tracer.Compiler, "JVM.Compile path: {0}, assembly: {1}", options.path, options.assembly);
-			try
-			{
-				if(options.runtimeAssembly == null)
-				{
-					// HACK based on our assembly name we create the default runtime assembly name
-					AssemblyName compilerAssembly = typeof(CompilerClassLoader).Assembly.GetName();
-					StaticCompiler.runtimeAssembly = StaticCompiler.Load(compilerAssembly.FullName.Replace(compilerAssembly.Name, "IKVM.Runtime"));
-					StaticCompiler.runtimeJniAssembly = StaticCompiler.Load(compilerAssembly.FullName.Replace(compilerAssembly.Name, "IKVM.Runtime.JNI"));
-				}
-				else
-				{
-					StaticCompiler.runtimeAssembly = StaticCompiler.LoadFile(options.runtimeAssembly);
-					StaticCompiler.runtimeJniAssembly = StaticCompiler.LoadFile(Path.Combine(StaticCompiler.runtimeAssembly.CodeBase, ".." + Path.DirectorySeparatorChar + "IKVM.Runtime.JNI.dll"));
-				}
-			}
-			catch(FileNotFoundException)
-			{
-				if(StaticCompiler.runtimeAssembly == null)
-				{
-					Console.Error.WriteLine("Error: unable to load runtime assembly");
-					return 1;
-				}
-				StaticCompiler.IssueMessage(Message.NoJniRuntime);
-			}
-			Tracer.Info(Tracer.Compiler, "Loaded runtime assembly: {0}", StaticCompiler.runtimeAssembly.FullName);
 			AssemblyName runtimeAssemblyName = StaticCompiler.runtimeAssembly.GetName();
 			bool allReferencesAreStrongNamed = IsSigned(StaticCompiler.runtimeAssembly);
 			List<Assembly> references = new List<Assembly>();
@@ -2642,51 +2576,6 @@ namespace IKVM.Internal
 					Console.Error.WriteLine("Error: invalid reference: {0} ({1})", reference.Location, x.Message);
 					return 1;
 				}
-			}
-			bool err = false;
-			foreach(Assembly reference in references)
-			{
-				try
-				{
-					reference.GetTypes();
-				}
-				catch(ReflectionTypeLoadException x)
-				{
-					err = true;
-					foreach(Exception n in x.LoaderExceptions)
-					{
-						FileNotFoundException f = n as FileNotFoundException;
-						if(f != null)
-						{
-							Console.Error.WriteLine("Error: referenced assembly {0} has a missing dependency: {1}", reference.GetName().Name, f.FileName);
-							goto next;
-						}
-					}
-					Console.Error.WriteLine("Error: referenced assembly produced the following loader exceptions:");
-					foreach(Exception n in x.LoaderExceptions)
-					{
-						Console.WriteLine(n.Message);
-					}
-				}
-			next:;
-			}
-			if(err)
-			{
-				return 1;
-			}
-			// If the "System" assembly wasn't explicitly referenced, load it automatically
-			bool systemIsLoaded = false;
-			foreach(Assembly asm in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
-			{
-				if(asm.GetType("System.ComponentModel.EditorBrowsableAttribute") != null)
-				{
-					systemIsLoaded = true;
-					break;
-				}
-			}
-			if(!systemIsLoaded)
-			{
-				Assembly.ReflectionOnlyLoadFrom(JVM.Import(typeof(System.ComponentModel.EditorBrowsableAttribute)).Assembly.Location);
 			}
 			List<object> assemblyAnnotations = new List<object>();
 			Dictionary<string, string> baseClasses = new Dictionary<string, string>();
@@ -2840,7 +2729,10 @@ namespace IKVM.Internal
 					XmlTextReader rdr = new XmlTextReader(fs);
 					IKVM.Internal.MapXml.Root.xmlReader = rdr;
 					IKVM.Internal.MapXml.Root.filename = new FileInfo(fs.Name).Name;
-					loader.map = (IKVM.Internal.MapXml.Root)ser.Deserialize(rdr);
+					if (!loader.ValidateAndSetMap((IKVM.Internal.MapXml.Root)ser.Deserialize(rdr)))
+					{
+						return 1;
+					}
 				}
 				if(loader.CheckCompilingCoreAssembly())
 				{
@@ -2858,17 +2750,10 @@ namespace IKVM.Internal
 					Assembly asm = null;
 					try
 					{
-						asm = StaticCompiler.Load(name.FullName);
+						asm = LoadReferencedAssembly(StaticCompiler.runtimeAssembly.Location + "/../" + name.Name + ".dll");
 					}
 					catch(FileNotFoundException)
 					{
-						try
-						{
-							asm = LoadReferencedAssembly(StaticCompiler.runtimeAssembly.CodeBase + "/../" + name.Name + ".dll");
-						}
-						catch(FileNotFoundException)
-						{
-						}
 					}
 					if(asm != null && IsCoreAssembly(asm))
 					{
@@ -2912,35 +2797,6 @@ namespace IKVM.Internal
 		private static Assembly LoadReferencedAssembly(string r)
 		{
 			Assembly asm = StaticCompiler.LoadFile(r);
-			if (asm.GetManifestResourceInfo("ikvm.exports") != null)
-			{
-				// If this is the main assembly in a multi assembly group, try to pre-load all the assemblies.
-				// (This is required to make Assembly.ReflectionOnlyLoad() work later on (because it doesn't fire the ReflectionOnlyAssemblyResolve event).)
-				using (Stream stream = asm.GetManifestResourceStream("ikvm.exports"))
-				{
-					BinaryReader rdr = new BinaryReader(stream);
-					int assemblyCount = rdr.ReadInt32();
-					for (int i = 0; i < assemblyCount; i++)
-					{
-						AssemblyName name = new AssemblyName(rdr.ReadString());
-						int typeCount = rdr.ReadInt32();
-						if (typeCount > 0)
-						{
-							for (int j = 0; j < typeCount; j++)
-							{
-								rdr.ReadInt32();
-							}
-							try
-							{
-								Assembly.ReflectionOnlyLoadFrom(asm.CodeBase + "/../" + name.Name + ".dll");
-							}
-							catch
-							{
-							}
-						}
-					}
-				}
-			}
 			return asm;
 		}
 
@@ -3144,6 +3000,93 @@ namespace IKVM.Internal
 			Console.Error.WriteLine("Unknown attribute {0} in XML mapping file, line {1}, column {2}", e.Attr.Name, e.LineNumber, e.LinePosition);
 			Environment.Exit(1);
 		}
+
+		private bool ValidateAndSetMap(IKVM.Internal.MapXml.Root map)
+		{
+			bool valid = true;
+			if (map.assembly != null)
+			{
+				if (map.assembly.Classes != null)
+				{
+					foreach (IKVM.Internal.MapXml.Class c in map.assembly.Classes)
+					{
+						if (c.Fields != null)
+						{
+							foreach (IKVM.Internal.MapXml.Field f in c.Fields)
+							{
+								ValidateNameSig("field", c.Name, f.Name, f.Sig, ref valid, true);
+							}
+						}
+						if (c.Methods != null)
+						{
+							foreach (IKVM.Internal.MapXml.Method m in c.Methods)
+							{
+								ValidateNameSig("method", c.Name, m.Name, m.Sig, ref valid, false);
+							}
+						}
+						if (c.Constructors != null)
+						{
+							foreach (IKVM.Internal.MapXml.Constructor ctor in c.Constructors)
+							{
+								ValidateNameSig("constructor", c.Name, "<init>", ctor.Sig, ref valid, false);
+							}
+						}
+						if (c.Properties != null)
+						{
+							foreach (IKVM.Internal.MapXml.Property prop in c.Properties)
+							{
+								ValidateNameSig("property", c.Name, prop.Name, prop.Sig, ref valid, false);
+								ValidatePropertyGetterSetter("getter", c.Name, prop.Name, prop.getter, ref valid);
+								ValidatePropertyGetterSetter("setter", c.Name, prop.Name, prop.setter, ref valid);
+							}
+						}
+					}
+				}
+			}
+			this.map = map;
+			return valid;
+		}
+
+		private static void ValidateNameSig(string member, string clazz, string name, string sig, ref bool valid, bool field)
+		{
+			if (!IsValidName(name))
+			{
+				valid = false;
+				Console.Error.WriteLine("Error: Invalid {0} name '{2}' in remap file in class {1}", member, clazz, name, sig);
+			}
+			if (!IsValidSig(sig, field))
+			{
+				valid = false;
+				Console.Error.WriteLine("Error: Invalid {0} signature '{3}' in remap file for {0} {1}.{2}", member, clazz, name, sig);
+			}
+		}
+
+		private static void ValidatePropertyGetterSetter(string getterOrSetter, string clazz, string property, IKVM.Internal.MapXml.Method method, ref bool valid)
+		{
+			if (method != null)
+			{
+				if (!IsValidName(method.Name))
+				{
+					valid = false;
+					Console.Error.WriteLine("Error: Invalid property {0} name '{3}' in remap file for property {1}.{2}", getterOrSetter, clazz, property, method.Name, method.Sig);
+				}
+				if (!ClassFile.IsValidMethodSig(method.Sig))
+				{
+					valid = false;
+					Console.Error.WriteLine("Error: Invalid property {0} signature '{4}' in remap file for property {1}.{2}", getterOrSetter, clazz, property, method.Name, method.Sig);
+				}
+			}
+		}
+
+		private static bool IsValidName(string name)
+		{
+			return name != null && name.Length != 0;
+		}
+
+		private static bool IsValidSig(string sig, bool field)
+		{
+			return sig != null && (field ? ClassFile.IsValidFieldSig(sig) : ClassFile.IsValidMethodSig(sig));
+		}
 	}
 
 	class CompilerOptions
@@ -3172,7 +3115,6 @@ namespace IKVM.Internal
 		internal CodeGenOptions codegenoptions;
 		internal bool removeUnusedFields;
 		internal bool compressedResources;
-		internal string runtimeAssembly;
 		internal string[] privatePackages;
 		internal string[] publicPackages;
 		internal string sourcepath;
@@ -3240,17 +3182,18 @@ namespace IKVM.Internal
 
 	static class StaticCompiler
 	{
+		internal static readonly Universe Universe = new Universe();
 		internal static Assembly runtimeAssembly;
 		internal static Assembly runtimeJniAssembly;
 
 		internal static Assembly Load(string assemblyString)
 		{
-			return Assembly.ReflectionOnlyLoad(assemblyString);
+			return Universe.Load(assemblyString);
 		}
 
 		internal static Assembly LoadFile(string path)
 		{
-			return Assembly.ReflectionOnlyLoadFrom(path);
+			return Universe.LoadFile(path);
 		}
 
 		internal static Type GetRuntimeType(string name)
@@ -3289,7 +3232,7 @@ namespace IKVM.Internal
 			{
 				return runtimeJniAssembly.GetType(name);
 			}
-			foreach(Assembly asm in AppDomain.CurrentDomain.ReflectionOnlyGetAssemblies())
+			foreach(Assembly asm in Universe.GetAssemblies())
 			{
 				Type t = asm.GetType(name, false);
 				if(t != null)

@@ -23,7 +23,7 @@
 */
 using System;
 using System.Collections.Generic;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
@@ -96,7 +96,6 @@ namespace IKVM.Internal
 		private static Type typeofHideFromReflectionAttribute = JVM.LoadType(typeof(HideFromReflectionAttribute));
 		private static Type typeofHideFromJavaAttribute = JVM.LoadType(typeof(HideFromJavaAttribute));
 		private static Type typeofNoPackagePrefixAttribute = JVM.LoadType(typeof(NoPackagePrefixAttribute));
-		private static Type typeofConstantValueAttribute = JVM.LoadType(typeof(ConstantValueAttribute));
 		private static Type typeofAnnotationAttributeAttribute = JVM.LoadType(typeof(AnnotationAttributeAttribute));
 		private static Type typeofNonNestedInnerClassAttribute = JVM.LoadType(typeof(NonNestedInnerClassAttribute));
 		private static Type typeofNonNestedOuterClassAttribute = JVM.LoadType(typeof(NonNestedOuterClassAttribute));
@@ -160,79 +159,17 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !IKVM_REF_EMIT
-		private static void SetPropertiesAndFields(ClassLoaderWrapper loader, Attribute attrib, IKVM.Internal.MapXml.Attribute attr)
-		{
-			Type t = attrib.GetType();
-			if(attr.Properties != null)
-			{
-				foreach(IKVM.Internal.MapXml.Param prop in attr.Properties)
-				{
-					PropertyInfo pi = t.GetProperty(prop.Name);
-					pi.SetValue(attrib, ParseValue(loader, ClassFile.FieldTypeWrapperFromSig(loader, prop.Sig), prop.Value), null);
-				}
-			}
-			if(attr.Fields != null)
-			{
-				foreach(IKVM.Internal.MapXml.Param field in attr.Fields)
-				{
-					FieldInfo fi = t.GetField(field.Name);
-					fi.SetValue(attrib, ParseValue(loader, ClassFile.FieldTypeWrapperFromSig(loader, field.Sig), field.Value));
-				}
-			}
-		}
-
-		private static bool IsDeclarativeSecurityAttribute(ClassLoaderWrapper loader, IKVM.Internal.MapXml.Attribute attr, out SecurityAction action, out PermissionSet pset)
-		{
-			action = SecurityAction.Demand;
-			pset = null;
-			if(attr.Type != null)
-			{
-				Type t = StaticCompiler.GetType(attr.Type);
-				if(typeofSecurityAttribute.IsAssignableFrom(t))
-				{
-					Type[] argTypes;
-					object[] args;
-					GetAttributeArgsAndTypes(loader, attr, out argTypes, out args);
-					ConstructorInfo ci = t.GetConstructor(argTypes);
-					SecurityAttribute attrib = ci.Invoke(args) as SecurityAttribute;
-					SetPropertiesAndFields(loader, attrib, attr);
-					action = attrib.Action;
-					pset = new PermissionSet(PermissionState.None);
-					pset.AddPermission(attrib.CreatePermission());
-					return true;
-				}
-			}
-			return false;
-		}
-#endif
-
 		internal static void SetCustomAttribute(ClassLoaderWrapper loader, TypeBuilder tb, IKVM.Internal.MapXml.Attribute attr)
 		{
-#if !IKVM_REF_EMIT
-			SecurityAction action;
-			PermissionSet pset;
-			if(IsDeclarativeSecurityAttribute(loader, attr, out action, out pset))
+			bool declarativeSecurity;
+			CustomAttributeBuilder cab = CreateCustomAttribute(loader, attr, out declarativeSecurity);
+			if (declarativeSecurity)
 			{
-				tb.AddDeclarativeSecurity(action, pset);
+				tb.__AddDeclarativeSecurity(cab);
 			}
 			else
-#endif
 			{
-				bool declarativeSecurity;
-				CustomAttributeBuilder cab = CreateCustomAttribute(loader, attr, out declarativeSecurity);
-				if (declarativeSecurity)
-				{
-#if IKVM_REF_EMIT
-					tb.__AddDeclarativeSecurity(cab);
-#else
-					throw new InvalidOperationException();
-#endif
-				}
-				else
-				{
-					tb.SetCustomAttribute(cab);
-				}
+				tb.SetCustomAttribute(cab);
 			}
 		}
 
@@ -248,59 +185,29 @@ namespace IKVM.Internal
 
 		internal static void SetCustomAttribute(ClassLoaderWrapper loader, MethodBuilder mb, IKVM.Internal.MapXml.Attribute attr)
 		{
-#if !IKVM_REF_EMIT
-			SecurityAction action;
-			PermissionSet pset;
-			if(IsDeclarativeSecurityAttribute(loader, attr, out action, out pset))
+			bool declarativeSecurity;
+			CustomAttributeBuilder cab = CreateCustomAttribute(loader, attr, out declarativeSecurity);
+			if (declarativeSecurity)
 			{
-				mb.AddDeclarativeSecurity(action, pset);
+				mb.__AddDeclarativeSecurity(cab);
 			}
 			else
-#endif
 			{
-				bool declarativeSecurity;
-				CustomAttributeBuilder cab = CreateCustomAttribute(loader, attr, out declarativeSecurity);
-				if (declarativeSecurity)
-				{
-#if IKVM_REF_EMIT
-					mb.__AddDeclarativeSecurity(cab);
-#else
-					throw new InvalidOperationException();
-#endif
-				}
-				else
-				{
-					mb.SetCustomAttribute(CreateCustomAttribute(loader, attr));
-				}
+				mb.SetCustomAttribute(CreateCustomAttribute(loader, attr));
 			}
 		}
 
 		internal static void SetCustomAttribute(ClassLoaderWrapper loader, ConstructorBuilder cb, IKVM.Internal.MapXml.Attribute attr)
 		{
-#if !IKVM_REF_EMIT
-			SecurityAction action;
-			PermissionSet pset;
-			if(IsDeclarativeSecurityAttribute(loader, attr, out action, out pset))
+			bool declarativeSecurity;
+			CustomAttributeBuilder cab = CreateCustomAttribute(loader, attr, out declarativeSecurity);
+			if (declarativeSecurity)
 			{
-				cb.AddDeclarativeSecurity(action, pset);
+				cb.__AddDeclarativeSecurity(cab);
 			}
 			else
-#endif
 			{
-				bool declarativeSecurity;
-				CustomAttributeBuilder cab = CreateCustomAttribute(loader, attr, out declarativeSecurity);
-				if (declarativeSecurity)
-				{
-#if IKVM_REF_EMIT
-					cb.__AddDeclarativeSecurity(cab);
-#else
-					throw new InvalidOperationException();
-#endif
-				}
-				else
-				{
-					cb.SetCustomAttribute(CreateCustomAttribute(loader, attr));
-				}
+				cb.SetCustomAttribute(CreateCustomAttribute(loader, attr));
 			}
 		}
 
@@ -438,9 +345,7 @@ namespace IKVM.Internal
 				return new CustomAttributeBuilder(ci, args, namedFields, fieldValues);
 			}
 		}
-#endif
 
-#if STATIC_COMPILER
 		internal static void SetEditorBrowsableNever(TypeBuilder tb)
 		{
 			if(editorBrowsableNever == null)
@@ -709,43 +614,20 @@ namespace IKVM.Internal
 		// this method compares t1 and t2 by name
 		// if the type name and assembly name (ignoring the version and strong name) match
 		// the type are considered the same
+		// Note that when we're the stub generator, we don't even care about the assembly names,
+		// because in that case we don't want a dependency on the runtime.
 		private static bool MatchTypes(Type t1, Type t2)
 		{
 			return t1.FullName == t2.FullName
-				&& t1.Assembly.GetName().Name == t2.Assembly.GetName().Name;
-		}
-
-		internal static object GetConstantValue(FieldInfo field)
-		{
-#if !STATIC_COMPILER
-			if(!field.DeclaringType.Assembly.ReflectionOnly)
-			{
-				// In Java, instance fields can also have a ConstantValue attribute so we emulate that
-				// with ConstantValueAttribute (for consumption by ikvmstub only)
-				object[] attrib = field.GetCustomAttributes(typeof(ConstantValueAttribute), false);
-				if(attrib.Length == 1)
-				{
-					return ((ConstantValueAttribute)attrib[0]).GetConstantValue();
-				}
-				return null;
-			}
-			else
+#if !STUB_GENERATOR
+				&& t1.Assembly.GetName().Name == t2.Assembly.GetName().Name
 #endif
-			{
-				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(field))
-				{
-					if(MatchTypes(cad.Constructor.DeclaringType, typeofConstantValueAttribute))
-					{
-						return cad.ConstructorArguments[0].Value;
-					}
-				}
-				return null;
-			}
+				;
 		}
 
 		internal static ModifiersAttribute GetModifiersAttribute(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attr = type.GetCustomAttributes(typeof(ModifiersAttribute), false);
@@ -772,7 +654,7 @@ namespace IKVM.Internal
 
 		internal static ModifiersAttribute GetModifiersAttribute(PropertyInfo property)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if (!property.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attr = property.GetCustomAttributes(typeof(ModifiersAttribute), false);
@@ -799,7 +681,7 @@ namespace IKVM.Internal
 
 		internal static ExModifiers GetModifiers(MethodBase mb, bool assemblyIsPrivate)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!mb.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] customAttribute = mb.GetCustomAttributes(typeof(ModifiersAttribute), false);
@@ -880,7 +762,7 @@ namespace IKVM.Internal
 
 		internal static ExModifiers GetModifiers(FieldInfo fi, bool assemblyIsPrivate)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!fi.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] customAttribute = fi.GetCustomAttributes(typeof(ModifiersAttribute), false);
@@ -1163,7 +1045,7 @@ namespace IKVM.Internal
 
 		internal static NameSigAttribute GetNameSig(FieldInfo field)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!field.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attr = field.GetCustomAttributes(typeof(NameSigAttribute), false);
@@ -1186,7 +1068,7 @@ namespace IKVM.Internal
 
 		internal static NameSigAttribute GetNameSig(PropertyInfo property)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!property.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attr = property.GetCustomAttributes(typeof(NameSigAttribute), false);
@@ -1209,7 +1091,7 @@ namespace IKVM.Internal
 
 		internal static NameSigAttribute GetNameSig(MethodBase method)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!method.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attr = method.GetCustomAttributes(typeof(NameSigAttribute), false);
@@ -1243,7 +1125,7 @@ namespace IKVM.Internal
 
 		internal static ImplementsAttribute GetImplements(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attribs = type.GetCustomAttributes(typeof(ImplementsAttribute), false);
@@ -1267,23 +1149,25 @@ namespace IKVM.Internal
 #if !STATIC_COMPILER
 		internal static ThrowsAttribute GetThrows(MethodBase mb)
 		{
+#if !STUB_GENERATOR
 			if(!mb.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attribs = mb.GetCustomAttributes(typeof(ThrowsAttribute), false);
 				return attribs.Length == 1 ? (ThrowsAttribute)attribs[0] : null;
 			}
 			else
+#endif
 			{
 				foreach(CustomAttributeData cad in CustomAttributeData.GetCustomAttributes(mb))
 				{
 					if(MatchTypes(cad.Constructor.DeclaringType, typeofThrowsAttribute))
 					{
 						IList<CustomAttributeTypedArgument> args = cad.ConstructorArguments;
-						if (args[0].ArgumentType == typeof(string[]))
+						if (args[0].ArgumentType == Types.String.MakeArrayType())
 						{
 							return new ThrowsAttribute(DecodeArray<string>(args[0]));
 						}
-						else if (args[0].ArgumentType == typeof(Type[]))
+						else if (args[0].ArgumentType == Types.Type.MakeArrayType())
 						{
 							return new ThrowsAttribute(DecodeArray<Type>(args[0]));
 						}
@@ -1300,7 +1184,7 @@ namespace IKVM.Internal
 
 		internal static string[] GetNonNestedInnerClasses(Type t)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!t.Assembly.ReflectionOnly)
 			{
 				object[] attribs = t.GetCustomAttributes(typeof(NonNestedInnerClassAttribute), false);
@@ -1329,7 +1213,7 @@ namespace IKVM.Internal
 
 		internal static string GetNonNestedOuterClasses(Type t)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!t.Assembly.ReflectionOnly)
 			{
 				object[] attribs = t.GetCustomAttributes(typeof(NonNestedOuterClassAttribute), false);
@@ -1352,7 +1236,7 @@ namespace IKVM.Internal
 
 		internal static SignatureAttribute GetSignature(MethodBase mb)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!mb.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attribs = mb.GetCustomAttributes(typeof(SignatureAttribute), false);
@@ -1375,7 +1259,7 @@ namespace IKVM.Internal
 
 		internal static SignatureAttribute GetSignature(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attribs = type.GetCustomAttributes(typeof(SignatureAttribute), false);
@@ -1398,7 +1282,7 @@ namespace IKVM.Internal
 
 		internal static SignatureAttribute GetSignature(FieldInfo fi)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!fi.DeclaringType.Assembly.ReflectionOnly)
 			{
 				object[] attribs = fi.GetCustomAttributes(typeof(SignatureAttribute), false);
@@ -1421,7 +1305,7 @@ namespace IKVM.Internal
 
 		internal static InnerClassAttribute GetInnerClass(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attribs = type.GetCustomAttributes(typeof(InnerClassAttribute), false);
@@ -1444,7 +1328,7 @@ namespace IKVM.Internal
 
 		internal static RemappedInterfaceMethodAttribute[] GetRemappedInterfaceMethods(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attr = type.GetCustomAttributes(typeof(RemappedInterfaceMethodAttribute), false);
@@ -1470,7 +1354,7 @@ namespace IKVM.Internal
 
 		internal static RemappedTypeAttribute GetRemappedType(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attribs = type.GetCustomAttributes(typeof(RemappedTypeAttribute), false);
@@ -1493,7 +1377,7 @@ namespace IKVM.Internal
 
 		internal static RemappedClassAttribute[] GetRemappedClasses(Assembly coreAssembly)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!coreAssembly.ReflectionOnly)
 			{
 				object[] attr = coreAssembly.GetCustomAttributes(typeof(RemappedClassAttribute), false);
@@ -1519,7 +1403,7 @@ namespace IKVM.Internal
 
 		internal static string GetAnnotationAttributeType(Type type)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				object[] attr = type.GetCustomAttributes(typeof(AnnotationAttributeAttribute), false);
@@ -1565,7 +1449,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(Module mod, Type attribute)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!mod.Assembly.ReflectionOnly)
 			{
 				return mod.IsDefined(attribute, false);
@@ -1587,7 +1471,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(Assembly asm, Type attribute)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!asm.ReflectionOnly)
 			{
 				return asm.IsDefined(attribute, false);
@@ -1608,7 +1492,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(Type type, Type attribute)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!type.Assembly.ReflectionOnly)
 			{
 				return type.IsDefined(attribute, false);
@@ -1630,7 +1514,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(ParameterInfo pi, Type attribute)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!pi.Member.DeclaringType.Assembly.ReflectionOnly)
 			{
 				return pi.IsDefined(attribute, false);
@@ -1652,7 +1536,7 @@ namespace IKVM.Internal
 
 		internal static bool IsDefined(MemberInfo member, Type attribute)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!member.DeclaringType.Assembly.ReflectionOnly)
 			{
 				return member.IsDefined(attribute, false);
@@ -1679,7 +1563,7 @@ namespace IKVM.Internal
 
 		internal static object[] GetJavaModuleAttributes(Module mod)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if(!mod.Assembly.ReflectionOnly)
 			{
 				return mod.GetCustomAttributes(typeofJavaModuleAttribute, false);
@@ -1726,7 +1610,7 @@ namespace IKVM.Internal
 			}
 			else
 			{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 				object[] attr = type.GetCustomAttributes(typeof(EnclosingMethodAttribute), false);
 				if (attr.Length == 1)
 				{
@@ -1761,29 +1645,6 @@ namespace IKVM.Internal
 			CustomAttributeBuilder cab = new CustomAttributeBuilder(typeofExceptionIsUnsafeForMappingAttribute.GetConstructor(Type.EmptyTypes), new object[0]);
 			typeBuilder.SetCustomAttribute(cab);
 		}
-
-		internal static void SetConstantValue(FieldBuilder field, object constantValue)
-		{
-			CustomAttributeBuilder constantValueAttrib;
-			try
-			{
-				constantValueAttrib = new CustomAttributeBuilder(typeofConstantValueAttribute.GetConstructor(new Type[] { JVM.Import(constantValue.GetType()) }), new object[] { constantValue });
-			}
-			catch (OverflowException)
-			{
-				// FXBUG for char values > 32K .NET (1.1 and 2.0) throws an exception (because it tries to convert to Int16)
-				if (constantValue is char)
-				{
-					// we use the int constant value instead, the stub generator can handle that
-					constantValueAttrib = new CustomAttributeBuilder(typeofConstantValueAttribute.GetConstructor(new Type[] { Types.Int32 }), new object[] { (int)(char)constantValue });
-				}
-				else
-				{
-					throw;
-				}
-			}
-			field.SetCustomAttribute(constantValueAttrib);
-		}
 #endif // STATIC_COMPILER
 
 		internal static void SetRuntimeCompatibilityAttribute(AssemblyBuilder assemblyBuilder)
@@ -1800,7 +1661,7 @@ namespace IKVM.Internal
 	{
 		internal static Type GetUnderlyingType(Type enumType)
 		{
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 			return enumType.GetEnumUnderlyingType();
 #else
 			return Enum.GetUnderlyingType(enumType);
@@ -2007,7 +1868,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !IKVM_REF_EMIT
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal static bool MakeDeclSecurity(Type type, object annotation, out SecurityAction action, out PermissionSet permSet)
 		{
 			ConstructorInfo ci = type.GetConstructor(new Type[] { typeof(SecurityAction) });
@@ -2050,7 +1911,7 @@ namespace IKVM.Internal
 			permSet.AddPermission(attr.CreatePermission());
 			return true;
 		}
-#endif
+#endif // !STATIC_COMPILER && !STUB_GENERATOR
 
 		internal static bool HasRetentionPolicyRuntime(object[] annotations)
 		{
@@ -2198,7 +2059,7 @@ namespace IKVM.Internal
 		private MethodWrapper[] methods;
 		private FieldWrapper[] fields;
 		private readonly TypeWrapper baseWrapper;
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		private object classObject;
 #endif
 		internal static readonly TypeWrapper[] EmptyArray = new TypeWrapper[0];
@@ -2216,6 +2077,7 @@ namespace IKVM.Internal
 			this.baseWrapper = baseWrapper;
 		}
 
+#if !STUB_GENERATOR
 		internal void EmitClassLiteral(CodeEmitter ilgen)
 		{
 			Debug.Assert(!this.IsPrimitive);
@@ -2233,6 +2095,7 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Ldsfld, RuntimeHelperTypes.GetClassLiteralField(type));
 			}
 		}
+#endif // !STUB_GENERATOR
 
 		private Type GetClassLiteralType()
 		{
@@ -2270,7 +2133,7 @@ namespace IKVM.Internal
 			get { return false; }
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal void SetClassObject(object classObject)
 		{
 			this.classObject = classObject;
@@ -2464,7 +2327,7 @@ namespace IKVM.Internal
 			return tw;
 #endif
 		}
-#endif // !STATIC_COMPILER
+#endif // !STATIC_COMPILER && !STUB_GENERATOR
 
 		public override string ToString()
 		{
@@ -3290,7 +3153,7 @@ namespace IKVM.Internal
 			return this.IsSubTypeOf(wrapper);
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal bool IsInstance(object obj)
 		{
 			if(obj != null)
@@ -3335,7 +3198,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal void RunClassInit()
 		{
 			Type t = IsRemapped ? TypeAsBaseType : TypeAsTBD;
@@ -3346,6 +3209,7 @@ namespace IKVM.Internal
 		}
 #endif
 
+#if !STUB_GENERATOR
 		internal void EmitUnbox(CodeEmitter ilgen)
 		{
 			Debug.Assert(this.IsNonPrimitiveValueType);
@@ -3480,6 +3344,7 @@ namespace IKVM.Internal
 				ilgen.LazyEmit_instanceof(TypeAsTBD);
 			}
 		}
+#endif // !STUB_GENERATOR
 
 		// NOTE don't call this method, call MethodWrapper.Link instead
 		internal virtual MethodBase LinkMethod(MethodWrapper mw)
@@ -3493,9 +3358,11 @@ namespace IKVM.Internal
 			return fw.GetField();
 		}
 
+#if !STUB_GENERATOR
 		internal virtual void EmitRunClassConstructor(CodeEmitter ilgen)
 		{
 		}
+#endif // !STUB_GENERATOR
 
 		internal virtual string GetGenericSignature()
 		{
@@ -3512,7 +3379,7 @@ namespace IKVM.Internal
 			return null;
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal virtual string[] GetEnclosingMethod()
 		{
 			return null;
@@ -3566,7 +3433,7 @@ namespace IKVM.Internal
 			}
 			return null;
 		}
-#endif // !STATIC_COMPILER
+#endif // !STATIC_COMPILER && !STUB_GENERATOR
 
 		internal virtual Annotation Annotation
 		{
@@ -3709,6 +3576,7 @@ namespace IKVM.Internal
 			throw new InvalidOperationException("Finish called on UnloadableTypeWrapper: " + Name);
 		}
 
+#if !STUB_GENERATOR
 		internal override void EmitCheckcast(TypeWrapper context, CodeEmitter ilgen)
 		{
 			ilgen.Emit(OpCodes.Ldtoken, context.TypeAsTBD);
@@ -3722,6 +3590,7 @@ namespace IKVM.Internal
 			ilgen.Emit(OpCodes.Ldstr, Name);
 			ilgen.Emit(OpCodes.Call, ByteCodeHelperMethods.DynamicInstanceOf);
 		}
+#endif // !STUB_GENERATOR
 	}
 
 	sealed class PrimitiveTypeWrapper : TypeWrapper
@@ -4363,15 +4232,24 @@ namespace IKVM.Internal
 			}
 		}
 
+		private bool IsCallerID(Type type)
+		{
+#if STUB_GENERATOR
+			return type.FullName == "ikvm.internal.CallerID";
+#else
+			return type == CoreClasses.ikvm.@internal.CallerID.Wrapper.TypeAsSignatureType
+				&& GetClassLoader() == ClassLoaderWrapper.GetBootstrapClassLoader();
+#endif
+		}
+
 		private void GetNameSigFromMethodBase(MethodBase method, out string name, out string sig, out TypeWrapper retType, out TypeWrapper[] paramTypes, ref MemberFlags flags)
 		{
 			retType = method is ConstructorInfo ? PrimitiveTypeWrapper.VOID : ClassLoaderWrapper.GetWrapperFromType(((MethodInfo)method).ReturnType);
 			ParameterInfo[] parameters = method.GetParameters();
 			int len = parameters.Length;
 			if(len > 0
-				&& parameters[len - 1].ParameterType == CoreClasses.ikvm.@internal.CallerID.Wrapper.TypeAsSignatureType
-				&& !method.DeclaringType.IsInterface
-				&& GetClassLoader() == ClassLoaderWrapper.GetBootstrapClassLoader())
+				&& IsCallerID(parameters[len - 1].ParameterType)
+				&& !method.DeclaringType.IsInterface)
 			{
 				len--;
 				flags |= MemberFlags.CallerID;
@@ -4453,12 +4331,14 @@ namespace IKVM.Internal
 				invoke = (MethodInfo)mw.GetMethod();
 			}
 
+#if !STUB_GENERATOR
 			internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
 			{
 				ilgen.Emit(OpCodes.Dup);
 				ilgen.Emit(OpCodes.Ldvirtftn, invoke);
 				ilgen.Emit(OpCodes.Newobj, constructor);
 			}
+#endif // !STUB_GENERATOR
 		}
 
 		protected override void LazyPublishMethods()
@@ -4579,6 +4459,7 @@ namespace IKVM.Internal
 #endif
 			}
 
+#if !STUB_GENERATOR
 			protected override void CallImpl(CodeEmitter ilgen)
 			{
 				MethodBase mb = GetMethod();
@@ -4621,8 +4502,9 @@ namespace IKVM.Internal
 					ilgen.Emit(OpCodes.Newobj, (ConstructorInfo)mb);
 				}
 			}
+#endif // !STUB_GENERATOR
 
-#if !STATIC_COMPILER && !FIRST_PASS
+#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
 			[HideFromJava]
 			protected override object InvokeNonvirtualRemapped(object obj, object[] args)
 			{
@@ -4735,6 +4617,7 @@ namespace IKVM.Internal
 			}
 		}
 
+#if !STUB_GENERATOR
 		internal override void EmitRunClassConstructor(CodeEmitter ilgen)
 		{
 			if(HasStaticInitializer)
@@ -4742,6 +4625,7 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Call, clinitMethod);
 			}
 		}
+#endif // !STUB_GENERATOR
 
 		internal override string GetGenericSignature()
 		{
@@ -4797,7 +4681,7 @@ namespace IKVM.Internal
 			return null;
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal override string[] GetEnclosingMethod()
 		{
 			EnclosingMethodAttribute enc = AttributeHelper.GetEnclosingMethodAttribute(type);
@@ -4984,7 +4868,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal override string GetSourceFileName()
 		{
 			object[] attr = type.GetCustomAttributes(typeof(SourceFileAttribute), false);

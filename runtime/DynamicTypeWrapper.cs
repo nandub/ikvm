@@ -23,10 +23,12 @@
 */
 using System;
 using System.Collections.Generic;
-using System.Reflection;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER
+using IKVM.Reflection;
 using IKVM.Reflection.Emit;
+using Type = IKVM.Reflection.Type;
 #else
+using System.Reflection;
 using System.Reflection.Emit;
 #endif
 using System.Diagnostics;
@@ -1368,12 +1370,6 @@ namespace IKVM.Internal
 						field.SetCustomAttribute(transientAttrib);
 					}
 #if STATIC_COMPILER
-					// Instance fields can also have a ConstantValue attribute (and are inlined by the compiler),
-					// and ikvmstub has to export them, so we have to add a custom attribute.
-					if (constantValue != null)
-					{
-						AttributeHelper.SetConstantValue(field, constantValue);
-					}
 					if (hideFromJava)
 					{
 						AttributeHelper.HideFromJava(field);
@@ -4326,7 +4322,7 @@ namespace IKVM.Internal
 
 			private static class BakedTypeCleanupHack
 			{
-#if NET_4_0 || IKVM_REF_EMIT
+#if NET_4_0 || STATIC_COMPILER
 				internal static void Process(DynamicTypeWrapper wrapper) { }
 #else
 				private static readonly FieldInfo m_methodBuilder = typeof(ConstructorBuilder).GetField("m_methodBuilder", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -4462,7 +4458,7 @@ namespace IKVM.Internal
 						// are public and so we can get away with replacing all other types with object.
 						argTypes[i + instance] = (args[i].IsPrimitive || args[i].IsGhost || args[i].IsNonPrimitiveValueType) ? args[i].TypeAsSignatureType : typeof(object);
 					}
-					argTypes[argTypes.Length - 1] = typeof(RuntimeMethodHandle);
+					argTypes[argTypes.Length - 1] = ClassLoaderWrapper.LoadClassCritical("ikvm.internal.CallerID").TypeAsSignatureType;
 					Type retType = (mw.ReturnType.IsPrimitive || mw.ReturnType.IsGhost || mw.ReturnType.IsNonPrimitiveValueType) ? mw.ReturnType.TypeAsSignatureType : typeof(object);
 					MethodBuilder mb = tb.DefineMethod("method", MethodAttributes.Public | MethodAttributes.Static, retType, argTypes);
 					AttributeHelper.HideFromJava(mb);
@@ -4472,7 +4468,7 @@ namespace IKVM.Internal
 					{
 						ilGenerator.Emit(OpCodes.Ldarg, (short)i);
 					}
-					ilGenerator.Emit(OpCodes.Ldtoken, (MethodInfo)mw.GetMethod());
+					context.EmitCallerID(ilGenerator);
 					ilGenerator.Emit(OpCodes.Call, mb);
 					if (!mw.ReturnType.IsPrimitive && !mw.ReturnType.IsGhost && !mw.ReturnType.IsNonPrimitiveValueType)
 					{
@@ -4528,7 +4524,7 @@ namespace IKVM.Internal
 					}
 					else
 					{
-						ilGenerator.Emit(OpCodes.Ldtoken, (MethodInfo)mw.GetMethod());
+						context.EmitCallerID(ilGenerator);
 					}
 					ilGenerator.Emit(OpCodes.Ldstr, classFile.Name.Replace('.', '/'));
 					ilGenerator.Emit(OpCodes.Ldstr, m.Name);
@@ -4543,7 +4539,7 @@ namespace IKVM.Internal
 					}
 					else
 					{
-						ilGenerator.Emit(OpCodes.Ldtoken, (MethodInfo)mw.GetMethod());
+						context.EmitCallerID(ilGenerator);
 					}
 					ilGenerator.Emit(OpCodes.Call, enterLocalRefStruct);
 					LocalBuilder jnienv = ilGenerator.DeclareLocal(Types.IntPtr);
@@ -5311,6 +5307,7 @@ namespace IKVM.Internal
 			return null;
 		}
 
+#if !STATIC_COMPILER
 		internal override string[] GetEnclosingMethod()
 		{
 			return impl.GetEnclosingMethod();
@@ -5321,7 +5318,6 @@ namespace IKVM.Internal
 			return sourceFileName;
 		}
 
-#if !STATIC_COMPILER
 		private int GetMethodBaseToken(MethodBase mb)
 		{
 			ConstructorInfo ci = mb as ConstructorInfo;

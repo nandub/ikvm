@@ -23,7 +23,12 @@
 */
 using System;
 using System.Threading;
+#if STATIC_COMPILER || STUB_GENERATOR
+using IKVM.Reflection;
+using Type = IKVM.Reflection.Type;
+#else
 using System.Reflection;
+#endif
 using System.IO;
 using System.Diagnostics;
 using System.Text;
@@ -31,7 +36,7 @@ using System.Security;
 using System.Security.Permissions;
 using IKVM.Internal;
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 namespace IKVM.Internal
 {
 	public static class Starter
@@ -46,17 +51,21 @@ namespace IKVM.Internal
 			DynamicClassLoader.SaveDebugImages();
 		}
 
-		public static bool EnableReflectionOnMethodsWithUnloadableTypeParameters
+#if !FIRST_PASS
+		public static java.lang.reflect.Method FindMainMethod(java.lang.Class clazz)
 		{
-			get
+			// This method exists because we don't use Class.getDeclaredMethods(),
+			// since that could cause us to run into NoClassDefFoundError if any of the
+			// method signatures references a missing class.
+			TypeWrapper tw = TypeWrapper.FromClass(clazz);
+			MethodWrapper mw = tw.GetMethodWrapper("main", "([Ljava.lang.String;)V", true);
+			if (mw != null && mw.IsStatic)
 			{
-				return JVM.EnableReflectionOnMethodsWithUnloadableTypeParameters;
+				return (java.lang.reflect.Method)mw.ToMethodOrConstructor(true);
 			}
-			set
-			{
-				JVM.EnableReflectionOnMethodsWithUnloadableTypeParameters = value;
-			}
+			return null;
 		}
+#endif
 
 		public static bool ClassUnloading
 		{
@@ -70,7 +79,7 @@ namespace IKVM.Internal
 		}
 	}
 }
-#endif // !STATIC_COMPILER
+#endif // !STATIC_COMPILER && !STUB_GENERATOR
 
 namespace IKVM.Internal
 {
@@ -80,9 +89,8 @@ namespace IKVM.Internal
 		internal const bool IsStaticCompiler = true;
 		internal const bool FinishingForDebugSave = false;
 		internal const bool IsSaveDebugImage = false;
-#else
+#elif !STUB_GENERATOR
 		internal const bool IsStaticCompiler = false;
-		private static bool enableReflectionOnMethodsWithUnloadableTypeParameters;
 		private static bool finishingForDebugSave;
 		private static int emitSymbols;
 		internal static bool IsSaveDebugImage;
@@ -92,7 +100,7 @@ namespace IKVM.Internal
 #endif // STATIC_COMPILER
 		private static Assembly coreAssembly;
 
-		internal static Version SafeGetAssemblyVersion(Assembly asm)
+		internal static Version SafeGetAssemblyVersion(System.Reflection.Assembly asm)
 		{
 			// Assembly.GetName().Version requires FileIOPermission,
 			// so we parse the FullName manually :-(
@@ -126,7 +134,7 @@ namespace IKVM.Internal
 		{
 			get
 			{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 				if(coreAssembly == null)
 				{
 #if FIRST_PASS
@@ -144,19 +152,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER
-		public static bool EnableReflectionOnMethodsWithUnloadableTypeParameters
-		{
-			get
-			{
-				return enableReflectionOnMethodsWithUnloadableTypeParameters;
-			}
-			set
-			{
-				enableReflectionOnMethodsWithUnloadableTypeParameters = value;
-			}
-		}
-
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal static bool FinishingForDebugSave
 		{
 			get
@@ -193,7 +189,7 @@ namespace IKVM.Internal
 				return emitSymbols == 1;
 			}
 		}
-#endif // !STATIC_COMPILER
+#endif // !STATIC_COMPILER && !STUB_GENERATOR
 
 		internal static bool IsUnix
 		{
@@ -254,8 +250,8 @@ namespace IKVM.Internal
 			try
 			{
 				Tracer.Error(Tracer.Runtime, "CRITICAL FAILURE: {0}", message);
-				Type messageBox = null;
-#if !STATIC_COMPILER
+				System.Type messageBox = null;
+#if !STATIC_COMPILER && !STUB_GENERATOR
 				// NOTE we use reflection to invoke MessageBox.Show, to make sure we run in environments where WinForms isn't available
 				Assembly winForms = IsUnix ? null : Assembly.Load("System.Windows.Forms, Version=1.0.5000.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
 				if(winForms != null)
@@ -279,7 +275,7 @@ namespace IKVM.Internal
 					try
 					{
 						Version ver = SafeGetAssemblyVersion(typeof(JVM).Assembly);
-						messageBox.InvokeMember("Show", BindingFlags.InvokeMethod | BindingFlags.Static | BindingFlags.Public, null, null, new object[] { message, "IKVM.NET " + ver + " Critical Failure" });
+						messageBox.InvokeMember("Show", System.Reflection.BindingFlags.InvokeMethod | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public, null, null, new object[] { message, "IKVM.NET " + ver + " Critical Failure" });
 					}
 					catch
 					{
@@ -301,13 +297,20 @@ namespace IKVM.Internal
 			}
 		}
 
+#if STATIC_COMPILER || STUB_GENERATOR
+		internal static Type LoadType(System.Type type)
+		{
+			return StaticCompiler.GetRuntimeType(type.FullName);
+		}
+#endif
+
 		// this method resolves types in IKVM.Runtime.dll
 		// (the version of IKVM.Runtime.dll that we're running
 		// with can be different from the one we're compiling against.)
 		internal static Type LoadType(Type type)
 		{
-#if STATIC_COMPILER
-			return StaticCompiler.GetType(type.FullName);
+#if STATIC_COMPILER || STUB_GENERATOR
+			return StaticCompiler.GetRuntimeType(type.FullName);
 #else
 			return type;
 #endif
@@ -315,7 +318,7 @@ namespace IKVM.Internal
 
 		internal static object Box(object val)
 		{
-#if STATIC_COMPILER || FIRST_PASS
+#if STATIC_COMPILER || FIRST_PASS || STUB_GENERATOR
 			return null;
 #else
 			if(val is byte)
@@ -359,7 +362,7 @@ namespace IKVM.Internal
 
 		internal static object Unbox(object val)
 		{
-#if STATIC_COMPILER || FIRST_PASS
+#if STATIC_COMPILER || FIRST_PASS || STUB_GENERATOR
 			return null;
 #else
 			java.lang.Byte b = val as java.lang.Byte;
@@ -409,7 +412,7 @@ namespace IKVM.Internal
 #endif
 		}
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal static object NewAnnotation(object classLoader, object definition)
 		{
 #if FIRST_PASS
@@ -420,7 +423,7 @@ namespace IKVM.Internal
 		}
 #endif
 
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		internal static object NewAnnotationElementValue(object classLoader, object expectedClass, object definition)
 		{
 #if FIRST_PASS
@@ -439,20 +442,7 @@ namespace IKVM.Internal
 		}
 #endif
 
-
-#if !STATIC_COMPILER
-		// helper for JNI (which doesn't have access to core library internals)
-		internal static object CreateCallerID(RuntimeMethodHandle method)
-		{
-#if FIRST_PASS
-			return null;
-#else
-			return ikvm.@internal.CallerID.create(MethodBase.GetMethodFromHandle(method));
-#endif
-		}
-#endif
-
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		// helper for JNI (which doesn't have access to core library internals)
 		internal static object NewDirectByteBuffer(long address, int capacity)
 		{
@@ -466,12 +456,20 @@ namespace IKVM.Internal
 
 		internal static Type Import(System.Type type)
 		{
+#if STATIC_COMPILER || STUB_GENERATOR
+			return StaticCompiler.Universe.Import(type);
+#else
 			return type;
+#endif
 		}
 
 		internal static Type GetType(string typeName, bool throwOnError)
 		{
+#if STATIC_COMPILER || STUB_GENERATOR
+			return StaticCompiler.Universe.GetType(typeName, throwOnError);
+#else
 			return Type.GetType(typeName, throwOnError);
+#endif
 		}
 	}
 }
