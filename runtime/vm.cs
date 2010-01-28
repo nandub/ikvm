@@ -23,7 +23,7 @@
 */
 using System;
 using System.Threading;
-#if STATIC_COMPILER || STUB_GENERATOR
+#if IKVM_REF_EMIT
 using IKVM.Reflection;
 using Type = IKVM.Reflection.Type;
 #else
@@ -297,7 +297,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if STATIC_COMPILER || STUB_GENERATOR
+#if IKVM_REF_EMIT
 		internal static Type LoadType(System.Type type)
 		{
 			return StaticCompiler.GetRuntimeType(type.FullName);

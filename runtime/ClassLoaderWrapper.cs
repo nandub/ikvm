@@ -22,7 +22,7 @@
   
 */
 using System;
-#if STATIC_COMPILER || STUB_GENERATOR
+#if IKVM_REF_EMIT
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
