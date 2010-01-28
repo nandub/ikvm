@@ -317,7 +317,7 @@ namespace IKVM.Internal
 		private static void GetAttributeArgsAndTypes(ClassLoaderWrapper loader, IKVM.Internal.MapXml.Attribute attr, out Type[] argTypes, out object[] args)
 		{
 			// TODO add error handling
-			TypeWrapper[] twargs = ClassFile.ArgTypeWrapperListFromSig(loader, attr.Sig);
+			TypeWrapper[] twargs = loader.ArgTypeWrapperListFromSigNoThrow(attr.Sig);
 			argTypes = new Type[twargs.Length];
 			args = new object[argTypes.Length];
 			for(int i = 0; i < twargs.Length; i++)
@@ -326,7 +326,7 @@ namespace IKVM.Internal
 				TypeWrapper tw = twargs[i];
 				if(tw == CoreClasses.java.lang.Object.Wrapper)
 				{
-					tw = ClassFile.FieldTypeWrapperFromSig(loader, attr.Params[i].Sig);
+					tw = loader.FieldTypeWrapperFromSigNoThrow(attr.Params[i].Sig);
 				}
 				if(tw.IsArray)
 				{
@@ -374,7 +374,7 @@ namespace IKVM.Internal
 					for(int i = 0; i < namedProperties.Length; i++)
 					{
 						namedProperties[i] = t.GetProperty(attr.Properties[i].Name);
-						propertyValues[i] = ParseValue(loader, ClassFile.FieldTypeWrapperFromSig(loader, attr.Properties[i].Sig), attr.Properties[i].Value);
+						propertyValues[i] = ParseValue(loader, loader.FieldTypeWrapperFromSigNoThrow(attr.Properties[i].Sig), attr.Properties[i].Value);
 					}
 				}
 				else
@@ -391,7 +391,7 @@ namespace IKVM.Internal
 					for(int i = 0; i < namedFields.Length; i++)
 					{
 						namedFields[i] = t.GetField(attr.Fields[i].Name);
-						fieldValues[i] = ParseValue(loader, ClassFile.FieldTypeWrapperFromSig(loader, attr.Fields[i].Sig), attr.Fields[i].Value);
+						fieldValues[i] = ParseValue(loader, loader.FieldTypeWrapperFromSigNoThrow(attr.Fields[i].Sig), attr.Fields[i].Value);
 					}
 				}
 				else
@@ -427,7 +427,7 @@ namespace IKVM.Internal
 						FieldWrapper fw = t.GetFieldWrapper(attr.Fields[i].Name, attr.Fields[i].Sig);
 						fw.Link();
 						namedFields[i] = fw.GetField();
-						fieldValues[i] = ParseValue(loader, ClassFile.FieldTypeWrapperFromSig(loader, attr.Fields[i].Sig), attr.Fields[i].Value);
+						fieldValues[i] = ParseValue(loader, loader.FieldTypeWrapperFromSigNoThrow(attr.Fields[i].Sig), attr.Fields[i].Value);
 					}
 				}
 				else
@@ -709,10 +709,15 @@ namespace IKVM.Internal
 		// this method compares t1 and t2 by name
 		// if the type name and assembly name (ignoring the version and strong name) match
 		// the type are considered the same
+		// Note that when we're the stub generator, we don't even care about the assembly names,
+		// because in that case we don't want a dependency on the runtime.
 		private static bool MatchTypes(Type t1, Type t2)
 		{
 			return t1.FullName == t2.FullName
-				&& t1.Assembly.GetName().Name == t2.Assembly.GetName().Name;
+#if !STUB_GENERATOR
+				&& t1.Assembly.GetName().Name == t2.Assembly.GetName().Name
+#endif
+				;
 		}
 
 		internal static object GetConstantValue(FieldInfo field)
@@ -1279,11 +1284,11 @@ namespace IKVM.Internal
 					if(MatchTypes(cad.Constructor.DeclaringType, typeofThrowsAttribute))
 					{
 						IList<CustomAttributeTypedArgument> args = cad.ConstructorArguments;
-						if (args[0].ArgumentType == typeof(string[]))
+						if (args[0].ArgumentType == Types.String.MakeArrayType())
 						{
 							return new ThrowsAttribute(DecodeArray<string>(args[0]));
 						}
-						else if (args[0].ArgumentType == typeof(Type[]))
+						else if (args[0].ArgumentType == Types.Type.MakeArrayType())
 						{
 							return new ThrowsAttribute(DecodeArray<Type>(args[0]));
 						}
@@ -4363,15 +4368,24 @@ namespace IKVM.Internal
 			}
 		}
 
+		private bool IsCallerID(Type type)
+		{
+#if STUB_GENERATOR
+			return type.FullName == "ikvm.internal.CallerID";
+#else
+			return type == CoreClasses.ikvm.@internal.CallerID.Wrapper.TypeAsSignatureType
+				&& GetClassLoader() == ClassLoaderWrapper.GetBootstrapClassLoader();
+#endif
+		}
+
 		private void GetNameSigFromMethodBase(MethodBase method, out string name, out string sig, out TypeWrapper retType, out TypeWrapper[] paramTypes, ref MemberFlags flags)
 		{
 			retType = method is ConstructorInfo ? PrimitiveTypeWrapper.VOID : ClassLoaderWrapper.GetWrapperFromType(((MethodInfo)method).ReturnType);
 			ParameterInfo[] parameters = method.GetParameters();
 			int len = parameters.Length;
 			if(len > 0
-				&& parameters[len - 1].ParameterType == CoreClasses.ikvm.@internal.CallerID.Wrapper.TypeAsSignatureType
-				&& !method.DeclaringType.IsInterface
-				&& GetClassLoader() == ClassLoaderWrapper.GetBootstrapClassLoader())
+				&& IsCallerID(parameters[len - 1].ParameterType)
+				&& !method.DeclaringType.IsInterface)
 			{
 				len--;
 				flags |= MemberFlags.CallerID;
