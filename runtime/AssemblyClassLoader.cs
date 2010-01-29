@@ -29,7 +29,7 @@ using System.Threading;
 using System.Runtime.CompilerServices;
 using FormatterServices = System.Runtime.Serialization.FormatterServices;
 using IKVM.Attributes;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using Type = IKVM.Reflection.Type;
 #else
@@ -44,8 +44,7 @@ namespace IKVM.Internal
 		private AssemblyLoader assemblyLoader;
 		private string[] references;
 		private AssemblyClassLoader[] delegates;
-		private bool isReflectionOnly;
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 		private Thread initializerThread;
 		private int initializerRecursion;
 		private volatile object protectionDomain;
@@ -342,7 +341,7 @@ namespace IKVM.Internal
 		internal AssemblyClassLoader(Assembly assembly)
 			: this(assembly, null)
 		{
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			initializerThread = Thread.CurrentThread;
 #endif
 		}
@@ -352,7 +351,6 @@ namespace IKVM.Internal
 		{
 			this.assemblyLoader = new AssemblyLoader(assembly);
 			this.references = fixedReferences;
-			this.isReflectionOnly = assembly.ReflectionOnly;
 		}
 
 		private void DoInitializeExports()
@@ -470,7 +468,7 @@ namespace IKVM.Internal
 			}
 			try
 			{
-#if STATIC_COMPILER
+#if STATIC_COMPILER || STUB_GENERATOR
 				if (exported)
 				{
 					return StaticCompiler.LoadFile(this.MainAssembly.Location + "/../" + new AssemblyName(name).Name + ".dll");
@@ -480,14 +478,7 @@ namespace IKVM.Internal
 					return StaticCompiler.Load(name);
 				}
 #else
-				if (isReflectionOnly)
-				{
-					return Assembly.ReflectionOnlyLoad(name);
-				}
-				else
-				{
-					return Assembly.Load(name);
-				}
+				return Assembly.Load(name);
 #endif
 			}
 			catch
@@ -601,7 +592,7 @@ namespace IKVM.Internal
 			{
 				return tw;
 			}
-#if !STATIC_COMPILER
+#if !STATIC_COMPILER && !STUB_GENERATOR
 			if (hasCustomClassLoader)
 			{
 				return base.LoadClassImpl(name, throwClassNotFoundException);
@@ -760,7 +751,7 @@ namespace IKVM.Internal
 
 		private void WaitInitDone()
 		{
-#if !STATIC_COMPILER && !FIRST_PASS
+#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
 			if (initializerThread != null)
 			{
 				if (initializerThread == Thread.CurrentThread)
@@ -801,7 +792,7 @@ namespace IKVM.Internal
 
 		internal virtual object GetProtectionDomain()
 		{
-#if STATIC_COMPILER || FIRST_PASS
+#if STATIC_COMPILER || FIRST_PASS || STUB_GENERATOR
 			return null;
 #else
 			if (protectionDomain == null)
@@ -928,11 +919,10 @@ namespace IKVM.Internal
 			return new AssemblyClassLoader(assembly);
 		}
 
-#if !STATIC_COMPILER && !FIRST_PASS
+#if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
 		private void InitializeJavaClassLoader()
 		{
 			Assembly assembly = assemblyLoader.Assembly;
-			if (!assembly.ReflectionOnly)
 			{
 				Type customClassLoaderClass = null;
 				LoadCustomClassLoaderRedirects();
