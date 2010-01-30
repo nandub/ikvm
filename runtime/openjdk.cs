@@ -5457,23 +5457,7 @@ namespace IKVM.NativeCode.sun.misc
         [DllImport("kernel32.dll")]
         private static extern bool SetConsoleCtrlHandler(ConsoleCtrlDelegate e, bool add);
 
-        private class CriticalCtrlHandler : System.Runtime.ConstrainedExecution.CriticalFinalizerObject
-        {
-            private ConsoleCtrlDelegate consoleCtrlDelegate;
-
-            internal CriticalCtrlHandler()
-            {
-                consoleCtrlDelegate = new ConsoleCtrlDelegate(ConsoleCtrlCheck);
-                SetConsoleCtrlHandler(consoleCtrlDelegate, true);
-            }
-
-            ~CriticalCtrlHandler()
-            {
-                SetConsoleCtrlHandler(consoleCtrlDelegate, false);
-            }
-        }
-
-        private static CriticalCtrlHandler defaultConsoleCtrlDelegate;
+        private static ConsoleCtrlDelegate defaultConsoleCtrlDelegate;
 
         private static bool ConsoleCtrlCheck(CtrlTypes ctrlType)
         {
@@ -5481,36 +5465,13 @@ namespace IKVM.NativeCode.sun.misc
             switch (ctrlType)
             {
                 case CtrlTypes.CTRL_BREAK_EVENT:
-                    DumpAllJavaThreads();
+                    global::java.lang.Thread.dumpAllStacks();
                     return true;
 
             }
 #endif
             return false;
         }
-
-#if !FIRST_PASS
-		private static void DumpAllJavaThreads()
-		{
-			Console.WriteLine(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-			global::java.util.Map traces = global::java.lang.Thread.getAllStackTraces();
-			Console.WriteLine("Full thread dump IKVM.NET {0} ({1} bit):", JVM.SafeGetAssemblyVersion(Assembly.GetExecutingAssembly()), IntPtr.Size * 8);
-			global::java.util.Iterator entries = traces.entrySet().iterator();
-			while (entries.hasNext())
-			{
-				global::java.util.Map.Entry entry = (global::java.util.Map.Entry)entries.next();
-				global::java.lang.Thread thread = (global::java.lang.Thread)entry.getKey();
-				Console.WriteLine("\n\"{0}\"{1} prio={2} tid=0x{3:X8}", thread.getName(), thread.isDaemon() ? " daemon" : "", thread.getPriority(), thread.getId());
-				Console.WriteLine("   java.lang.Thread.State: " + thread.getState());
-				global::java.lang.StackTraceElement[] trace = (global::java.lang.StackTraceElement[])entry.getValue();
-				for (int i = 0; i < trace.Length; i++)
-				{
-					Console.WriteLine("\tat {0}", trace[i]);
-				}
-			}
-			Console.WriteLine();
-		}
-#endif
 
         public static int findSignal(string sigName)
         {
@@ -5547,7 +5508,8 @@ namespace IKVM.NativeCode.sun.misc
                 case 0: // Default Signal Handler
                     if (defaultConsoleCtrlDelegate == null && Environment.OSVersion.Platform == PlatformID.Win32NT)
                     {
-                        defaultConsoleCtrlDelegate = new CriticalCtrlHandler();
+                        defaultConsoleCtrlDelegate = new ConsoleCtrlDelegate(ConsoleCtrlCheck);
+                        SetConsoleCtrlHandler(defaultConsoleCtrlDelegate, true);
                     }
                     break;
                 case 1: // Ignore Signal
