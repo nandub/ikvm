@@ -23,14 +23,9 @@
 */
 
 using System;
-#if IKVM_REF_EMIT
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
-#else
-using System.Reflection;
-using System.Reflection.Emit;
-#endif
 using System.Resources;
 using System.IO;
 using System.Collections.Generic;
@@ -54,8 +49,6 @@ namespace IKVM.Internal
 		private string assemblyName;
 		private string assemblyFile;
 		private string assemblyDir;
-		private string keyfilename;
-		private string keycontainer;
 		private string version;
 		private bool targetIsModule;
 		private AssemblyBuilder assemblyBuilder;
@@ -80,7 +73,7 @@ namespace IKVM.Internal
 		private List<ClassLoaderWrapper> internalsVisibleTo = new List<ClassLoaderWrapper>();
 		private List<TypeWrapper> dynamicallyImportedTypes = new List<TypeWrapper>();
 
-		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, string keyfilename, string keycontainer, string version, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
+		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, string version, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
 			: base(options.codegenoptions, null)
 		{
 			this.referencedAssemblies = referencedAssemblies;
@@ -92,8 +85,6 @@ namespace IKVM.Internal
 			this.assemblyDir = assemblyPath.DirectoryName;
 			this.targetIsModule = targetIsModule;
 			this.version = version;
-			this.keyfilename = keyfilename;
-			this.keycontainer = keycontainer;
 			Tracer.Info(Tracer.Compiler, "Instantiate CompilerClassLoader for {0}", assemblyName);
 		}
 
@@ -146,74 +137,15 @@ namespace IKVM.Internal
 			return p1.Union(p2);
 		}
 
-#if !NET_4_0 && !IKVM_REF_EMIT
-		private void GetAssemblyPermissions(out PermissionSet requiredPermissions, out PermissionSet optionalPermissions, out PermissionSet refusedPermissions)
-		{
-			requiredPermissions = null;
-			optionalPermissions = null;
-			refusedPermissions = null;
-			foreach (object[] def in assemblyAnnotations)
-			{
-				string annotationClass = (string)def[1];
-				annotationClass = annotationClass.Replace('/', '.').Substring(1, annotationClass.Length - 2);
-				if (annotationClass.EndsWith(DotNetTypeWrapper.AttributeAnnotationSuffix))
-				{
-					Type annot = JVM.GetType(DotNetTypeWrapper.DemangleTypeName(annotationClass.Substring(0, annotationClass.Length - DotNetTypeWrapper.AttributeAnnotationSuffix.Length)), false);
-					if (annot != null && annot.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
-					{
-						SecurityAction action;
-						PermissionSet permSet;
-						if (Annotation.MakeDeclSecurity(annot, def, out action, out permSet))
-						{
-							switch (action)
-							{
-								case SecurityAction.RequestMinimum:
-									requiredPermissions = Combine(requiredPermissions, permSet);
-									break;
-								case SecurityAction.RequestOptional:
-									optionalPermissions = Combine(optionalPermissions, permSet);
-									break;
-								case SecurityAction.RequestRefuse:
-									refusedPermissions = Combine(refusedPermissions, permSet);
-									break;
-							}
-						}
-					}
-				}
-			}
-		}
-#endif
-
 		internal ModuleBuilder CreateModuleBuilder()
 		{
 			AssemblyName name = new AssemblyName();
 			name.Name = assemblyName;
-			if(keyfilename != null) 
-			{
-				name.KeyPair = new StrongNameKeyPair(File.ReadAllBytes(keyfilename));
-			}
-			if(keycontainer != null)
-			{
-				name.KeyPair = new StrongNameKeyPair(keycontainer);
-			}
+			name.KeyPair = options.key;
 			name.Version = new Version(version);
-#if NET_4_0 || IKVM_REF_EMIT
 			assemblyBuilder = 
-#if IKVM_REF_EMIT
 				StaticCompiler.Universe
-#else
-				AppDomain.CurrentDomain
-#endif
 					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir);
-#else
-			PermissionSet requiredPermissions;
-			PermissionSet optionalPermissions;
-			PermissionSet refusedPermissions;
-			GetAssemblyPermissions(out requiredPermissions, out optionalPermissions, out refusedPermissions);
-			assemblyBuilder = 
-				AppDomain.CurrentDomain
-					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir, requiredPermissions, optionalPermissions, refusedPermissions);
-#endif
 			ModuleBuilder moduleBuilder;
 			moduleBuilder = assemblyBuilder.DefineDynamicModule(assemblyName, assemblyFile, this.EmitDebugInfo);
 			if(this.EmitStackTraceInfo)
@@ -1922,7 +1854,6 @@ namespace IKVM.Internal
 
 			private static void CopyLinkDemands(MethodBuilder mb, MethodInfo mi)
 			{
-#if IKVM_REF_EMIT
 				foreach (CustomAttributeData cad in CustomAttributeData.__GetDeclarativeSecurity(mi))
 				{
 					if (cad.ConstructorArguments.Count == 0 || (int)cad.ConstructorArguments[0].Value == (int)SecurityAction.LinkDemand)
@@ -1930,21 +1861,6 @@ namespace IKVM.Internal
 						mb.__AddDeclarativeSecurity(cad.__ToBuilder());
 					}
 				}
-#else
-				foreach (object attr in mi.GetCustomAttributes(false))
-				{
-					CodeAccessSecurityAttribute cas = attr as CodeAccessSecurityAttribute;
-					if (cas != null)
-					{
-						if (cas.Action == SecurityAction.LinkDemand)
-						{
-							PermissionSet pset = new PermissionSet(PermissionState.None);
-							pset.AddPermission(cas.CreatePermission());
-							mb.AddDeclarativeSecurity(SecurityAction.LinkDemand, pset);
-						}
-					}
-				}
-#endif
 			}
 
 			private static string MakeMethodKey(MethodInfo method)
@@ -2650,39 +2566,6 @@ namespace IKVM.Internal
 					return 1;
 				}
 			}
-#if !IKVM_REF_EMIT
-			bool err = false;
-			foreach(Assembly reference in references)
-			{
-				try
-				{
-					reference.GetTypes();
-				}
-				catch(ReflectionTypeLoadException x)
-				{
-					err = true;
-					foreach(Exception n in x.LoaderExceptions)
-					{
-						FileNotFoundException f = n as FileNotFoundException;
-						if(f != null)
-						{
-							Console.Error.WriteLine("Error: referenced assembly {0} has a missing dependency: {1}", reference.GetName().Name, f.FileName);
-							goto next;
-						}
-					}
-					Console.Error.WriteLine("Error: referenced assembly produced the following loader exceptions:");
-					foreach(Exception n in x.LoaderExceptions)
-					{
-						Console.WriteLine(n.Message);
-					}
-				}
-			next:;
-			}
-			if(err)
-			{
-				return 1;
-			}
-#endif
 			List<object> assemblyAnnotations = new List<object>();
 			Dictionary<string, string> baseClasses = new Dictionary<string, string>();
 			Tracer.Info(Tracer.Compiler, "Parsing class files");
@@ -2820,7 +2703,7 @@ namespace IKVM.Internal
 			{
 				referencedAssemblies[i] = AssemblyClassLoader.FromAssembly(references[i]);
 			}
-			loader = new CompilerClassLoader(referencedAssemblies, options, options.path, options.keyfilename, options.keycontainer, options.version, options.targetIsModule, options.assembly, h);
+			loader = new CompilerClassLoader(referencedAssemblies, options, options.path, options.version, options.targetIsModule, options.assembly, h);
 			loader.baseClasses = baseClasses;
 			loader.assemblyAnnotations = assemblyAnnotations;
 			loader.classesToCompile = new List<string>(h.Keys);
@@ -2882,7 +2765,7 @@ namespace IKVM.Internal
 				loader.AddReference(AssemblyClassLoader.FromAssembly(JVM.CoreAssembly));
 			}
 
-			if((options.keycontainer != null || options.keyfilename != null) && !allReferencesAreStrongNamed)
+			if(options.key != null && !allReferencesAreStrongNamed)
 			{
 				Console.Error.WriteLine("Error: all referenced assemblies must be strong named, to be able to sign the output assembly");
 				return 1;
@@ -2903,37 +2786,6 @@ namespace IKVM.Internal
 		private static Assembly LoadReferencedAssembly(string r)
 		{
 			Assembly asm = StaticCompiler.LoadFile(r);
-#if !IKVM_REF_EMIT
-			if (asm.GetManifestResourceInfo("ikvm.exports") != null)
-			{
-				// If this is the main assembly in a multi assembly group, try to pre-load all the assemblies.
-				// (This is required to make Assembly.ReflectionOnlyLoad() work later on (because it doesn't fire the ReflectionOnlyAssemblyResolve event).)
-				using (Stream stream = asm.GetManifestResourceStream("ikvm.exports"))
-				{
-					BinaryReader rdr = new BinaryReader(stream);
-					int assemblyCount = rdr.ReadInt32();
-					for (int i = 0; i < assemblyCount; i++)
-					{
-						AssemblyName name = new AssemblyName(rdr.ReadString());
-						int typeCount = rdr.ReadInt32();
-						if (typeCount > 0)
-						{
-							for (int j = 0; j < typeCount; j++)
-							{
-								rdr.ReadInt32();
-							}
-							try
-							{
-								Assembly.ReflectionOnlyLoadFrom(asm.CodeBase + "/../" + name.Name + ".dll");
-							}
-							catch
-							{
-							}
-						}
-					}
-				}
-			}
-#endif
 			return asm;
 		}
 
@@ -3229,8 +3081,7 @@ namespace IKVM.Internal
 	class CompilerOptions
 	{
 		internal string path;
-		internal string keyfilename;
-		internal string keycontainer;
+		internal StrongNameKeyPair key;
 		internal string version;
 		internal string fileversion;
 		internal bool targetIsModule;
