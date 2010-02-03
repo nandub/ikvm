@@ -23,7 +23,7 @@
 */
 using System;
 using System.Collections.Generic;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
@@ -2185,7 +2185,7 @@ sealed class Compiler
 						ilGenerator.Emit(OpCodes.Ldstr, wrapper.Name);
 						ilGenerator.Emit(OpCodes.Call, ByteCodeHelperMethods.DynamicNewCheckOnly);
 					}
-					else if(wrapper != clazz)
+					else if(wrapper != clazz && RequiresExplicitClassInit(wrapper, i + 1))
 					{
 						// trigger cctor (as the spec requires)
 						wrapper.EmitRunClassConstructor(ilGenerator);
@@ -3053,6 +3053,27 @@ sealed class Compiler
 					break;
 			}
 		}
+	}
+
+	private bool RequiresExplicitClassInit(TypeWrapper tw, int index)
+	{
+		ClassFile.Method.Instruction[] code = m.Instructions;
+		for (; index < code.Length; index++)
+		{
+			if (code[index].NormalizedOpCode == NormalizedByteCode.__invokespecial)
+			{
+				ClassFile.ConstantPoolItemMI cpi = classFile.GetMethodref(code[index].Arg1);
+				MethodWrapper mw = cpi.GetMethodForInvokespecial();
+				return mw.Name != StringConstants.INIT || mw.DeclaringType != tw;
+			}
+			if (code[index].IsBranchTarget
+				|| ByteCodeMetaData.IsBranch(code[index].NormalizedOpCode)
+				|| ByteCodeMetaData.CanThrowException(code[index].NormalizedOpCode))
+			{
+				break;
+			}
+		}
+		return true;
 	}
 
 	private MethodInfo GetInvokeSpecialStub(MethodWrapper method)
