@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002-2009 Jeroen Frijters
+  Copyright (C) 2002-2010 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -517,11 +517,17 @@ class IkvmcCompiler
 				}
 				else if(s.StartsWith("-keyfile:"))
 				{
-					options.keyfilename = s.Substring(9);
+					if (!SetStrongNameKeyPair(ref options.key, s.Substring(9), true))
+					{
+						return 1;
+					}
 				}
 				else if(s.StartsWith("-key:"))
 				{
-					options.keycontainer = s.Substring(5);
+					if (!SetStrongNameKeyPair(ref options.key, s.Substring(5), false))
+					{
+						return 1;
+					}
 				}
 				else if(s == "-debug")
 				{
@@ -712,6 +718,28 @@ class IkvmcCompiler
 		options.classesToExclude = classesToExclude.ToArray();
 		targets.Add(options);
 		return 0;
+	}
+
+	private static bool SetStrongNameKeyPair(ref StrongNameKeyPair strongNameKeyPair, string fileNameOrKeyContainer, bool file)
+	{
+		try
+		{
+			if (file)
+			{
+				strongNameKeyPair = new StrongNameKeyPair(File.ReadAllBytes(fileNameOrKeyContainer));
+			}
+			else
+			{
+				strongNameKeyPair = new StrongNameKeyPair(fileNameOrKeyContainer);
+			}
+			// FXBUG we explicitly try to access the public key force a check (the StrongNameKeyPair constructor doesn't validate the key)
+			return strongNameKeyPair.PublicKey != null;
+		}
+		catch (Exception x)
+		{
+			Console.Error.WriteLine("Error: Invalid key {0} specified.\n\t(\"{1}\")", file ? "file" : "container", x.Message);
+			return false;
+		}
 	}
 
 	private static int ResolveReferences(List<CompilerOptions> targets)
@@ -1012,7 +1040,9 @@ class IkvmcCompiler
 				string pathFilter = Path.GetDirectoryName(file) + Path.DirectorySeparatorChar;
 				string fileFilter = "^" + Regex.Escape(Path.GetFileName(file)).Replace("\\*", ".*").Replace("\\?", ".") + "$";
 				ProcessZipFile(path, delegate(ZipEntry ze) {
-					return (Path.GetDirectoryName(ze.Name) + Path.DirectorySeparatorChar).StartsWith(pathFilter)
+					// MONOBUG Path.GetDirectoryName() doesn't normalize / to \ on Windows
+					string name = ze.Name.Replace('/', Path.DirectorySeparatorChar);
+					return (Path.GetDirectoryName(name) + Path.DirectorySeparatorChar).StartsWith(pathFilter)
 						&& Regex.IsMatch(Path.GetFileName(ze.Name), fileFilter);
 				});
 				return;
@@ -1050,7 +1080,9 @@ class IkvmcCompiler
 	{
 		try
 		{
-			return System.Reflection.Assembly.ReflectionOnlyLoad(asm.FullName).Location == asm.Location;
+			// we have to use StringComparison.OrdinalIgnoreCase, because it the CLR sometimes appends ".dll"
+			// and other times ".DLL" (when the assembly is loaded from DEVPATH)
+			return System.Reflection.Assembly.ReflectionOnlyLoad(asm.FullName).Location.Equals(asm.Location, StringComparison.OrdinalIgnoreCase);
 		}
 		catch
 		{
@@ -1077,22 +1109,33 @@ class IkvmcCompiler
 		}
 		else
 		{
-			Assembly asm = null;
 			// apply unification and policy
 			try
 			{
 				string name = System.Reflection.Assembly.ReflectionOnlyLoad(args.Name).FullName;
 				if (name != args.Name)
 				{
-					asm = StaticCompiler.Load(name);
+					return StaticCompiler.Load(name);
 				}
 			}
 			catch
 			{
 			}
-			if (asm != null)
+			// HACK support loading additional assemblies from a multi assembly group from the same location as the main assembly
+			Type main = args.RequestingAssembly.GetType("__<MainAssembly>");
+			if (main != null)
 			{
-				return asm;
+				try
+				{
+					string path = Path.Combine(Path.GetDirectoryName(main.Assembly.Location), new AssemblyName(args.Name).Name + ".dll");
+					if (AssemblyName.GetAssemblyName(path).FullName == args.Name)
+					{
+						return StaticCompiler.LoadFile(path);
+					}
+				}
+				catch
+				{
+				}
 			}
 		}
 		Console.Error.WriteLine("Error: unable to find assembly '{0}'", args.Name);
