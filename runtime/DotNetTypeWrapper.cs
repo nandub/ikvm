@@ -23,7 +23,7 @@
 */
 using System;
 using System.Collections.Generic;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
@@ -132,7 +132,7 @@ namespace IKVM.Internal
 					//   class Base<T> { } 
 					//   class Derived : Base<Derived> { }
 					//
-					while (ClassLoaderWrapper.IsVector(t))
+					while (ReflectUtil.IsVector(t))
 					{
 						t = t.GetElementType();
 						sb.Append('A');
@@ -464,20 +464,6 @@ namespace IKVM.Internal
 #if STATIC_COMPILER || STUB_GENERATOR
 				this.fakeType = FakeTypes.GetEnumType(enumType);
 #elif !FIRST_PASS
-				if (enumType.Assembly.ReflectionOnly)
-				{
-					TypeWrapper decl = ClassLoaderWrapper.GetWrapperFromType(enumType);
-					TypeWrapperFactory factory = ClassLoaderWrapper.GetBootstrapClassLoader().GetTypeWrapperFactory();
-					string basename = "<ReflectionOnlyType>" + enumType.FullName;
-					name = basename;
-					int index = 0;
-					while (!factory.ReserveName(name))
-					{
-						name = basename + (++index);
-					}
-					enumType = factory.ModuleBuilder.DefineEnum(name, TypeAttributes.Public, typeof(int)).CreateType();
-					ClassLoaderWrapper.GetBootstrapClassLoader().SetWrapperForType(enumType, decl);
-				}
 				this.fakeType = typeof(ikvm.@internal.EnumEnum<>).MakeGenericType(enumType);
 #endif
 			}
@@ -710,7 +696,7 @@ namespace IKVM.Internal
 			private static bool IsSupportedType(Type type)
 			{
 				// Java annotations only support one-dimensional arrays
-				if (type.IsArray)
+				if (ReflectUtil.IsVector(type))
 				{
 					type = type.GetElementType();
 				}
@@ -856,7 +842,7 @@ namespace IKVM.Internal
 						}
 						throw new InvalidOperationException();
 					}
-					else if (!isArray && type.IsArray)
+					else if (!isArray && ReflectUtil.IsVector(type))
 					{
 						return MapType(type.GetElementType(), true).MakeArrayType(1);
 					}
@@ -1458,8 +1444,9 @@ namespace IKVM.Internal
 					}
 					if (type.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
 					{
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER
 						tb.__AddDeclarativeSecurity(MakeCustomAttributeBuilder(loader, annotation));
+#elif STUB_GENERATOR
 #else
 						SecurityAction action;
 						PermissionSet permSet;
@@ -1479,8 +1466,9 @@ namespace IKVM.Internal
 				{
 					if (type.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
 					{
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER
 						cb.__AddDeclarativeSecurity(MakeCustomAttributeBuilder(loader, annotation));
+#elif STUB_GENERATOR
 #else
 						SecurityAction action;
 						PermissionSet permSet;
@@ -1500,8 +1488,9 @@ namespace IKVM.Internal
 				{
 					if (type.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
 					{
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER
 						mb.__AddDeclarativeSecurity(MakeCustomAttributeBuilder(loader, annotation));
+#elif STUB_GENERATOR
 #else
 						SecurityAction action;
 						PermissionSet permSet;
@@ -1554,7 +1543,7 @@ namespace IKVM.Internal
 				{
 					if (type.IsSubclassOf(JVM.Import(typeof(SecurityAttribute))))
 					{
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER
 						ab.__AddDeclarativeSecurity(MakeCustomAttributeBuilder(loader, annotation));
 #endif
 					}
@@ -2550,11 +2539,6 @@ namespace IKVM.Internal
 #if !STATIC_COMPILER && !STUB_GENERATOR
 		internal override object[] GetDeclaredAnnotations()
 		{
-			if (type.Assembly.ReflectionOnly)
-			{
-				// TODO on Whidbey this must be implemented
-				return null;
-			}
 			return type.GetCustomAttributes(false);
 		}
 
@@ -2563,11 +2547,6 @@ namespace IKVM.Internal
 			FieldInfo fi = fw.GetField();
 			if (fi == null)
 			{
-				return null;
-			}
-			if (fi.DeclaringType.Assembly.ReflectionOnly)
-			{
-				// TODO on Whidbey this must be implemented
 				return null;
 			}
 			return fi.GetCustomAttributes(false);
@@ -2580,11 +2559,6 @@ namespace IKVM.Internal
 			{
 				return null;
 			}
-			if (mb.DeclaringType.Assembly.ReflectionOnly)
-			{
-				// TODO on Whidbey this must be implemented
-				return null;
-			}
 			return mb.GetCustomAttributes(false);
 		}
 
@@ -2593,11 +2567,6 @@ namespace IKVM.Internal
 			MethodBase mb = mw.GetMethod();
 			if (mb == null)
 			{
-				return null;
-			}
-			if (mb.DeclaringType.Assembly.ReflectionOnly)
-			{
-				// TODO on Whidbey this must be implemented
 				return null;
 			}
 			ParameterInfo[] parameters = mb.GetParameters();
