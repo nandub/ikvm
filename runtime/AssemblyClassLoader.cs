@@ -29,7 +29,7 @@ using System.Threading;
 using System.Runtime.CompilerServices;
 using FormatterServices = System.Runtime.Serialization.FormatterServices;
 using IKVM.Attributes;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using Type = IKVM.Reflection.Type;
 #else
@@ -44,7 +44,6 @@ namespace IKVM.Internal
 		private AssemblyLoader assemblyLoader;
 		private string[] references;
 		private AssemblyClassLoader[] delegates;
-		private bool isReflectionOnly;
 #if !STATIC_COMPILER && !STUB_GENERATOR
 		private Thread initializerThread;
 		private int initializerRecursion;
@@ -352,7 +351,6 @@ namespace IKVM.Internal
 		{
 			this.assemblyLoader = new AssemblyLoader(assembly);
 			this.references = fixedReferences;
-			this.isReflectionOnly = assembly.ReflectionOnly;
 		}
 
 		private void DoInitializeExports()
@@ -480,14 +478,7 @@ namespace IKVM.Internal
 					return StaticCompiler.Load(name);
 				}
 #else
-				if (isReflectionOnly)
-				{
-					return Assembly.ReflectionOnlyLoad(name);
-				}
-				else
-				{
-					return Assembly.Load(name);
-				}
+				return Assembly.Load(name);
 #endif
 			}
 			catch
@@ -932,7 +923,6 @@ namespace IKVM.Internal
 		private void InitializeJavaClassLoader()
 		{
 			Assembly assembly = assemblyLoader.Assembly;
-			if (!assembly.ReflectionOnly)
 			{
 				Type customClassLoaderClass = null;
 				LoadCustomClassLoaderRedirects();
@@ -990,7 +980,7 @@ namespace IKVM.Internal
 						// right object to use later on.
 						// Note that creating the unitialized instance will (unfortunately) trigger the static initializer. The static initializer can
 						// trigger a call to getClassLoader(), which means we can end up here recursively.
-						java.lang.ClassLoader newJavaClassLoader = (java.lang.ClassLoader)FormatterServices.GetUninitializedObject(customClassLoaderClass);
+						java.lang.ClassLoader newJavaClassLoader = (java.lang.ClassLoader)GetUninitializedObject(customClassLoaderClass);
 						if (javaClassLoader == null) // check if we weren't invoked recursively and the nested invocation already did the work
 						{
 							javaClassLoader = newJavaClassLoader;
@@ -1015,6 +1005,12 @@ namespace IKVM.Internal
 				javaClassLoader = (java.lang.ClassLoader)DoPrivileged(new CreateAssemblyClassLoader(assembly));
 				SetWrapperForClassLoader(javaClassLoader, this);
 			}
+		}
+
+		// separate method to avoid LinkDemand killing the caller
+		private static object GetUninitializedObject(Type type)
+		{
+			return FormatterServices.GetUninitializedObject(type);
 		}
 
 		private static void LoadCustomClassLoaderRedirects()
