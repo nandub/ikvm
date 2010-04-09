@@ -22,7 +22,7 @@
   
 */
 using System;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
@@ -662,21 +662,6 @@ namespace IKVM.Internal
 					// the class loader is trying to trick us
 					return null;
 				}
-#if CLASSGC
-				// FXBUG because the AppDomain.TypeResolve event still doesn't work across assemblies
-				// (at least as of .NET 4.0 beta 1), we eagerly finish types loaded by another class loader
-				if(type.GetClassLoader() != this)
-				{
-					try
-					{
-						type.Finish();
-					}
-					catch(RetargetableJavaException x)
-					{
-						throw x.ToJava();
-					}
-				}
-#endif
 				return type;
 			}
 			catch(java.lang.ClassNotFoundException x)
@@ -950,12 +935,12 @@ namespace IKVM.Internal
 			{
 				wrapper = LoadClassCritical(remapped);
 			}
-			else if(IsVector(type))
+			else if(ReflectUtil.IsVector(type))
 			{
 				// it might be an array of a dynamically compiled Java type
 				int rank = 1;
 				Type elem = type.GetElementType();
-				while(IsVector(elem))
+				while(ReflectUtil.IsVector(elem))
 				{
 					rank++;
 					elem = elem.GetElementType();
@@ -973,6 +958,13 @@ namespace IKVM.Internal
 					{
 						return loader.typeToTypeWrapper[type];
 					}
+				}
+#endif
+#if !STATIC_COMPILER && !STUB_GENERATOR
+				if(ReflectUtil.IsReflectionOnly(type))
+				{
+					// historically we've always returned null for types that don't have a corresponding TypeWrapper (or java.lang.Class)
+					return null;
 				}
 #endif
 				// if the wrapper doesn't already exist, that must mean that the type
@@ -993,14 +985,6 @@ namespace IKVM.Internal
 				globalTypeToTypeWrapper[type] = wrapper;
 			}
 			return wrapper;
-		}
-
-		internal static bool IsVector(Type type)
-		{
-			// NOTE it looks like there's no API to distinguish an array of rank 1 from a vector,
-			// so we check if the type name ends in [], which indicates it's a vector
-			// (non-vectors will have [*] or [,]).
-			return type.IsArray && type.Name.EndsWith("[]");
 		}
 
 		internal virtual Type GetGenericTypeDefinition(string name)
