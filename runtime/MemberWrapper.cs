@@ -23,7 +23,7 @@
 */
 using System;
 using System.Collections.Generic;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
@@ -62,6 +62,7 @@ namespace IKVM.Internal
 		private string name;
 		private string sig;
 
+		[System.Security.SecurityCritical]
 		private sealed class HandleWrapper
 		{
 			internal readonly IntPtr Value;
@@ -102,6 +103,7 @@ namespace IKVM.Internal
 
 		internal IntPtr Cookie
 		{
+			[System.Security.SecurityCritical]
 			get
 			{
 				lock(this)
@@ -115,6 +117,7 @@ namespace IKVM.Internal
 			}
 		}
 
+		[System.Security.SecurityCritical]
 		internal static MemberWrapper FromCookieImpl(IntPtr cookie)
 		{
 			return (MemberWrapper)GCHandle.FromIntPtr(cookie).Target;
@@ -597,6 +600,7 @@ namespace IKVM.Internal
 		}
 #endif // !STATIC_COMPILER && !STUB_GENERATOR
 
+		[System.Security.SecurityCritical]
 		internal static MethodWrapper FromCookie(IntPtr cookie)
 		{
 			return (MethodWrapper)FromCookieImpl(cookie);
@@ -1224,28 +1228,16 @@ namespace IKVM.Internal
 		internal object GetConstant()
 		{
 			AssertLinked();
-			// only pritimives and string can be literals in Java (because the other "primitives" (like uint),
+			// only primitives and string can be literals in Java (because the other "primitives" (like uint),
 			// are treated as NonPrimitiveValueTypes)
-			if(field != null && (fieldType.IsPrimitive || fieldType == CoreClasses.java.lang.String.Wrapper))
+			if(field != null && field.IsLiteral && (fieldType.IsPrimitive || fieldType == CoreClasses.java.lang.String.Wrapper))
 			{
-				object val = null;
-				if(field.IsLiteral)
+				object val = field.GetRawConstantValue();
+				if(field.FieldType.IsEnum)
 				{
-					val = field.GetRawConstantValue();
-					if(field.FieldType.IsEnum)
-					{
-						val = EnumHelper.GetPrimitiveValue(EnumHelper.GetUnderlyingType(field.FieldType), val);
-					}
+					val = EnumHelper.GetPrimitiveValue(EnumHelper.GetUnderlyingType(field.FieldType), val);
 				}
-				else
-				{
-					// NOTE instance fields can also be "constant" and we round trip this information to make the Japi results look
-					// nice (but otherwise this has no practical value), but note that this only works when the code is compiled
-					// with -strictfieldfieldsemantics (because the ConstantValueAttribute is on the field and when we're a GetterFieldWrapper
-					// we don't have access to the corresponding field).
-					val = AttributeHelper.GetConstantValue(field);
-				}
-				if(val != null && !(val is string))
+				if(fieldType.IsPrimitive)
 				{
 					return JVM.Box(val);
 				}
@@ -1302,6 +1294,7 @@ namespace IKVM.Internal
 		}
 #endif // !STATIC_COMPILER && !STUB_GENERATOR
 
+		[System.Security.SecurityCritical]
 		internal static FieldWrapper FromCookie(IntPtr cookie)
 		{
 			return (FieldWrapper)FromCookieImpl(cookie);
