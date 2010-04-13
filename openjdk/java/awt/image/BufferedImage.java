@@ -632,7 +632,9 @@ public class BufferedImage extends java.awt.Image
     }
 
     /**
-     * Convert a Java WritableRaster to a .NET Bitmap if needed.
+     * This Implementation of BufferedImage has 2 different Buffer, 
+     * a Java WritableRaster and a .NET Bitmap.
+     * This method convert a Java WritableRaster to a .NET Bitmap if needed.
      */
     private void raster2Bitmap(){
         if(currentBuffer != BUFFER_RASTER){
@@ -642,48 +644,45 @@ public class BufferedImage extends java.awt.Image
         int height = getHeight();
         
         // First map the pixel from Java type to .NET type
-        PixelFormat format;
         switch (getType()){
             case TYPE_INT_ARGB:
-                format = PixelFormat.wrap( PixelFormat.Format32bppArgb );
+                bitmap = copyToBitmap(width, height, ((DataBufferInt)raster.getDataBuffer()).getData());
                 break;
             default:{
                 bitmap = new cli.System.Drawing.Bitmap(width, height, PixelFormat.wrap( PixelFormat.Format32bppArgb ));
                 for( int y = 0; y<height; y++){
                     for(int x = 0; x<width; x++){
-                        int rgb = getRGB(x, y);
+                        int rgb = colorModel.getRGB(raster.getDataElements(x, y, null));
                         bitmap.SetPixel(x, y, cli.System.Drawing.Color.FromArgb(rgb));
                     }
                 }
-                return;
             }   
         }
-
-        // Create a .NET BufferedImage (alias Bitmap)
-        bitmap = new cli.System.Drawing.Bitmap(width, height, format);
-
-        // Request the .NET pixel pointer
-        cli.System.Drawing.Rectangle rec = new cli.System.Drawing.Rectangle(0, 0, width, height);
-        cli.System.Drawing.Imaging.BitmapData data = bitmap.LockBits(rec, ImageLockMode.wrap(ImageLockMode.WriteOnly), format);
-        cli.System.IntPtr pixelPtr = data.get_Scan0();
-
-        // Request the pixel data from Java and copy it to .NET
-        switch (getType()){
-            case TYPE_INT_ARGB:{
-                int[] pixelData = ((DataBufferInt)raster.getDataBuffer()).getData();
-                cli.System.Runtime.InteropServices.Marshal.Copy(pixelData, 0, pixelPtr, pixelData.length);
-                break;
-            }
-            default:
-                throw new Error("Not Implemented BufferedImage Type:" + getType());
-        }
-
-        bitmap.UnlockBits(data);
         this.currentBuffer = BUFFER_BOTH;
+        return;
+    }
+
+    @cli.System.Security.SecuritySafeCriticalAttribute.Annotation
+    private static cli.System.Drawing.Bitmap copyToBitmap(int width, int height, int[] pixelData)
+    {
+        long size = (long)width * (long)height;
+        if (width <= 0 || height <= 0 || size < pixelData.length)
+        {
+            throw new IllegalArgumentException();
+        }
+        cli.System.Drawing.Bitmap bitmap = new cli.System.Drawing.Bitmap(width, height, PixelFormat.wrap(PixelFormat.Format32bppArgb));
+        cli.System.Drawing.Rectangle rect = new cli.System.Drawing.Rectangle(0, 0, width, height);
+        cli.System.Drawing.Imaging.BitmapData data = bitmap.LockBits(rect, ImageLockMode.wrap(ImageLockMode.WriteOnly), PixelFormat.wrap(PixelFormat.Format32bppArgb));
+        cli.System.IntPtr pixelPtr = data.get_Scan0();
+        cli.System.Runtime.InteropServices.Marshal.Copy(pixelData, 0, pixelPtr, pixelData.length);
+        bitmap.UnlockBits(data);
+        return bitmap;
     }
 
     /**
-     * Convert the .NET Bitmap object to Java WritableRaster.
+     * This Implementation of BufferedImage has 2 different Buffer, 
+     * a Java WritableRaster and a .NET Bitmap.
+     * This method convert the .NET Bitmap object to Java WritableRaster.
      */
     private void bitmap2Raster(){
         if(currentBuffer != BUFFER_BITMAP){
@@ -698,17 +697,36 @@ public class BufferedImage extends java.awt.Image
             raster = createRaster(width, height);
         }
         
-        // Request the .NET pixel pointer
-        cli.System.Drawing.Rectangle rec = new cli.System.Drawing.Rectangle(0, 0, width, height);
-        cli.System.Drawing.Imaging.BitmapData data = bitmap.LockBits(rec, ImageLockMode.wrap(ImageLockMode.ReadOnly), PixelFormat.wrap( PixelFormat.Format32bppArgb ));
-        cli.System.IntPtr pixelPtr = data.get_Scan0();
-        
-        // Request the pixel data from .NET and copy it to Java
-        int[] pixelData = ((DataBufferInt)raster.getDataBuffer()).getData();
-        cli.System.Runtime.InteropServices.Marshal.Copy(pixelPtr, pixelData, 0, pixelData.length);
-        
-        bitmap.UnlockBits(data);
+        switch (getType()){
+            case TYPE_INT_ARGB:
+                copyFromBitmap(bitmap, ((DataBufferInt)raster.getDataBuffer()).getData());
+                break;
+            default:
+                for( int y = 0; y<height; y++){
+                    for(int x = 0; x<width; x++){
+                    	int rgb = bitmap.GetPixel(x, y).ToArgb();
+                    	raster.setDataElements(x, y, colorModel.getDataElements(rgb, null));
+                    }
+                }
+        }
         this.currentBuffer = BUFFER_BOTH;
+    }
+
+    @cli.System.Security.SecuritySafeCriticalAttribute.Annotation
+    private static void copyFromBitmap(cli.System.Drawing.Bitmap bitmap, int[] pixelData)
+    {
+        int width = bitmap.get_Width();
+        int height = bitmap.get_Height();
+        long size = (long)width * (long)height;
+        if (width <= 0 || height <= 0 || pixelData.length < size)
+        {
+            throw new IllegalArgumentException();
+        }
+        cli.System.Drawing.Rectangle rect = new cli.System.Drawing.Rectangle(0, 0, width, height);
+        cli.System.Drawing.Imaging.BitmapData data = bitmap.LockBits(rect, ImageLockMode.wrap(ImageLockMode.ReadOnly), PixelFormat.wrap(PixelFormat.Format32bppArgb));
+        cli.System.IntPtr pixelPtr = data.get_Scan0();
+        cli.System.Runtime.InteropServices.Marshal.Copy(pixelPtr, pixelData, 0, (int)size);        
+        bitmap.UnlockBits(data);
     }
 
     /**
@@ -743,20 +761,17 @@ public class BufferedImage extends java.awt.Image
             case TYPE_3BYTE_BGR: {
                 ColorSpace cs = ColorSpace.getInstance(ColorSpace.CS_sRGB);
                 int[] nBits = {8, 8, 8};
-                int[] bOffs = {2, 1, 0};
                 return new ComponentColorModel(cs, nBits, false, false, Transparency.OPAQUE, DataBuffer.TYPE_BYTE);
             }
             case TYPE_4BYTE_ABGR: {
                 ColorSpace cs = ColorSpace.getInstance(ColorSpace.CS_sRGB);
                 int[] nBits = {8, 8, 8, 8};
-                int[] bOffs = {3, 2, 1, 0};
                 return new ComponentColorModel(cs, nBits, true, false, Transparency.TRANSLUCENT,
                         DataBuffer.TYPE_BYTE);
             }
             case TYPE_4BYTE_ABGR_PRE: {
                 ColorSpace cs = ColorSpace.getInstance(ColorSpace.CS_sRGB);
                 int[] nBits = {8, 8, 8, 8};
-                int[] bOffs = {3, 2, 1, 0};
                 return new ComponentColorModel(cs, nBits, true, true, Transparency.TRANSLUCENT,
                         DataBuffer.TYPE_BYTE);
             }
@@ -1232,7 +1247,9 @@ public class BufferedImage extends java.awt.Image
      */
     public Graphics2D createGraphics() {
         ikvm.awt.IkvmToolkit toolkit = (ikvm.awt.IkvmToolkit)java.awt.Toolkit.getDefaultToolkit();
-        return toolkit.createGraphics( getBitmap() );
+        raster2Bitmap();
+        this.currentBuffer = BUFFER_BITMAP;
+        return toolkit.createGraphics( bitmap );
     }
 
     /**
