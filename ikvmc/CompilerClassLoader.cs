@@ -49,9 +49,6 @@ namespace IKVM.Internal
 		private string assemblyName;
 		private string assemblyFile;
 		private string assemblyDir;
-		private string keyfilename;
-		private string keycontainer;
-		private string version;
 		private bool targetIsModule;
 		private AssemblyBuilder assemblyBuilder;
 		private IKVM.Internal.MapXml.Attribute[] assemblyAttributes;
@@ -75,7 +72,7 @@ namespace IKVM.Internal
 		private List<ClassLoaderWrapper> internalsVisibleTo = new List<ClassLoaderWrapper>();
 		private List<TypeWrapper> dynamicallyImportedTypes = new List<TypeWrapper>();
 
-		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, string keyfilename, string keycontainer, string version, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
+		internal CompilerClassLoader(AssemblyClassLoader[] referencedAssemblies, CompilerOptions options, string path, bool targetIsModule, string assemblyName, Dictionary<string, byte[]> classes)
 			: base(options.codegenoptions, null)
 		{
 			this.referencedAssemblies = referencedAssemblies;
@@ -86,9 +83,6 @@ namespace IKVM.Internal
 			this.assemblyFile = assemblyPath.Name;
 			this.assemblyDir = assemblyPath.DirectoryName;
 			this.targetIsModule = targetIsModule;
-			this.version = version;
-			this.keyfilename = keyfilename;
-			this.keycontainer = keycontainer;
 			Tracer.Info(Tracer.Compiler, "Instantiate CompilerClassLoader for {0}", assemblyName);
 		}
 
@@ -145,15 +139,8 @@ namespace IKVM.Internal
 		{
 			AssemblyName name = new AssemblyName();
 			name.Name = assemblyName;
-			if(keyfilename != null) 
-			{
-				name.KeyPair = new StrongNameKeyPair(File.ReadAllBytes(keyfilename));
-			}
-			if(keycontainer != null)
-			{
-				name.KeyPair = new StrongNameKeyPair(keycontainer);
-			}
-			name.Version = new Version(version);
+			name.KeyPair = options.key;
+			name.Version = options.version;
 			assemblyBuilder = 
 				StaticCompiler.Universe
 					.DefineDynamicAssembly(name, AssemblyBuilderAccess.ReflectionOnly, assemblyDir);
@@ -2714,7 +2701,7 @@ namespace IKVM.Internal
 			{
 				referencedAssemblies[i] = AssemblyClassLoader.FromAssembly(references[i]);
 			}
-			loader = new CompilerClassLoader(referencedAssemblies, options, options.path, options.keyfilename, options.keycontainer, options.version, options.targetIsModule, options.assembly, h);
+			loader = new CompilerClassLoader(referencedAssemblies, options, options.path, options.targetIsModule, options.assembly, h);
 			loader.baseClasses = baseClasses;
 			loader.assemblyAnnotations = assemblyAnnotations;
 			loader.classesToCompile = new List<string>(h.Keys);
@@ -2776,7 +2763,7 @@ namespace IKVM.Internal
 				loader.AddReference(AssemblyClassLoader.FromAssembly(JVM.CoreAssembly));
 			}
 
-			if((options.keycontainer != null || options.keyfilename != null) && !allReferencesAreStrongNamed)
+			if(options.key != null && !allReferencesAreStrongNamed)
 			{
 				Console.Error.WriteLine("Error: all referenced assemblies must be strong named, to be able to sign the output assembly");
 				return 1;
@@ -3092,9 +3079,8 @@ namespace IKVM.Internal
 	class CompilerOptions
 	{
 		internal string path;
-		internal string keyfilename;
-		internal string keycontainer;
-		internal string version;
+		internal StrongNameKeyPair key;
+		internal Version version;
 		internal string fileversion;
 		internal bool targetIsModule;
 		internal string assembly;
