@@ -23,7 +23,7 @@
 */
 using System;
 using System.Threading;
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 using IKVM.Reflection;
 using Type = IKVM.Reflection.Type;
 #else
@@ -86,11 +86,9 @@ namespace IKVM.Internal
 	static class JVM
 	{
 #if STATIC_COMPILER
-		internal const bool IsStaticCompiler = true;
 		internal const bool FinishingForDebugSave = false;
 		internal const bool IsSaveDebugImage = false;
 #elif !STUB_GENERATOR
-		internal const bool IsStaticCompiler = false;
 		private static bool finishingForDebugSave;
 		private static int emitSymbols;
 		internal static bool IsSaveDebugImage;
@@ -297,7 +295,7 @@ namespace IKVM.Internal
 			}
 		}
 
-#if IKVM_REF_EMIT
+#if STATIC_COMPILER || STUB_GENERATOR
 		internal static Type LoadType(System.Type type)
 		{
 			return StaticCompiler.GetRuntimeType(type.FullName);
@@ -460,15 +458,6 @@ namespace IKVM.Internal
 			return StaticCompiler.Universe.Import(type);
 #else
 			return type;
-#endif
-		}
-
-		internal static Type GetType(string typeName, bool throwOnError)
-		{
-#if STATIC_COMPILER || STUB_GENERATOR
-			return StaticCompiler.Universe.GetType(typeName, throwOnError);
-#else
-			return Type.GetType(typeName, throwOnError);
 #endif
 		}
 	}
