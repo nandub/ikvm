@@ -77,6 +77,7 @@ static class ByteCodeHelperMethods
 	internal static readonly MethodInfo volatileReadLong;
 	internal static readonly MethodInfo volatileWriteDouble;
 	internal static readonly MethodInfo volatileWriteLong;
+	internal static readonly MethodInfo mapException;
 
 	static ByteCodeHelperMethods()
 	{
@@ -120,6 +121,7 @@ static class ByteCodeHelperMethods
 		volatileReadLong = typeofByteCodeHelper.GetMethod("VolatileRead", new Type[] { Types.Int64.MakeByRefType() });
 		volatileWriteDouble = typeofByteCodeHelper.GetMethod("VolatileWrite", new Type[] { Types.Double.MakeByRefType(), Types.Double });
 		volatileWriteLong = typeofByteCodeHelper.GetMethod("VolatileWrite", new Type[] { Types.Int64.MakeByRefType(), Types.Int64 });
+		mapException = typeofByteCodeHelper.GetMethod("MapException");
 	}
 }
 
@@ -1306,34 +1308,22 @@ sealed class Compiler
 					BranchCookie bc = new BranchCookie(this, 1, exc.handlerIndex);
 					prevBlock.AddExitHack(bc);
 					Instruction handlerInstr = code[handlerIndex];
-					bool unusedException = mapSafe && (handlerInstr.NormalizedOpCode == NormalizedByteCode.__pop ||
+					bool unusedException = (handlerInstr.NormalizedOpCode == NormalizedByteCode.__pop ||
 						(handlerInstr.NormalizedOpCode == NormalizedByteCode.__astore &&
 						ma.GetLocalVar(handlerIndex) == null));
-					// special case for catch(Throwable) (and finally), that produces less code and
-					// should be faster
-					if(mapSafe || exceptionTypeWrapper == java_lang_Throwable)
+					if(mapSafe && unusedException)
 					{
-						if(unusedException)
-						{
-							// we must still have an item on the stack, even though it isn't used!
-							bc.dh.SetType(0, VerifierTypeWrapper.Null);
-						}
-						else
-						{
-							if(mapSafe)
-							{
-								ilGenerator.Emit(OpCodes.Dup);
-							}
-							ilGenerator.Emit(remap ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
-							ilGenerator.Emit(OpCodes.Call, mapExceptionFastMethod);
-							if(mapSafe)
-							{
-								ilGenerator.Emit(OpCodes.Pop);
-							}
-							bc.dh.SetType(0, exceptionTypeWrapper);
-							bc.dh.Store(0);
-						}
-						ilGenerator.Emit(OpCodes.Leave, bc.Stub);
+						// we don't need to do anything with the exception
+					}
+					else if(mapSafe)
+					{
+						ilGenerator.LazyEmitLdc_I4(1);
+						ilGenerator.Emit(OpCodes.Call, ByteCodeHelperMethods.mapException.MakeGenericMethod(excType));
+					}
+					else if(exceptionTypeWrapper == java_lang_Throwable)
+					{
+						ilGenerator.LazyEmitLdc_I4(0);
+						ilGenerator.Emit(OpCodes.Call, ByteCodeHelperMethods.mapException.MakeGenericMethod(Types.Exception));
 					}
 					else
 					{
@@ -1348,29 +1338,29 @@ sealed class Compiler
 						}
 						else
 						{
-							ilGenerator.Emit(OpCodes.Ldtoken, excType);
-							ilGenerator.Emit(OpCodes.Call, getTypeFromHandleMethod);
-							ilGenerator.Emit(remap ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
-							ilGenerator.Emit(OpCodes.Call, mapExceptionMethod);
-							ilGenerator.Emit(OpCodes.Castclass, excType);
+							ilGenerator.LazyEmitLdc_I4(remap ? 0 : 1);
+							ilGenerator.Emit(OpCodes.Call, ByteCodeHelperMethods.mapException.MakeGenericMethod(excType));
 						}
-						if(unusedException)
+						if(!unusedException)
 						{
-							// we must still have an item on the stack, even though it isn't used!
-							bc.dh.SetType(0, VerifierTypeWrapper.Null);
-						}
-						else
-						{
-							bc.dh.SetType(0, exceptionTypeWrapper);
 							ilGenerator.Emit(OpCodes.Dup);
-							bc.dh.Store(0);
 						}
-						CodeEmitterLabel rethrow = ilGenerator.DefineLabel();
-						ilGenerator.Emit(OpCodes.Brfalse, rethrow);
-						ilGenerator.Emit(OpCodes.Leave, bc.Stub);
-						ilGenerator.MarkLabel(rethrow);
+						CodeEmitterLabel leave = ilGenerator.DefineLabel();
+						ilGenerator.Emit(OpCodes.Brtrue_S, leave);
 						ilGenerator.Emit(OpCodes.Rethrow);
+						ilGenerator.MarkLabel(leave);
 					}
+					if(unusedException)
+					{
+						// we must still have an item on the stack, even though it isn't used!
+						bc.dh.SetType(0, VerifierTypeWrapper.Null);
+					}
+					else
+					{
+						bc.dh.SetType(0, exceptionTypeWrapper);
+						bc.dh.Store(0);
+					}
+					ilGenerator.Emit(OpCodes.Leave, bc.Stub);
 					ilGenerator.EndExceptionBlockNoFallThrough();
 				}
 				prevBlock.LeaveStubs(block);
@@ -2185,7 +2175,7 @@ sealed class Compiler
 						ilGenerator.Emit(OpCodes.Ldstr, wrapper.Name);
 						ilGenerator.Emit(OpCodes.Call, ByteCodeHelperMethods.DynamicNewCheckOnly);
 					}
-					else if(wrapper != clazz)
+					else if(wrapper != clazz && RequiresExplicitClassInit(wrapper, i + 1))
 					{
 						// trigger cctor (as the spec requires)
 						wrapper.EmitRunClassConstructor(ilGenerator);
@@ -3053,6 +3043,27 @@ sealed class Compiler
 					break;
 			}
 		}
+	}
+
+	private bool RequiresExplicitClassInit(TypeWrapper tw, int index)
+	{
+		ClassFile.Method.Instruction[] code = m.Instructions;
+		for (; index < code.Length; index++)
+		{
+			if (code[index].NormalizedOpCode == NormalizedByteCode.__invokespecial)
+			{
+				ClassFile.ConstantPoolItemMI cpi = classFile.GetMethodref(code[index].Arg1);
+				MethodWrapper mw = cpi.GetMethodForInvokespecial();
+				return mw.Name != StringConstants.INIT || mw.DeclaringType != tw;
+			}
+			if (code[index].IsBranchTarget
+				|| ByteCodeMetaData.IsBranch(code[index].NormalizedOpCode)
+				|| ByteCodeMetaData.CanThrowException(code[index].NormalizedOpCode))
+			{
+				break;
+			}
+		}
+		return true;
 	}
 
 	private MethodInfo GetInvokeSpecialStub(MethodWrapper method)
