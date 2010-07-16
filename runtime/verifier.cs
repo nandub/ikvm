@@ -25,6 +25,12 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Diagnostics;
+#if STATIC_COMPILER
+using IKVM.Reflection.Emit;
+using Type = IKVM.Reflection.Type;
+#else
+using System.Reflection.Emit;
+#endif
 using IKVM.Internal;
 using InstructionFlags = IKVM.Internal.ClassFile.Method.InstructionFlags;
 using ExceptionTableEntry = IKVM.Internal.ClassFile.Method.ExceptionTableEntry;
@@ -105,6 +111,7 @@ class InstructionState
 	private int stackSize;
 	private int stackEnd;
 	private TypeWrapper[] locals;
+	private LocalStoreSites[] localStoreSites;
 	private bool unitializedThis;
 	internal bool changed = true;
 	private enum ShareFlags : byte
@@ -112,17 +119,19 @@ class InstructionState
 		None = 0,
 		Stack = 1,
 		Locals = 2,
-		All = Stack | Locals
+		LocalStoreSites = 4,
+		All = Stack | Locals | LocalStoreSites
 	}
 	private ShareFlags flags;
 
-	private InstructionState(TypeWrapper[] stack, int stackSize, int stackEnd, TypeWrapper[] locals, bool unitializedThis)
+	private InstructionState(TypeWrapper[] stack, int stackSize, int stackEnd, TypeWrapper[] locals, LocalStoreSites[] localStoreSites, bool unitializedThis)
 	{
 		this.flags = ShareFlags.All;
 		this.stack = stack;
 		this.stackSize = stackSize;
 		this.stackEnd = stackEnd;
 		this.locals = locals;
+		this.localStoreSites = localStoreSites;
 		this.unitializedThis = unitializedThis;
 	}
 
@@ -132,11 +141,12 @@ class InstructionState
 		this.stack = new TypeWrapper[maxStack];
 		this.stackEnd = maxStack;
 		this.locals = new TypeWrapper[maxLocals];
+		this.localStoreSites = new LocalStoreSites[maxLocals];
 	}
 
 	internal InstructionState Copy()
 	{
-		return new InstructionState(stack, stackSize, stackEnd, locals, unitializedThis);
+		return new InstructionState(stack, stackSize, stackEnd, locals, localStoreSites, unitializedThis);
 	}
 
 	internal void CopyTo(InstructionState target)
@@ -146,13 +156,14 @@ class InstructionState
 		target.stackSize = stackSize;
 		target.stackEnd = stackEnd;
 		target.locals = locals;
+		target.localStoreSites = localStoreSites;
 		target.unitializedThis = unitializedThis;
 		target.changed = true;
 	}
 
 	internal InstructionState CopyLocals()
 	{
-		InstructionState copy = new InstructionState(new TypeWrapper[stack.Length], 0, stack.Length, locals, unitializedThis);
+		InstructionState copy = new InstructionState(new TypeWrapper[stack.Length], 0, stack.Length, locals, localStoreSites, unitializedThis);
 		copy.flags &= ~ShareFlags.Stack;
 		return copy;
 	}
@@ -222,11 +233,20 @@ class InstructionState
 		{
 			TypeWrapper type = s.locals[i];
 			TypeWrapper type2 = s2.locals[i];
+			LocalStoreSites storeSites = s.localStoreSites[i];
+			LocalStoreSites storeSites2 = s2.localStoreSites[i];
 			TypeWrapper baseType = InstructionState.FindCommonBaseType(type, type2);
 			if(type != baseType)
 			{
 				s.LocalsCopyOnWrite();
 				s.locals[i] = baseType;
+				s.changed = true;
+			}
+			storeSites = MergeStoreSites(storeSites, storeSites2);
+			if(storeSites.Count != s.localStoreSites[i].Count)
+			{
+				s.LocalStoreSitesCopyOnWrite();
+				s.localStoreSites[i] = storeSites;
 				s.changed = true;
 			}
 		}
@@ -437,9 +457,16 @@ class InstructionState
 		}
 	}
 
-	internal void GetLocalInt(int index)
+	private void SetLocalStoreSite(int localIndex, int instructionIndex)
 	{
-		if(GetLocalType(index) != PrimitiveTypeWrapper.INT)
+		LocalStoreSitesCopyOnWrite();
+		localStoreSites[localIndex] = LocalStoreSites.Alloc();
+		localStoreSites[localIndex].Add(instructionIndex);
+	}
+
+	internal void GetLocalInt(int index, ref Dictionary<int, string> readers)
+	{
+		if(GetLocalType(index, ref readers) != PrimitiveTypeWrapper.INT)
 		{
 			throw new VerifyError("Invalid local type");
 		}
@@ -448,11 +475,12 @@ class InstructionState
 	internal void SetLocalInt(int index, int instructionIndex)
 	{
 		SetLocal1(index, PrimitiveTypeWrapper.INT);
+		SetLocalStoreSite(index, instructionIndex);
 	}
 
-	internal void GetLocalLong(int index)
+	internal void GetLocalLong(int index, ref Dictionary<int, string> readers)
 	{
-		if(GetLocalType(index) != PrimitiveTypeWrapper.LONG)
+		if(GetLocalType(index, ref readers) != PrimitiveTypeWrapper.LONG)
 		{
 			throw new VerifyError("incorrect local type, not long");
 		}
@@ -461,11 +489,12 @@ class InstructionState
 	internal void SetLocalLong(int index, int instructionIndex)
 	{
 		SetLocal2(index, PrimitiveTypeWrapper.LONG);
+		SetLocalStoreSite(index, instructionIndex);
 	}
 
-	internal void GetLocalFloat(int index)
+	internal void GetLocalFloat(int index, ref Dictionary<int, string> readers)
 	{
-		if(GetLocalType(index) != PrimitiveTypeWrapper.FLOAT)
+		if(GetLocalType(index, ref readers) != PrimitiveTypeWrapper.FLOAT)
 		{
 			throw new VerifyError("incorrect local type, not float");
 		}
@@ -474,11 +503,12 @@ class InstructionState
 	internal void SetLocalFloat(int index, int instructionIndex)
 	{
 		SetLocal1(index, PrimitiveTypeWrapper.FLOAT);
+		SetLocalStoreSite(index, instructionIndex);
 	}
 
-	internal void GetLocalDouble(int index)
+	internal void GetLocalDouble(int index, ref Dictionary<int, string> readers)
 	{
-		if(GetLocalType(index) != PrimitiveTypeWrapper.DOUBLE)
+		if(GetLocalType(index, ref readers) != PrimitiveTypeWrapper.DOUBLE)
 		{
 			throw new VerifyError("incorrect local type, not double");
 		}
@@ -487,12 +517,21 @@ class InstructionState
 	internal void SetLocalDouble(int index, int instructionIndex)
 	{
 		SetLocal2(index, PrimitiveTypeWrapper.DOUBLE);
+		SetLocalStoreSite(index, instructionIndex);
 	}
 
-	internal TypeWrapper GetLocalType(int index)
+	internal TypeWrapper GetLocalType(int index, ref Dictionary<int, string> readers)
 	{
 		try
 		{
+			if(readers == null)
+			{
+				readers = new Dictionary<int,string>();
+			}
+			for(int i = 0; i < localStoreSites[index].Count; i++)
+			{
+				readers[localStoreSites[index][i]] = "";
+			}
 			return locals[index];
 		}
 		catch(IndexOutOfRangeException)
@@ -519,6 +558,7 @@ class InstructionState
 		{
 			SetLocal1(index, type);
 		}
+		SetLocalStoreSite(index, instructionIndex);
 	}
 
 	internal void PushType(TypeWrapper type)
@@ -769,6 +809,7 @@ class InstructionState
 		{
 			if(locals[i] == type)
 			{
+				SetLocalStoreSite(i, instructionIndex);
 				LocalsCopyOnWrite();
 				locals[i] = initType;
 			}
@@ -798,6 +839,16 @@ class InstructionState
 		{
 			flags &= ~ShareFlags.Locals;
 			locals = (TypeWrapper[])locals.Clone();
+		}
+	}
+
+	private void LocalStoreSitesCopyOnWrite()
+	{
+		if((flags & ShareFlags.LocalStoreSites) != 0)
+		{
+			flags &= ~ShareFlags.LocalStoreSites;
+			LocalStoreSites.MarkShared(localStoreSites);
+			localStoreSites = (LocalStoreSites[])localStoreSites.Clone();
 		}
 	}
 
@@ -1017,6 +1068,42 @@ struct StackState
 	}
 }
 
+class LocalVar
+{
+	internal bool isArg;
+	internal int local;
+	internal TypeWrapper type;
+	internal LocalBuilder builder;
+	// used to emit debugging info, only available if ClassLoaderWrapper.EmitDebugInfo is true
+	internal string name;
+	internal int start_pc;
+	internal int end_pc;
+
+	internal void FindLvtEntry(ClassFile.Method method, int instructionIndex)
+	{
+		ClassFile.Method.LocalVariableTableEntry[] lvt = method.LocalVariableTableAttribute;
+		if(lvt != null)
+		{
+			int pc = method.Instructions[instructionIndex].PC;
+			int nextPC = method.Instructions[instructionIndex + 1].PC;
+			bool isStore = MethodAnalyzer.IsStoreLocal(method.Instructions[instructionIndex].NormalizedOpCode);
+			foreach(ClassFile.Method.LocalVariableTableEntry e in lvt)
+			{
+				// TODO validate the contents of the LVT entry
+				if(e.index == local &&
+					(e.start_pc <= pc || (e.start_pc == nextPC && isStore)) && 
+					e.start_pc + e.length > pc)
+				{
+					name = e.name;
+					start_pc = e.start_pc;
+					end_pc = e.start_pc + e.length;
+					break;
+				}
+			}
+		}
+	}
+}
+
 sealed class ExceptionSorter : IComparer<ExceptionTableEntry>
 {
 	public int Compare(ExceptionTableEntry e1, ExceptionTableEntry e2)
@@ -1062,6 +1149,9 @@ class MethodAnalyzer
 	private ClassFile classFile;
 	private ClassFile.Method method;
 	private InstructionState[] state;
+	private LocalVar[/*instructionIndex*/] localVars;
+	private LocalVar[/*instructionIndex*/][/*localIndex*/] invokespecialLocalVars;
+	private LocalVar[/*index*/] allLocalVars;
 	private List<string> errorMessages;
 	private ExceptionTableEntry[] exceptions;
 
@@ -1088,6 +1178,8 @@ class MethodAnalyzer
 		this.classFile = classFile;
 		this.method = method;
 		state = new InstructionState[method.Instructions.Length];
+
+		Dictionary<int,string>[] localStoreReaders = new Dictionary<int,string>[method.Instructions.Length];
 
 		// HACK because types have to have identity, the new types are cached here
 		Dictionary<int, TypeWrapper> newTypes = new Dictionary<int,TypeWrapper>();
@@ -1150,17 +1242,19 @@ class MethodAnalyzer
 				firstNonArgLocalIndex++;
 			}
 		}
-		AnalyzeTypeFlow(wrapper, thisType, mw, newTypes, faultTypes);
+		AnalyzeTypeFlow(wrapper, thisType, mw, localStoreReaders, newTypes, faultTypes);
 		exceptions = UntangleExceptionBlocks(classFile, method.ExceptionTable);
 		OptimizationPass(wrapper, classLoader);
 		FinalCodePatchup(wrapper, mw);
 		if (AnalyzePotentialFaultBlocks())
 		{
-			AnalyzeTypeFlow(wrapper, thisType, mw, newTypes, faultTypes);
+			AnalyzeTypeFlow(wrapper, thisType, mw, localStoreReaders, newTypes, faultTypes);
 		}
+		AnalyzeLocalVariables(localStoreReaders, classLoader);
+		ComputePartialReachability(0, true);
 	}
 
-	private void AnalyzeTypeFlow(TypeWrapper wrapper, TypeWrapper thisType, MethodWrapper mw, Dictionary<int, TypeWrapper> newTypes, Dictionary<int, TypeWrapper> faultTypes)
+	private void AnalyzeTypeFlow(TypeWrapper wrapper, TypeWrapper thisType, MethodWrapper mw, Dictionary<int, string>[] localStoreReaders, Dictionary<int, TypeWrapper> newTypes, Dictionary<int, TypeWrapper> faultTypes)
 	{
 		InstructionState s = new InstructionState(method.MaxLocals, method.MaxStack);
 		bool done = false;
@@ -1210,7 +1304,7 @@ class MethodAnalyzer
 						{
 							case NormalizedByteCode.__aload:
 							{
-								TypeWrapper type = s.GetLocalType(instr.NormalizedArg1);
+								TypeWrapper type = s.GetLocalType(instr.NormalizedArg1, ref localStoreReaders[i]);
 								if(type == VerifierTypeWrapper.Invalid || type.IsPrimitive)
 								{
 									throw new VerifyError("Object reference expected");
@@ -1392,7 +1486,6 @@ class MethodAnalyzer
 								s.PopObjectType();
 								break;
 							case NormalizedByteCode.__getstatic:
-							case NormalizedByteCode.__dynamic_getstatic:
 								// special support for when we're being called from IsSideEffectFreeStaticInitializer
 								if(mw == null)
 								{
@@ -1435,7 +1528,6 @@ class MethodAnalyzer
 								}
 								break;
 							case NormalizedByteCode.__putstatic:
-							case NormalizedByteCode.__dynamic_putstatic:
 								// special support for when we're being called from IsSideEffectFreeStaticInitializer
 								if(mw == null)
 								{
@@ -1474,7 +1566,6 @@ class MethodAnalyzer
 								}
 								break;
 							case NormalizedByteCode.__getfield:
-							case NormalizedByteCode.__dynamic_getfield:
 							{
 								s.PopObjectType(GetFieldref(instr.Arg1).GetClassType());
 								ClassFile.ConstantPoolItemFieldref cpi = GetFieldref(instr.Arg1);
@@ -1489,7 +1580,6 @@ class MethodAnalyzer
 								break;
 							}
 							case NormalizedByteCode.__putfield:
-							case NormalizedByteCode.__dynamic_putfield:
 								s.PopType(GetFieldref(instr.Arg1).GetFieldType());
 								// putfield is allowed to access the unintialized this
 								if(s.PeekType() == VerifierTypeWrapper.UninitializedThis
@@ -1540,15 +1630,10 @@ class MethodAnalyzer
 							case NormalizedByteCode.__invokespecial:
 							case NormalizedByteCode.__invokeinterface:
 							case NormalizedByteCode.__invokestatic:
-							case NormalizedByteCode.__dynamic_invokevirtual:
-							case NormalizedByteCode.__dynamic_invokespecial:
-							case NormalizedByteCode.__dynamic_invokeinterface:
-							case NormalizedByteCode.__dynamic_invokestatic:
 							{
 								ClassFile.ConstantPoolItemMI cpi = GetMethodref(instr.Arg1);
 								s.MultiPopAnyType(cpi.GetArgTypes().Length);
-								if(instr.NormalizedOpCode != NormalizedByteCode.__invokestatic
-									&& instr.NormalizedOpCode != NormalizedByteCode.__dynamic_invokestatic)
+								if(instr.NormalizedOpCode != NormalizedByteCode.__invokestatic)
 								{
 									TypeWrapper type = s.PopType();
 									if(ReferenceEquals(cpi.Name, StringConstants.INIT))
@@ -1603,7 +1688,7 @@ class MethodAnalyzer
 								s.SetLocalInt(instr.NormalizedArg1, i);
 								break;
 							case NormalizedByteCode.__iload:
-								s.GetLocalInt(instr.NormalizedArg1);
+								s.GetLocalInt(instr.NormalizedArg1, ref localStoreReaders[i]);
 								s.PushInt();
 								break;
 							case NormalizedByteCode.__ineg:
@@ -1965,7 +2050,7 @@ class MethodAnalyzer
 								}
 								break;
 							case NormalizedByteCode.__fload:
-								s.GetLocalFloat(instr.NormalizedArg1);
+								s.GetLocalFloat(instr.NormalizedArg1, ref localStoreReaders[i]);
 								s.PushFloat();
 								break;
 							case NormalizedByteCode.__fstore:
@@ -1974,7 +2059,7 @@ class MethodAnalyzer
 								s.SetLocalFloat(instr.NormalizedArg1, i);
 								break;
 							case NormalizedByteCode.__dload:
-								s.GetLocalDouble(instr.NormalizedArg1);
+								s.GetLocalDouble(instr.NormalizedArg1, ref localStoreReaders[i]);
 								s.PushDouble();
 								break;
 							case NormalizedByteCode.__dstore:
@@ -1983,7 +2068,7 @@ class MethodAnalyzer
 								s.SetLocalDouble(instr.NormalizedArg1, i);
 								break;
 							case NormalizedByteCode.__lload:
-								s.GetLocalLong(instr.NormalizedArg1);
+								s.GetLocalLong(instr.NormalizedArg1, ref localStoreReaders[i]);
 								s.PushLong();
 								break;
 							case NormalizedByteCode.__lstore:
@@ -2029,7 +2114,7 @@ class MethodAnalyzer
 								s.PushInt();
 								break;
 							case NormalizedByteCode.__iinc:
-								s.GetLocalInt(instr.Arg1);
+								s.GetLocalInt(instr.Arg1, ref localStoreReaders[i]);
 								break;
 							case NormalizedByteCode.__athrow:
 								if (VerifierTypeWrapper.IsFaultBlockException(s.PeekType()))
@@ -2122,30 +2207,51 @@ class MethodAnalyzer
 						}
 						try
 						{
-							switch(ByteCodeMetaData.GetFlowControl(instr.NormalizedOpCode))
+							// another big switch to handle the opcode targets
+							switch(instr.NormalizedOpCode)
 							{
-								case ByteCodeFlowControl.Switch:
+								case NormalizedByteCode.__tableswitch:
+								case NormalizedByteCode.__lookupswitch:
 									for(int j = 0; j < instr.SwitchEntryCount; j++)
 									{
 										state[instr.GetSwitchTargetIndex(j)] += s;
 									}
 									state[instr.DefaultTarget] += s;
 									break;
-								case ByteCodeFlowControl.CondBranch:
+								case NormalizedByteCode.__ifeq:
+								case NormalizedByteCode.__ifne:
+								case NormalizedByteCode.__iflt:
+								case NormalizedByteCode.__ifge:
+								case NormalizedByteCode.__ifgt:
+								case NormalizedByteCode.__ifle:
+								case NormalizedByteCode.__if_icmpeq:
+								case NormalizedByteCode.__if_icmpne:
+								case NormalizedByteCode.__if_icmplt:
+								case NormalizedByteCode.__if_icmpge:
+								case NormalizedByteCode.__if_icmpgt:
+								case NormalizedByteCode.__if_icmple:
+								case NormalizedByteCode.__if_acmpeq:
+								case NormalizedByteCode.__if_acmpne:
+								case NormalizedByteCode.__ifnull:
+								case NormalizedByteCode.__ifnonnull:
 									state[i + 1] += s;
 									state[instr.TargetIndex] += s;
 									break;
-								case ByteCodeFlowControl.Branch:
+								case NormalizedByteCode.__goto:
 									state[instr.TargetIndex] += s;
 									break;
-								case ByteCodeFlowControl.Return:
-								case ByteCodeFlowControl.Throw:
-									break;
-								case ByteCodeFlowControl.Next:
-									state[i + 1] += s;
+								case NormalizedByteCode.__ireturn:
+								case NormalizedByteCode.__lreturn:
+								case NormalizedByteCode.__freturn:
+								case NormalizedByteCode.__dreturn:
+								case NormalizedByteCode.__areturn:
+								case NormalizedByteCode.__return:
+								case NormalizedByteCode.__athrow:
+								case NormalizedByteCode.__static_error:
 									break;
 								default:
-									throw new InvalidOperationException();
+									state[i + 1] += s;
+									break;
 							}
 						}
 						catch(IndexOutOfRangeException)
@@ -2372,9 +2478,10 @@ class MethodAnalyzer
 							break;
 					}
 					// verify backward branches
-					switch(ByteCodeMetaData.GetFlowControl(instructions[i].NormalizedOpCode))
+					switch(instructions[i].NormalizedOpCode)
 					{
-						case ByteCodeFlowControl.Switch:
+						case NormalizedByteCode.__tableswitch:
+						case NormalizedByteCode.__lookupswitch:
 						{
 							bool hasbackbranch = false;
 							for(int j = 0; j < instructions[i].SwitchEntryCount; j++)
@@ -2390,8 +2497,30 @@ class MethodAnalyzer
 							}
 							break;
 						}
-						case ByteCodeFlowControl.Branch:
-						case ByteCodeFlowControl.CondBranch:
+						case NormalizedByteCode.__goto:
+							if(instructions[i].TargetIndex < i)
+							{
+								// backward branches cannot have uninitialized objects on
+								// the stack or in local variables
+								state[i].CheckUninitializedObjRefs();
+							}
+							break;
+						case NormalizedByteCode.__ifeq:
+						case NormalizedByteCode.__ifne:
+						case NormalizedByteCode.__iflt:
+						case NormalizedByteCode.__ifge:
+						case NormalizedByteCode.__ifgt:
+						case NormalizedByteCode.__ifle:
+						case NormalizedByteCode.__if_icmpeq:
+						case NormalizedByteCode.__if_icmpne:
+						case NormalizedByteCode.__if_icmplt:
+						case NormalizedByteCode.__if_icmpge:
+						case NormalizedByteCode.__if_icmpgt:
+						case NormalizedByteCode.__if_icmple:
+						case NormalizedByteCode.__if_acmpeq:
+						case NormalizedByteCode.__if_acmpne:
+						case NormalizedByteCode.__ifnull:
+						case NormalizedByteCode.__ifnonnull:
 							if(instructions[i].TargetIndex < i)
 							{
 								// backward branches cannot have uninitialized objects on
@@ -2433,9 +2562,10 @@ class MethodAnalyzer
 						}
 					}
 					// mark the successor instructions
-					switch (ByteCodeMetaData.GetFlowControl(instructions[i].NormalizedOpCode))
+					switch (instructions[i].NormalizedOpCode)
 					{
-						case ByteCodeFlowControl.Switch:
+						case NormalizedByteCode.__tableswitch:
+						case NormalizedByteCode.__lookupswitch:
 							{
 								for (int j = 0; j < instructions[i].SwitchEntryCount; j++)
 								{
@@ -2444,26 +2574,171 @@ class MethodAnalyzer
 								flags[instructions[i].DefaultTarget] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 								break;
 							}
-						case ByteCodeFlowControl.Branch:
+						case NormalizedByteCode.__goto:
 							flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 							break;
-						case ByteCodeFlowControl.CondBranch:
+						case NormalizedByteCode.__ifeq:
+						case NormalizedByteCode.__ifne:
+						case NormalizedByteCode.__iflt:
+						case NormalizedByteCode.__ifge:
+						case NormalizedByteCode.__ifgt:
+						case NormalizedByteCode.__ifle:
+						case NormalizedByteCode.__if_icmpeq:
+						case NormalizedByteCode.__if_icmpne:
+						case NormalizedByteCode.__if_icmplt:
+						case NormalizedByteCode.__if_icmpge:
+						case NormalizedByteCode.__if_icmpgt:
+						case NormalizedByteCode.__if_icmple:
+						case NormalizedByteCode.__if_acmpeq:
+						case NormalizedByteCode.__if_acmpne:
+						case NormalizedByteCode.__ifnull:
+						case NormalizedByteCode.__ifnonnull:
 							flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 							flags[i + 1] |= InstructionFlags.Reachable;
 							break;
-						case ByteCodeFlowControl.Return:
-						case ByteCodeFlowControl.Throw:
-							break;
-						case ByteCodeFlowControl.Next:
-							flags[i + 1] |= InstructionFlags.Reachable;
+						case NormalizedByteCode.__ireturn:
+						case NormalizedByteCode.__lreturn:
+						case NormalizedByteCode.__freturn:
+						case NormalizedByteCode.__dreturn:
+						case NormalizedByteCode.__areturn:
+						case NormalizedByteCode.__return:
+						case NormalizedByteCode.__athrow:
+						case NormalizedByteCode.__athrow_no_unmap:
+						case NormalizedByteCode.__static_error:
 							break;
 						default:
-							throw new InvalidOperationException();
+							flags[i + 1] |= InstructionFlags.Reachable;
+							break;
 					}
 				}
 			}
 		}
 		return flags;
+	}
+
+	private void AnalyzeLocalVariables(Dictionary<int, string>[] localStoreReaders, ClassLoaderWrapper classLoader)
+	{
+		// now that we've done the code flow analysis, we can do a liveness analysis on the local variables
+		ClassFile.Method.Instruction[] instructions = method.Instructions;
+		Dictionary<long, LocalVar> localByStoreSite = new Dictionary<long, LocalVar>();
+		List<LocalVar> locals = new List<LocalVar>();
+		for(int i = 0; i < localStoreReaders.Length; i++)
+		{
+			if(localStoreReaders[i] != null)
+			{
+				VisitLocalLoads(locals, localByStoreSite, localStoreReaders[i], i, classLoader.EmitDebugInfo);
+			}
+		}
+		Dictionary<LocalVar, LocalVar> forwarders = new Dictionary<LocalVar,LocalVar>();
+		if(classLoader.EmitDebugInfo)
+		{
+			InstructionFlags[] flags = ComputePartialReachability(0, false);
+			// if we're emitting debug info, we need to keep dead stores as well...
+			for(int i = 0; i < instructions.Length; i++)
+			{
+				if((flags[i] & InstructionFlags.Reachable) != 0
+					&& IsStoreLocal(instructions[i].NormalizedOpCode))
+				{
+					if(!localByStoreSite.ContainsKey(MakeKey(i, instructions[i].NormalizedArg1)))
+					{
+						LocalVar v = new LocalVar();
+						v.local = instructions[i].NormalizedArg1;
+						v.type = GetStackTypeWrapper(i, 0);
+						v.FindLvtEntry(method, i);
+						locals.Add(v);
+						localByStoreSite.Add(MakeKey(i, v.local), v);
+					}
+				}
+			}
+			// to make the debugging experience better, we have to trust the
+			// LocalVariableTable (unless it's clearly bogus) and merge locals
+			// together that are the same according to the LVT
+			for(int i = 0; i < locals.Count - 1; i++)
+			{
+				for(int j = i + 1; j < locals.Count; j++)
+				{
+					LocalVar v1 = (LocalVar)locals[i];
+					LocalVar v2 = (LocalVar)locals[j];
+					if(v1.name != null && v1.name == v2.name && v1.start_pc == v2.start_pc && v1.end_pc == v2.end_pc)
+					{
+						// we can only merge if the resulting type is valid (this protects against incorrect
+						// LVT data, but is also needed for constructors, where the uninitialized this is a different
+						// type from the initialized this)
+						TypeWrapper tw = InstructionState.FindCommonBaseType(v1.type, v2.type);
+						if(tw != VerifierTypeWrapper.Invalid)
+						{
+							v1.isArg |= v2.isArg;
+							v1.type = tw;
+							forwarders.Add(v2, v1);
+							locals.RemoveAt(j);
+							j--;
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			for(int i = 0; i < locals.Count - 1; i++)
+			{
+				for(int j = i + 1; j < locals.Count; j++)
+				{
+					LocalVar v1 = (LocalVar)locals[i];
+					LocalVar v2 = (LocalVar)locals[j];
+					// if the two locals are the same, we merge them, this is a small
+					// optimization, it should *not* be required for correctness.
+					if(v1.local == v2.local && v1.type == v2.type)
+					{
+						v1.isArg |= v2.isArg;
+						forwarders.Add(v2, v1);
+						locals.RemoveAt(j);
+						j--;
+					}
+				}
+			}
+		}
+		invokespecialLocalVars = new LocalVar[instructions.Length][];
+		localVars = new LocalVar[instructions.Length];
+		for(int i = 0; i < localVars.Length; i++)
+		{
+			LocalVar v = null;
+			if(localStoreReaders[i] != null)
+			{
+				Debug.Assert(IsLoadLocal(instructions[i].NormalizedOpCode));
+				// lame way to look up the local variable for a load
+				// (by indirecting through a corresponding store)
+				foreach(int store in localStoreReaders[i].Keys)
+				{
+					v = localByStoreSite[MakeKey(store, instructions[i].NormalizedArg1)];
+					break;
+				}
+			}
+			else
+			{
+				if(instructions[i].NormalizedOpCode == NormalizedByteCode.__invokespecial)
+				{
+					invokespecialLocalVars[i] = new LocalVar[method.MaxLocals];
+					for(int j = 0; j < invokespecialLocalVars[i].Length; j++)
+					{
+						localByStoreSite.TryGetValue(MakeKey(i, j), out invokespecialLocalVars[i][j]);
+					}
+				}
+				else
+				{
+					localByStoreSite.TryGetValue(MakeKey(i, instructions[i].NormalizedArg1), out v);
+				}
+			}
+			if(v != null)
+			{
+				LocalVar fwd;
+				if(forwarders.TryGetValue(v, out fwd))
+				{
+					v = fwd;
+				}
+				localVars[i] = v;
+			}
+		}
+		this.allLocalVars = locals.ToArray();
 	}
 
 	private ExceptionTableEntry[] UntangleExceptionBlocks(ClassFile classFile, ExceptionTableEntry[] exceptionTable)
@@ -3255,7 +3530,154 @@ class MethodAnalyzer
 		return null;
 	}
 
-	internal ClassFile.ConstantPoolItemMI GetMethodref(int index)
+	private static bool IsLoadLocal(NormalizedByteCode bc)
+	{
+		return bc == NormalizedByteCode.__aload ||
+			bc == NormalizedByteCode.__iload ||
+			bc == NormalizedByteCode.__lload ||
+			bc == NormalizedByteCode.__fload ||
+			bc == NormalizedByteCode.__dload ||
+			bc == NormalizedByteCode.__iinc ||
+			bc == NormalizedByteCode.__ret;
+	}
+
+	internal static bool IsStoreLocal(NormalizedByteCode bc)
+	{
+		return bc == NormalizedByteCode.__astore ||
+			bc == NormalizedByteCode.__istore ||
+			bc == NormalizedByteCode.__lstore ||
+			bc == NormalizedByteCode.__fstore ||
+			bc == NormalizedByteCode.__dstore ||
+			bc == NormalizedByteCode.__fstore_conv ||
+			bc == NormalizedByteCode.__dstore_conv;
+	}
+
+	private void VisitLocalLoads(List<LocalVar> locals, Dictionary<long, LocalVar> localByStoreSite, Dictionary<int, string> storeSites, int instructionIndex, bool debug)
+	{
+		Debug.Assert(IsLoadLocal(method.Instructions[instructionIndex].NormalizedOpCode));
+		LocalVar local = null;
+		TypeWrapper type = VerifierTypeWrapper.Null;
+		int localIndex = method.Instructions[instructionIndex].NormalizedArg1;
+		bool isArg = false;
+		foreach(int store in storeSites.Keys)
+		{
+			if(store == -1)
+			{
+				// it's a method argument, it has no initial store, but the type is simply the parameter type
+				type = InstructionState.FindCommonBaseType(type, state[0].GetLocalTypeEx(localIndex));
+				isArg = true;
+			}
+			else
+			{
+				if(method.Instructions[store].NormalizedOpCode == NormalizedByteCode.__invokespecial)
+				{
+					type = InstructionState.FindCommonBaseType(type, GetLocalTypeWrapper(store + 1, localIndex));
+				}
+				else if(method.Instructions[store].NormalizedOpCode == NormalizedByteCode.__static_error)
+				{
+					// it's an __invokespecial that turned into a __static_error
+					// (since a __static_error doesn't continue, we don't need to set type)
+				}
+				else
+				{
+					Debug.Assert(IsStoreLocal(method.Instructions[store].NormalizedOpCode));
+					type = InstructionState.FindCommonBaseType(type, GetStackTypeWrapper(store, 0));
+				}
+			}
+			// we can't have an invalid type, because that would have failed verification earlier
+			Debug.Assert(type != VerifierTypeWrapper.Invalid);
+
+			LocalVar l;
+			if(localByStoreSite.TryGetValue(MakeKey(store, localIndex), out l))
+			{
+				if(local == null)
+				{
+					local = l;
+				}
+				else if(local != l)
+				{
+					// If we've already defined a LocalVar and we find another one, then we merge them
+					// together.
+					// This happens for the following code fragment:
+					//
+					// int i = -1;
+					// try { i = 0; for(; ; ) System.out.println(i); } catch(Exception x) {}
+					// try { i = 0; for(; ; ) System.out.println(i); } catch(Exception x) {}
+					// System.out.println(i);
+					//
+					local = MergeLocals(locals, localByStoreSite, local, l);
+				}
+			}
+		}
+		if(local == null)
+		{
+			local = new LocalVar();
+			local.local = localIndex;
+			if(VerifierTypeWrapper.IsThis(type))
+			{
+				local.type = ((VerifierTypeWrapper)type).UnderlyingType;
+			}
+			else
+			{
+				local.type = type;
+			}
+			local.isArg = isArg;
+			if(debug)
+			{
+				local.FindLvtEntry(method, instructionIndex);
+			}
+			locals.Add(local);
+		}
+		else
+		{
+			local.isArg |= isArg;
+			local.type = InstructionState.FindCommonBaseType(local.type, type);
+			Debug.Assert(local.type != VerifierTypeWrapper.Invalid);
+		}
+		foreach(int store in storeSites.Keys)
+		{
+			LocalVar v;
+			if(!localByStoreSite.TryGetValue(MakeKey(store, localIndex), out v))
+			{
+				localByStoreSite[MakeKey(store, localIndex)] = local;
+			}
+			else if(v != local)
+			{
+				local = MergeLocals(locals, localByStoreSite, local, v);
+			}
+		}
+	}
+
+	private static long MakeKey(int i, int j)
+	{
+		return (((long)(uint)i) << 32) + (uint)j;
+	}
+
+	private static LocalVar MergeLocals(List<LocalVar> locals, Dictionary<long, LocalVar> localByStoreSite, LocalVar l1, LocalVar l2)
+	{
+		Debug.Assert(l1 != l2);
+		Debug.Assert(l1.local == l2.local);
+		for(int i = 0; i < locals.Count; i++)
+		{
+			if(locals[i] == l2)
+			{
+				locals.RemoveAt(i);
+				i--;
+			}
+		}
+		Dictionary<long, LocalVar> temp = new Dictionary<long,LocalVar>(localByStoreSite);
+		localByStoreSite.Clear();
+		foreach(KeyValuePair<long, LocalVar> kv in temp)
+		{
+			localByStoreSite[kv.Key] = kv.Value == l2 ? l1 : kv.Value;
+		}
+		l1.isArg |= l2.isArg;
+		l1.type = InstructionState.FindCommonBaseType(l1.type, l2.type);
+		Debug.Assert(l1.type != VerifierTypeWrapper.Invalid);
+		return l1;
+	}
+
+	private ClassFile.ConstantPoolItemMI GetMethodref(int index)
 	{
 		try
 		{
@@ -3355,6 +3777,23 @@ class MethodAnalyzer
 	internal TypeWrapper GetLocalTypeWrapper(int index, int local)
 	{
 		return state[index].GetLocalTypeEx(local);
+	}
+
+	// NOTE for dead stores, this returns null
+	internal LocalVar GetLocalVar(int instructionIndex)
+	{
+		return localVars[instructionIndex];
+	}
+
+	internal LocalVar[] GetLocalVarsForInvokeSpecial(int instructionIndex)
+	{
+		Debug.Assert(method.Instructions[instructionIndex].NormalizedOpCode == NormalizedByteCode.__invokespecial);
+		return invokespecialLocalVars[instructionIndex];
+	}
+
+	internal LocalVar[] GetAllLocalVars()
+	{
+		return allLocalVars;
 	}
 
 	internal void ClearFaultBlockException(int instructionIndex)

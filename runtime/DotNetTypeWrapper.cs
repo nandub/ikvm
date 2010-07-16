@@ -2429,7 +2429,7 @@ namespace IKVM.Internal
 					Type outer = type.DeclaringType;
 					if (outer != null && !type.IsGenericType)
 					{
-						outerClass = GetWrapperFromDotNetType(outer);
+						outerClass = ClassLoaderWrapper.GetWrapperFromType(outer);
 					}
 				}
 				return outerClass;

@@ -264,7 +264,7 @@ namespace IKVM.Internal
 			GetAttributeArgsAndTypes(loader, attr, out argTypes, out args);
 			if(attr.Type != null)
 			{
-				Type t = StaticCompiler.GetTypeForMapXml(loader, attr.Type);
+				Type t = StaticCompiler.GetType(loader, attr.Type);
 				isDeclarativeSecurity = t.IsSubclassOf(Types.SecurityAttribute);
 				ConstructorInfo ci = t.GetConstructor(argTypes);
 				if(ci == null)
@@ -540,7 +540,7 @@ namespace IKVM.Internal
 		internal static bool IsHideFromJava(Type type)
 		{
 			return type.IsDefined(typeofHideFromJavaAttribute, false)
-				|| (type.IsNested && (type.DeclaringType.IsDefined(typeofHideFromJavaAttribute, false) || type.Name.StartsWith("__<", StringComparison.Ordinal)));
+				|| (type.IsNested && type.Name.StartsWith("__<", StringComparison.Ordinal));
 		}
 
 		internal static bool IsHideFromJava(MemberInfo mi)
@@ -554,10 +554,6 @@ namespace IKVM.Internal
 			}
 			MethodBase mb = mi as MethodBase;
 			if(mb != null && (mb.Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.PrivateScope)
-			{
-				return true;
-			}
-			if (mi.Name.StartsWith("__<", StringComparison.Ordinal))
 			{
 				return true;
 			}
@@ -1828,7 +1824,7 @@ namespace IKVM.Internal
 						}
 					}
 #if __MonoCS__
-					SetTypeWrapperHack(clazz, this);
+					SetTypeWrapperHack(ref clazz.typeWrapper, this);
 #else
 					clazz.typeWrapper = this;
 #endif
@@ -1841,11 +1837,9 @@ namespace IKVM.Internal
 
 #if __MonoCS__
 		// MONOBUG this method is to work around an mcs bug
-		internal static void SetTypeWrapperHack(object clazz, TypeWrapper type)
+		internal static void SetTypeWrapperHack<T>(ref T field, TypeWrapper type)
 		{
-#if !FIRST_PASS
-			typeof(java.lang.Class).GetField("typeWrapper", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(clazz, type);
-#endif
+			field = (T)(object)type;
 		}
 #endif
 
@@ -1893,7 +1887,7 @@ namespace IKVM.Internal
 					tw = ClassLoaderWrapper.GetWrapperFromType(type);
 				}
 #if __MonoCS__
-				SetTypeWrapperHack(clazz, tw);
+				SetTypeWrapperHack(ref clazz.typeWrapper, tw);
 #else
 				clazz.typeWrapper = tw;
 #endif
@@ -3907,7 +3901,7 @@ namespace IKVM.Internal
 			}
 
 #if !STUB_GENERATOR
-			internal override void EmitNewobj(CodeEmitter ilgen)
+			internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
 			{
 				ilgen.Emit(OpCodes.Dup);
 				ilgen.Emit(OpCodes.Ldvirtftn, invoke);
@@ -4659,11 +4653,6 @@ namespace IKVM.Internal
 		internal static TypeWrapper MakeThis(TypeWrapper type)
 		{
 			return new VerifierTypeWrapper(This, 0, type, null);
-		}
-
-		internal static bool IsNotPresentOnStack(TypeWrapper w)
-		{
-			return IsNew(w) || IsFaultBlockException(w);
 		}
 
 		internal static bool IsNew(TypeWrapper w)
