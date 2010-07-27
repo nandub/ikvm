@@ -1040,9 +1040,7 @@ namespace IKVM.NativeCode.java
 					System.IO.FileInfo fi = new System.IO.FileInfo(path);
 					if (fi.DirectoryName == null)
 					{
-						return path.Length > 1 && path[1] == ':'
-							? (Char.ToUpper(path[0]) + ":" + System.IO.Path.DirectorySeparatorChar)
-							: path;
+						return path.Length > 1 && path[1] == ':' ? path.ToUpper() : path;
 					}
 					string dir = CanonicalizePath(fi.DirectoryName);
 					string name = fi.Name;
@@ -3656,10 +3654,6 @@ namespace IKVM.NativeCode.java
 				try
 				{
 					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
-				}
-				catch (System.ArgumentException x)
-				{
-					throw new jnUnknownHostException(x.Message);
 				}
 				catch (System.Net.Sockets.SocketException x)
 				{
@@ -6479,12 +6473,6 @@ namespace IKVM.NativeCode.sun.reflect
 						{
 							obj = null;
 						}
-						else if (obj == null)
-						{
-#if !FIRST_PASS
-							throw new global::java.lang.NullPointerException();
-#endif
-						}
 						else if (!fw.DeclaringType.IsInstance(obj))
 						{
 							throw GetIllegalArgumentException(obj);
@@ -6521,12 +6509,6 @@ namespace IKVM.NativeCode.sun.reflect
 						if (fw.IsStatic)
 						{
 							obj = null;
-						}
-						else if (obj == null)
-						{
-#if !FIRST_PASS
-							throw new global::java.lang.NullPointerException();
-#endif
 						}
 						else if (!fw.DeclaringType.IsInstance(obj))
 						{
