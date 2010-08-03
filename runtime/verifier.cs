@@ -1486,6 +1486,7 @@ class MethodAnalyzer
 								s.PopObjectType();
 								break;
 							case NormalizedByteCode.__getstatic:
+							case NormalizedByteCode.__dynamic_getstatic:
 								// special support for when we're being called from IsSideEffectFreeStaticInitializer
 								if(mw == null)
 								{
@@ -1528,6 +1529,7 @@ class MethodAnalyzer
 								}
 								break;
 							case NormalizedByteCode.__putstatic:
+							case NormalizedByteCode.__dynamic_putstatic:
 								// special support for when we're being called from IsSideEffectFreeStaticInitializer
 								if(mw == null)
 								{
@@ -1566,6 +1568,7 @@ class MethodAnalyzer
 								}
 								break;
 							case NormalizedByteCode.__getfield:
+							case NormalizedByteCode.__dynamic_getfield:
 							{
 								s.PopObjectType(GetFieldref(instr.Arg1).GetClassType());
 								ClassFile.ConstantPoolItemFieldref cpi = GetFieldref(instr.Arg1);
@@ -1580,6 +1583,7 @@ class MethodAnalyzer
 								break;
 							}
 							case NormalizedByteCode.__putfield:
+							case NormalizedByteCode.__dynamic_putfield:
 								s.PopType(GetFieldref(instr.Arg1).GetFieldType());
 								// putfield is allowed to access the unintialized this
 								if(s.PeekType() == VerifierTypeWrapper.UninitializedThis
@@ -1630,10 +1634,15 @@ class MethodAnalyzer
 							case NormalizedByteCode.__invokespecial:
 							case NormalizedByteCode.__invokeinterface:
 							case NormalizedByteCode.__invokestatic:
+							case NormalizedByteCode.__dynamic_invokevirtual:
+							case NormalizedByteCode.__dynamic_invokespecial:
+							case NormalizedByteCode.__dynamic_invokeinterface:
+							case NormalizedByteCode.__dynamic_invokestatic:
 							{
 								ClassFile.ConstantPoolItemMI cpi = GetMethodref(instr.Arg1);
 								s.MultiPopAnyType(cpi.GetArgTypes().Length);
-								if(instr.NormalizedOpCode != NormalizedByteCode.__invokestatic)
+								if(instr.NormalizedOpCode != NormalizedByteCode.__invokestatic
+									&& instr.NormalizedOpCode != NormalizedByteCode.__dynamic_invokestatic)
 								{
 									TypeWrapper type = s.PopType();
 									if(ReferenceEquals(cpi.Name, StringConstants.INIT))
@@ -2377,7 +2386,7 @@ class MethodAnalyzer
 								if(tw.IsUnloadable)
 								{
 #if STATIC_COMPILER
-									SetHardError(ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
+									SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
 								}
 							}
@@ -2388,16 +2397,16 @@ class MethodAnalyzer
 							if(tw.IsUnloadable)
 							{
 #if STATIC_COMPILER
-								SetHardError(ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
 							}
 							else if(!tw.IsAccessibleFrom(wrapper))
 							{
-								SetHardError(ref instructions[i], HardError.IllegalAccessError, "Try to access class {0} from class {1}", tw.Name, wrapper.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.IllegalAccessError, "Try to access class {0} from class {1}", tw.Name, wrapper.Name);
 							}
 							else if(tw.IsAbstract)
 							{
-								SetHardError(ref instructions[i], HardError.InstantiationError, "{0}", tw.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.InstantiationError, "{0}", tw.Name);
 							}
 							break;
 						}
@@ -2408,12 +2417,12 @@ class MethodAnalyzer
 							if(tw.IsUnloadable)
 							{
 #if STATIC_COMPILER
-								SetHardError(ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
 							}
 							else if(!tw.IsAccessibleFrom(wrapper))
 							{
-								SetHardError(ref instructions[i], HardError.IllegalAccessError, "Try to access class {0} from class {1}", tw.Name, wrapper.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.IllegalAccessError, "Try to access class {0} from class {1}", tw.Name, wrapper.Name);
 							}
 							break;
 						}
@@ -2430,7 +2439,7 @@ class MethodAnalyzer
 							}
 							else if(!tw.IsAccessibleFrom(wrapper))
 							{
-								SetHardError(ref instructions[i], HardError.IllegalAccessError, "Try to access class {0} from class {1}", tw.Name, wrapper.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.IllegalAccessError, "Try to access class {0} from class {1}", tw.Name, wrapper.Name);
 							}
 							break;
 						}
@@ -2444,7 +2453,7 @@ class MethodAnalyzer
 							else if(tw.IsUnloadable)
 							{
 #if STATIC_COMPILER
-								SetHardError(ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
 							}
 							else
@@ -2465,7 +2474,7 @@ class MethodAnalyzer
 							if(tw.IsUnloadable)
 							{
 #if STATIC_COMPILER
-								SetHardError(ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
+								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
 							}
 							else
@@ -3100,7 +3109,7 @@ class MethodAnalyzer
 		return changed;
 	}
 
-	private void SetHardError(ref ClassFile.Method.Instruction instruction, HardError hardError, string message, params object[] args)
+	private void SetHardError(ClassLoaderWrapper classLoader, ref ClassFile.Method.Instruction instruction, HardError hardError, string message, params object[] args)
 	{
 		string text = string.Format(message, args);
 #if STATIC_COMPILER
@@ -3134,7 +3143,7 @@ class MethodAnalyzer
 			default:
 				throw new InvalidOperationException();
 		}
-		StaticCompiler.IssueMessage(msg, classFile.Name + "." + method.Name + method.Signature, text);
+		classLoader.IssueMessage(msg, classFile.Name + "." + method.Name + method.Signature, text);
 #endif
 		instruction.SetHardError(hardError, AllocErrorMessage(text));
 	}
@@ -3246,7 +3255,7 @@ class MethodAnalyzer
 		if(cpi.GetClassType().IsUnloadable || (thisType != null && thisType.IsUnloadable))
 		{
 #if STATIC_COMPILER
-			SetHardError(ref instr, HardError.NoClassDefFoundError, "{0}", cpi.GetClassType().Name);
+			SetHardError(wrapper.GetClassLoader(), ref instr, HardError.NoClassDefFoundError, "{0}", cpi.GetClassType().Name);
 #else
 			switch(invoke)
 			{
@@ -3266,7 +3275,7 @@ class MethodAnalyzer
 					}
 					else
 					{
-						SetHardError(ref instr, HardError.LinkageError, "Base class no longer loadable");
+						SetHardError(wrapper.GetClassLoader(), ref instr, HardError.LinkageError, "Base class no longer loadable");
 					}
 					break;
 				default:
@@ -3276,7 +3285,7 @@ class MethodAnalyzer
 		}
 		else if(cpi.GetClassType().IsInterface != (invoke == NormalizedByteCode.__invokeinterface))
 		{
-			SetHardError(ref instr, HardError.IncompatibleClassChangeError, "invokeinterface on non-interface");
+			SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IncompatibleClassChangeError, "invokeinterface on non-interface");
 		}
 		else
 		{
@@ -3286,13 +3295,13 @@ class MethodAnalyzer
 				string errmsg = CheckLoaderConstraints(cpi, targetMethod);
 				if(errmsg != null)
 				{
-					SetHardError(ref instr, HardError.LinkageError, "{0}", errmsg);
+					SetHardError(wrapper.GetClassLoader(), ref instr, HardError.LinkageError, "{0}", errmsg);
 				}
 				else if(targetMethod.IsStatic == (invoke == NormalizedByteCode.__invokestatic))
 				{
 					if(targetMethod.IsAbstract && invoke == NormalizedByteCode.__invokespecial)
 					{
-						SetHardError(ref instr, HardError.AbstractMethodError, "{0}.{1}{2}", cpi.Class, cpi.Name, cpi.Signature);
+						SetHardError(wrapper.GetClassLoader(), ref instr, HardError.AbstractMethodError, "{0}.{1}{2}", cpi.Class, cpi.Name, cpi.Signature);
 					}
 					else if(targetMethod.IsAccessibleFrom(cpi.GetClassType(), wrapper, thisType))
 					{
@@ -3311,17 +3320,17 @@ class MethodAnalyzer
 							instr.PatchOpCode(NormalizedByteCode.__clone_array);
 							return;
 						}
-						SetHardError(ref instr, HardError.IllegalAccessError, "Try to access method {0}.{1}{2} from class {3}", targetMethod.DeclaringType.Name, cpi.Name, cpi.Signature, wrapper.Name);
+						SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IllegalAccessError, "Try to access method {0}.{1}{2} from class {3}", targetMethod.DeclaringType.Name, cpi.Name, cpi.Signature, wrapper.Name);
 					}
 				}
 				else
 				{
-					SetHardError(ref instr, HardError.IncompatibleClassChangeError, "static call to non-static method (or v.v.)");
+					SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IncompatibleClassChangeError, "static call to non-static method (or v.v.)");
 				}
 			}
 			else
 			{
-				SetHardError(ref instr, HardError.NoSuchMethodError, "{0}.{1}{2}", cpi.Class, cpi.Name, cpi.Signature);
+				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.NoSuchMethodError, "{0}.{1}{2}", cpi.Class, cpi.Name, cpi.Signature);
 			}
 		}
 	}
@@ -3411,7 +3420,7 @@ class MethodAnalyzer
 		else if(cpi.GetClassType().IsUnloadable || (thisType != null && thisType.IsUnloadable))
 		{
 #if STATIC_COMPILER
-			SetHardError(ref instr, HardError.NoClassDefFoundError, "{0}", cpi.GetClassType().Name);
+			SetHardError(wrapper.GetClassLoader(), ref instr, HardError.NoClassDefFoundError, "{0}", cpi.GetClassType().Name);
 #else
 			switch(instr.NormalizedOpCode)
 			{
@@ -3438,7 +3447,7 @@ class MethodAnalyzer
 			FieldWrapper field = cpi.GetField();
 			if(field == null)
 			{
-				SetHardError(ref instr, HardError.NoSuchFieldError, "{0}.{1}", cpi.Class, cpi.Name);
+				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.NoSuchFieldError, "{0}.{1}", cpi.Class, cpi.Name);
 				return;
 			}
 			if(cpi.GetFieldType() != field.FieldTypeWrapper && !field.FieldTypeWrapper.IsUnloadable)
@@ -3446,24 +3455,24 @@ class MethodAnalyzer
 #if STATIC_COMPILER
 				StaticCompiler.LinkageError("Field \"{2}.{3}\" is of type \"{0}\" instead of type \"{1}\" as expected by \"{4}\"", field.FieldTypeWrapper, cpi.GetFieldType(), cpi.GetClassType().Name, cpi.Name, wrapper.Name);
 #endif
-				SetHardError(ref instr, HardError.LinkageError, "Loader constraints violated: {0}.{1}", field.DeclaringType.Name, field.Name);
+				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.LinkageError, "Loader constraints violated: {0}.{1}", field.DeclaringType.Name, field.Name);
 				return;
 			}
 			if(field.IsStatic != isStatic)
 			{
-				SetHardError(ref instr, HardError.IncompatibleClassChangeError, "Static field access to non-static field (or v.v.)");
+				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IncompatibleClassChangeError, "Static field access to non-static field (or v.v.)");
 				return;
 			}
 			if(!field.IsAccessibleFrom(cpi.GetClassType(), wrapper, thisType))
 			{
-				SetHardError(ref instr, HardError.IllegalAccessError, "Try to access field {0}.{1} from class {2}", field.DeclaringType.Name, field.Name, wrapper.Name);
+				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IllegalAccessError, "Try to access field {0}.{1} from class {2}", field.DeclaringType.Name, field.Name, wrapper.Name);
 				return;
 			}
 			// are we trying to mutate a final field? (they are read-only from outside of the defining class)
 			if(write && field.IsFinal
 				&& ((isStatic ? wrapper != cpi.GetClassType() : wrapper != thisType) || (wrapper.GetClassLoader().StrictFinalFieldSemantics && (isStatic ? (mw != null && mw.Name != "<clinit>") : (mw == null || mw.Name != "<init>")))))
 			{
-				SetHardError(ref instr, HardError.IllegalAccessError, "Field {0}.{1} is final", field.DeclaringType.Name, field.Name);
+				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IllegalAccessError, "Field {0}.{1} is final", field.DeclaringType.Name, field.Name);
 				return;
 			}
 		}
