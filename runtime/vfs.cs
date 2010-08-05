@@ -115,8 +115,7 @@ namespace IKVM.Internal
 #if FIRST_PASS
 			return null;
 #else
-			// we can't use java.io.File.separatorChar here, because we're invoked by the system property setup code
-			return RootPath + "assembly" + System.IO.Path.DirectorySeparatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + System.IO.Path.DirectorySeparatorChar + "classes" + System.IO.Path.DirectorySeparatorChar;
+			return RootPath + "assembly" + global::java.io.File.separatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + global::java.io.File.separatorChar + "classes" + global::java.io.File.separatorChar;
 #endif
 		}
 
@@ -125,7 +124,7 @@ namespace IKVM.Internal
 #if FIRST_PASS
 			return null;
 #else
-			return RootPath + "assembly" + System.IO.Path.DirectorySeparatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + System.IO.Path.DirectorySeparatorChar + "resources" + System.IO.Path.DirectorySeparatorChar;
+			return RootPath + "assembly" + global::java.io.File.separatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + global::java.io.File.separatorChar + "resources" + global::java.io.File.separatorChar;
 #endif
 		}
 
@@ -405,66 +404,38 @@ namespace IKVM.Internal
 				}
 				if (populate)
 				{
-					Dictionary<string, string> names = new Dictionary<string, string>();
-					AssemblyClassLoader acl = AssemblyClassLoader.FromAssembly(this.asm);
-					foreach (Assembly asm in acl.GetAllAvailableAssemblies())
+					Type[] types;
+					try
 					{
-						Type[] types;
-						try
-						{
-							types = asm.GetTypes();
-						}
-						catch (ReflectionTypeLoadException x)
-						{
-							types = x.Types;
-						}
-						catch
-						{
-							types = Type.EmptyTypes;
-						}
-						foreach (Type type in types)
-						{
-							if (type != null)
-							{
-								string name = null;
-								try
-								{
-									bool isJavaType;
-									name = acl.GetTypeNameAndType(type, out isJavaType);
-#if !FIRST_PASS
-									// annotation custom attributes are pseudo proxies and are not loadable by name (and should not exist in the file systems,
-									// because proxies are, ostensibly, created on the fly)
-									if (isJavaType && type.BaseType == typeof(global::ikvm.@internal.AnnotationAttributeBase) && name.Contains(".$Proxy"))
-									{
-										name = null;
-									}
-#endif
-								}
-								catch
-								{
-								}
-								if (name != null)
-								{
-									names[name] = name;
-								}
-							}
-						}
+						types = asm.GetTypes();
 					}
-					lock (entries)
+					catch (ReflectionTypeLoadException x)
 					{
-						if (entries.Count == 0)
+						types = x.Types;
+					}
+					catch
+					{
+						types = Type.EmptyTypes;
+					}
+					foreach (Type type in types)
+					{
+						if (type != null)
 						{
-							foreach (string name in names.Keys)
+							TypeWrapper tw = ClassLoaderWrapper.GetWrapperFromType(type);
+							if (tw != null)
 							{
-								string[] parts = name.Split('.');
-								VfsDirectory dir = this;
-								for (int i = 0; i < parts.Length - 1; i++)
+								string[] parts = tw.Name.Split('.');
+								lock (entries)
 								{
-									dir = dir.GetEntry(parts[i]) as VfsDirectory ?? dir.AddDirectory(parts[i]);
+									VfsDirectory dir = this;
+									for (int i = 0; i < parts.Length - 1; i++)
+									{
+										dir = dir.GetEntry(parts[i]) as VfsDirectory ?? dir.AddDirectory(parts[i]);
+									}
+									// we're adding a dummy file, to make the file appear in the directory listing, it will not actually
+									// be accessed, because the code above handles that
+									dir.Add(parts[parts.Length - 1] + ".class", VfsDummyFile.Instance);
 								}
-								// we're adding a dummy file, to make the file appear in the directory listing, it will not actually
-								// be accessed, because the code above handles that
-								dir.Add(parts[parts.Length - 1] + ".class", VfsDummyFile.Instance);
 							}
 						}
 					}

@@ -104,15 +104,6 @@ namespace IKVM.NativeCode.java.lang
 		{
 			return VirtualFileSystem.RootPath;
 		}
-
-		public static string getBootClassPath()
-		{
-#if FIRST_PASS
-			return null;
-#else
-			return VirtualFileSystem.GetAssemblyClassesPath(JVM.CoreAssembly);
-#endif
-		}
 	}
 }
 
@@ -262,22 +253,15 @@ namespace IKVM.NativeCode.ikvm.runtime
 			return null;
 #else
 			global::java.util.Vector v = new global::java.util.Vector();
-			if (assembly != null)
+			IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
+			foreach (global::java.net.URL url in wrapper.GetResources(name))
 			{
-				IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
-				foreach (global::java.net.URL url in wrapper.GetResources(name))
-				{
-					v.addElement(url);
-				}
+				v.addElement(url);
 			}
-			// we'll only generate a stub class if there isn't already a resource with this name
-			if (v.isEmpty())
+			global::java.net.URL curl = GetClassResource(classLoader, assembly, name);
+			if (curl != null)
 			{
-				global::java.net.URL curl = GetClassResource(classLoader, assembly, name);
-				if (curl != null)
-				{
-					v.addElement(curl);
-				}
+				v.addElement(curl);
 			}
 			return v.elements();
 #endif
