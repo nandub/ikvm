@@ -1740,7 +1740,7 @@ namespace IKVM.Internal
 			internal override void EmitNewobj(CodeEmitter ilgen)
 			{
 				MethodInfo createDelegate = Types.Delegate.GetMethod("CreateDelegate", new Type[] { Types.Type, Types.Object, Types.String });
-				CodeEmitterLocal targetObj = ilgen.DeclareLocal(Types.Object);
+				LocalBuilder targetObj = ilgen.DeclareLocal(Types.Object);
 				ilgen.Emit(OpCodes.Stloc, targetObj);
 				ilgen.Emit(OpCodes.Ldtoken, delegateConstructor.DeclaringType);
 				ilgen.Emit(OpCodes.Call, Types.Type.GetMethod("GetTypeFromHandle", new Type[] { Types.RuntimeTypeHandle }));
@@ -1795,7 +1795,7 @@ namespace IKVM.Internal
 
 			protected override void PreEmit(CodeEmitter ilgen)
 			{
-				CodeEmitterLocal[] locals = new CodeEmitterLocal[args.Length];
+				LocalBuilder[] locals = new LocalBuilder[args.Length];
 				for (int i = args.Length - 1; i >= 0; i--)
 				{
 					Type type = args[i];
@@ -1858,7 +1858,7 @@ namespace IKVM.Internal
 			protected override void EmitSetImpl(CodeEmitter ilgen)
 			{
 				// NOTE even though the field is final, JNI reflection can still be used to set its value!
-				CodeEmitterLocal temp = ilgen.AllocTempLocal(underlyingType);
+				LocalBuilder temp = ilgen.AllocTempLocal(underlyingType);
 				ilgen.Emit(OpCodes.Stloc, temp);
 				ilgen.Emit(OpCodes.Unbox, underlyingType);
 				ilgen.Emit(OpCodes.Ldloc, temp);
@@ -1878,7 +1878,7 @@ namespace IKVM.Internal
 #if !STUB_GENERATOR
 			internal override void EmitNewobj(CodeEmitter ilgen)
 			{
-				CodeEmitterLocal local = ilgen.DeclareLocal(DeclaringType.TypeAsTBD);
+				LocalBuilder local = ilgen.DeclareLocal(DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, local);
 				ilgen.Emit(OpCodes.Box, DeclaringType.TypeAsTBD);
 			}

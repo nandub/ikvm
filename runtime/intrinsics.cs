@@ -43,14 +43,14 @@ namespace IKVM.Internal
 		internal readonly MethodWrapper Method;
 		internal readonly DynamicTypeWrapper.FinishContext Context;
 		internal readonly CodeEmitter Emitter;
-		private readonly CodeInfo ma;
+		readonly MethodAnalyzer ma;
 		internal readonly int OpcodeIndex;
 		internal readonly MethodWrapper Caller;
 		internal readonly ClassFile ClassFile;
 		internal readonly Instruction[] Code;
 		internal readonly InstructionFlags[] Flags;
 
-		internal EmitIntrinsicContext(MethodWrapper method, DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, CodeInfo ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
+		internal EmitIntrinsicContext(MethodWrapper method, DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
 		{
 			this.Method = method;
 			this.Context = context;
@@ -271,7 +271,7 @@ namespace IKVM.Internal
 
 		private static void EmitConversion(CodeEmitter ilgen, Type converterType, string method)
 		{
-			CodeEmitterLocal converter = ilgen.UnsafeAllocTempLocal(converterType);
+			LocalBuilder converter = ilgen.UnsafeAllocTempLocal(converterType);
 			ilgen.Emit(OpCodes.Ldloca, converter);
 			ilgen.Emit(OpCodes.Call, converterType.GetMethod(method));
 		}
@@ -541,7 +541,6 @@ namespace IKVM.Internal
 			basector.Link();
 			basector.EmitCall(ctorilgen);
 			ctorilgen.Emit(OpCodes.Ret);
-			ctorilgen.DoEmit();
 			context.RegisterPostFinishProc(delegate
 			{
 				threadLocal.Finish();
