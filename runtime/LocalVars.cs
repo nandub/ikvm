@@ -40,22 +40,22 @@ sealed class LocalVar
 	internal bool isArg;
 	internal int local;
 	internal TypeWrapper type;
-	internal CodeEmitterLocal builder;
+	internal LocalBuilder builder;
 	// used to emit debugging info, only available if ClassLoaderWrapper.EmitDebugInfo is true
 	internal string name;
 	internal int start_pc;
 	internal int end_pc;
 }
 
-struct LocalVarInfo
+sealed class LocalVarInfo
 {
 	private readonly LocalVar[/*instructionIndex*/] localVars;
 	private readonly LocalVar[/*instructionIndex*/][/*localIndex*/] invokespecialLocalVars;
 	private readonly LocalVar[/*index*/] allLocalVars;
 
-	internal LocalVarInfo(CodeInfo ma, ClassFile classFile, ClassFile.Method method, UntangledExceptionTable exceptions, MethodWrapper mw, ClassLoaderWrapper classLoader)
+	internal LocalVarInfo(MethodAnalyzer ma, ClassFile.Method method, MethodWrapper mw, ClassLoaderWrapper classLoader)
 	{
-		Dictionary<int, string>[] localStoreReaders = FindLocalVariables(ma, mw, classFile, method);
+		Dictionary<int, string>[] localStoreReaders = FindLocalVariables(ma, mw, method);
 
 		// now that we've done the code flow analysis, we can do a liveness analysis on the local variables
 		ClassFile.Method.Instruction[] instructions = method.Instructions;
@@ -71,7 +71,7 @@ struct LocalVarInfo
 		Dictionary<LocalVar, LocalVar> forwarders = new Dictionary<LocalVar, LocalVar>();
 		if (classLoader.EmitDebugInfo)
 		{
-			InstructionFlags[] flags = MethodAnalyzer.ComputePartialReachability(ma, method.Instructions, exceptions, 0, false);
+			InstructionFlags[] flags = ma.ComputePartialReachability(0, false);
 			// if we're emitting debug info, we need to keep dead stores as well...
 			for (int i = 0; i < instructions.Length; i++)
 			{
@@ -237,7 +237,9 @@ struct LocalVarInfo
 			bc == NormalizedByteCode.__istore ||
 			bc == NormalizedByteCode.__lstore ||
 			bc == NormalizedByteCode.__fstore ||
-			bc == NormalizedByteCode.__dstore;
+			bc == NormalizedByteCode.__dstore ||
+			bc == NormalizedByteCode.__fstore_conv ||
+			bc == NormalizedByteCode.__dstore_conv;
 	}
 
 	struct FindLocalVarState
@@ -354,11 +356,16 @@ struct LocalVarInfo
 		}
 	}
 
-	private static Dictionary<int, string>[] FindLocalVariables(CodeInfo codeInfo, MethodWrapper mw, ClassFile classFile, ClassFile.Method method)
+	private static Dictionary<int, string>[] FindLocalVariables(MethodAnalyzer ma, MethodWrapper mw, ClassFile.Method method)
 	{
-		FindLocalVarState[] state = new FindLocalVarState[method.Instructions.Length];
+		ClassFile.Method.Instruction[] instructions = method.Instructions;
+		ExceptionTableEntry[] exceptions = method.ExceptionTable;
+		int maxLocals = method.MaxLocals;
+		Dictionary<int, string>[] localStoreReaders = new Dictionary<int, string>[instructions.Length];
+		FindLocalVarState[] state = new FindLocalVarState[instructions.Length];
+		bool done = false;
 		state[0].changed = true;
-		state[0].sites = new FindLocalVarStoreSite[method.MaxLocals];
+		state[0].sites = new FindLocalVarStoreSite[maxLocals];
 		TypeWrapper[] parameters = mw.GetParameters();
 		int argpos = 0;
 		if (!mw.IsStatic)
@@ -373,16 +380,6 @@ struct LocalVarInfo
 				argpos++;
 			}
 		}
-		return FindLocalVariablesImpl(codeInfo, classFile, method, state);
-	}
-
-	private static Dictionary<int, string>[] FindLocalVariablesImpl(CodeInfo codeInfo, ClassFile classFile, ClassFile.Method method, FindLocalVarState[] state)
-	{
-		ClassFile.Method.Instruction[] instructions = method.Instructions;
-		ExceptionTableEntry[] exceptions = method.ExceptionTable;
-		int maxLocals = method.MaxLocals;
-		Dictionary<int, string>[] localStoreReaders = new Dictionary<int, string>[instructions.Length];
-		bool done = false;
 
 		while (!done)
 		{
@@ -404,8 +401,7 @@ struct LocalVarInfo
 						}
 					}
 
-					if (IsLoadLocal(instructions[i].NormalizedOpCode)
-						&& (instructions[i].NormalizedOpCode != NormalizedByteCode.__aload || !VerifierTypeWrapper.IsFaultBlockException(codeInfo.GetRawStackTypeWrapper(i + 1, 0))))
+					if (IsLoadLocal(instructions[i].NormalizedOpCode))
 					{
 						if (localStoreReaders[i] == null)
 						{
@@ -417,18 +413,17 @@ struct LocalVarInfo
 						}
 					}
 
-					if (IsStoreLocal(instructions[i].NormalizedOpCode)
-						&& (instructions[i].NormalizedOpCode != NormalizedByteCode.__astore || !VerifierTypeWrapper.IsFaultBlockException(codeInfo.GetRawStackTypeWrapper(i, 0))))
+					if (IsStoreLocal(instructions[i].NormalizedOpCode))
 					{
 						curr.Store(i, instructions[i].NormalizedArg1);
 					}
 
 					if (instructions[i].NormalizedOpCode == NormalizedByteCode.__invokespecial)
 					{
-						ClassFile.ConstantPoolItemMI cpi = classFile.GetMethodref(instructions[i].Arg1);
+						ClassFile.ConstantPoolItemMI cpi = ma.GetMethodref(instructions[i].Arg1);
 						if (ReferenceEquals(cpi.Name, StringConstants.INIT))
 						{
-							TypeWrapper type = codeInfo.GetRawStackTypeWrapper(i, cpi.GetArgTypes().Length);
+							TypeWrapper type = ma.GetRawStackTypeWrapper(i, cpi.GetArgTypes().Length);
 							// after we've invoked the constructor, the uninitialized references
 							// are now initialized
 							if (type == VerifierTypeWrapper.UninitializedThis
@@ -436,38 +431,11 @@ struct LocalVarInfo
 							{
 								for (int j = 0; j < maxLocals; j++)
 								{
-									if (codeInfo.GetLocalTypeWrapper(i, j) == type)
+									if (ma.GetLocalTypeWrapper(i, j) == type)
 									{
 										curr.Store(i, j);
 									}
 								}
-							}
-						}
-					}
-					else if (instructions[i].NormalizedOpCode == NormalizedByteCode.__goto_finally)
-					{
-						int handler = instructions[i].HandlerIndex;
-
-						// Normally a store at the end of a try block doesn't affect the handler block,
-						// but in the case of a finally handler it does, so we need to make sure that
-						// we merge here in case the try block ended with a store.
-						state[handler].Merge(curr);
-
-						// Now we recursively analyse the handler and afterwards merge the endfault locations back to us
-						FindLocalVarState[] handlerState = new FindLocalVarState[instructions.Length];
-						handlerState[handler].changed = true;
-						handlerState[handler].sites = new FindLocalVarStoreSite[maxLocals];
-						FindLocalVariablesImpl(codeInfo, classFile, method, handlerState);
-
-						// Merge back to the target of our __goto_finally
-						for (int j = 0; j < handlerState.Length; j++)
-						{
-							if (instructions[j].NormalizedOpCode == NormalizedByteCode.__athrow
-								&& codeInfo.HasState(j)
-								&& VerifierTypeWrapper.IsFaultBlockException(codeInfo.GetRawStackTypeWrapper(j, 0))
-								&& ((VerifierTypeWrapper)codeInfo.GetRawStackTypeWrapper(j, 0)).Index == handler)
-							{
-								state[instructions[i].Arg1].Merge(handlerState[j]);
 							}
 						}
 					}
@@ -505,7 +473,7 @@ struct LocalVarInfo
 		return localStoreReaders;
 	}
 
-	private static void VisitLocalLoads(CodeInfo codeInfo, ClassFile.Method method, List<LocalVar> locals, Dictionary<long, LocalVar> localByStoreSite, Dictionary<int, string> storeSites, int instructionIndex, bool debug)
+	private static void VisitLocalLoads(MethodAnalyzer ma, ClassFile.Method method, List<LocalVar> locals, Dictionary<long, LocalVar> localByStoreSite, Dictionary<int, string> storeSites, int instructionIndex, bool debug)
 	{
 		Debug.Assert(IsLoadLocal(method.Instructions[instructionIndex].NormalizedOpCode));
 		LocalVar local = null;
@@ -517,14 +485,14 @@ struct LocalVarInfo
 			if (store == -1)
 			{
 				// it's a method argument, it has no initial store, but the type is simply the parameter type
-				type = InstructionState.FindCommonBaseType(type, codeInfo.GetLocalTypeWrapper(0, localIndex));
+				type = InstructionState.FindCommonBaseType(type, ma.GetLocalTypeWrapper(0, localIndex));
 				isArg = true;
 			}
 			else
 			{
 				if (method.Instructions[store].NormalizedOpCode == NormalizedByteCode.__invokespecial)
 				{
-					type = InstructionState.FindCommonBaseType(type, codeInfo.GetLocalTypeWrapper(store + 1, localIndex));
+					type = InstructionState.FindCommonBaseType(type, ma.GetLocalTypeWrapper(store + 1, localIndex));
 				}
 				else if (method.Instructions[store].NormalizedOpCode == NormalizedByteCode.__static_error)
 				{
@@ -534,7 +502,7 @@ struct LocalVarInfo
 				else
 				{
 					Debug.Assert(IsStoreLocal(method.Instructions[store].NormalizedOpCode));
-					type = InstructionState.FindCommonBaseType(type, codeInfo.GetStackTypeWrapper(store, 0));
+					type = InstructionState.FindCommonBaseType(type, ma.GetStackTypeWrapper(store, 0));
 				}
 			}
 			// we can't have an invalid type, because that would have failed verification earlier

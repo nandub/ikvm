@@ -29,7 +29,7 @@ using IKVM.Internal;
 using InstructionFlags = IKVM.Internal.ClassFile.Method.InstructionFlags;
 using ExceptionTableEntry = IKVM.Internal.ClassFile.Method.ExceptionTableEntry;
 
-sealed class InstructionState
+class InstructionState
 {
 	private struct LocalStoreSites
 	{
@@ -742,11 +742,6 @@ sealed class InstructionState
 		return tw;
 	}
 
-	internal TypeWrapper GetStackSlotEx(int pos)
-	{
-		return stack[stackSize - 1 - pos];
-	}
-
 	internal TypeWrapper GetStackByIndex(int index)
 	{
 		return stack[index];
@@ -1053,119 +1048,22 @@ sealed class ExceptionSorter : IComparer<ExceptionTableEntry>
 	}
 }
 
-struct UntangledExceptionTable
+class MethodAnalyzer
 {
-	private readonly ExceptionTableEntry[] exceptions;
-
-	internal UntangledExceptionTable(ExceptionTableEntry[] exceptions)
-	{
-#if DEBUG
-		for (int i = 0; i < exceptions.Length; i++)
-		{
-			for (int j = i + 1; j < exceptions.Length; j++)
-			{
-				// check for partially overlapping try blocks (which is legal for the JVM, but not the CLR)
-				if (exceptions[i].startIndex < exceptions[j].startIndex &&
-					exceptions[j].startIndex < exceptions[i].endIndex &&
-					exceptions[i].endIndex < exceptions[j].endIndex)
-				{
-					throw new InvalidOperationException("Partially overlapping try blocks is broken");
-				}
-				// check that we didn't destroy the ordering, when sorting
-				if (exceptions[i].startIndex <= exceptions[j].startIndex &&
-					exceptions[i].endIndex >= exceptions[j].endIndex &&
-					exceptions[i].ordinal < exceptions[j].ordinal)
-				{
-					throw new InvalidOperationException("Non recursive try blocks is broken");
-				}
-			}
-		}
-#endif
-		this.exceptions = exceptions;
-	}
-
-	internal ExceptionTableEntry this[int index]
-	{
-		get { return exceptions[index]; }
-	}
-
-	internal int Length
-	{
-		get { return exceptions.Length; }
-	}
-
-	internal void SetFinally(int index)
-	{
-		exceptions[index] = new ExceptionTableEntry(exceptions[index].startIndex, exceptions[index].endIndex, exceptions[index].handlerIndex, exceptions[index].catch_type, exceptions[index].ordinal, true);
-	}
-}
-
-struct CodeInfo
-{
-	private readonly InstructionState[] state;
-
-	internal CodeInfo(InstructionState[] state)
-	{
-		this.state = state;
-	}
-
-	internal bool HasState(int index)
-	{
-		return state[index] != null;
-	}
-
-	internal int GetStackHeight(int index)
-	{
-		return state[index].GetStackHeight();
-	}
-
-	internal TypeWrapper GetStackTypeWrapper(int index, int pos)
-	{
-		TypeWrapper type = state[index].GetStackSlot(pos);
-		if (VerifierTypeWrapper.IsThis(type))
-		{
-			type = ((VerifierTypeWrapper)type).UnderlyingType;
-		}
-		return type;
-	}
-
-	internal TypeWrapper GetRawStackTypeWrapper(int index, int pos)
-	{
-		return state[index].GetStackSlot(pos);
-	}
-
-	internal bool IsStackTypeExtendedDouble(int index, int pos)
-	{
-		return state[index].GetStackSlotEx(pos) == VerifierTypeWrapper.ExtendedDouble;
-	}
-
-	internal TypeWrapper GetLocalTypeWrapper(int index, int local)
-	{
-		return state[index].GetLocalTypeEx(local);
-	}
-}
-
-sealed class MethodAnalyzer
-{
-	private readonly static TypeWrapper ByteArrayType;
-	private readonly static TypeWrapper BooleanArrayType;
-	private readonly static TypeWrapper ShortArrayType;
-	private readonly static TypeWrapper CharArrayType;
-	private readonly static TypeWrapper IntArrayType;
-	private readonly static TypeWrapper FloatArrayType;
-	private readonly static TypeWrapper DoubleArrayType;
-	private readonly static TypeWrapper LongArrayType;
-	private readonly static TypeWrapper java_lang_ThreadDeath;
-	private readonly TypeWrapper wrapper;
-	private readonly MethodWrapper mw;
-	private readonly ClassFile classFile;
-	private readonly ClassFile.Method method;
-	private readonly ClassLoaderWrapper classLoader;
-	private readonly TypeWrapper thisType;
-	private readonly InstructionState[] state;
+	private static TypeWrapper ByteArrayType;
+	private static TypeWrapper BooleanArrayType;
+	private static TypeWrapper ShortArrayType;
+	private static TypeWrapper CharArrayType;
+	private static TypeWrapper IntArrayType;
+	private static TypeWrapper FloatArrayType;
+	private static TypeWrapper DoubleArrayType;
+	private static TypeWrapper LongArrayType;
+	private static TypeWrapper java_lang_ThreadDeath;
+	private ClassFile classFile;
+	private ClassFile.Method method;
+	private InstructionState[] state;
 	private List<string> errorMessages;
-	private readonly Dictionary<int, TypeWrapper> newTypes = new Dictionary<int, TypeWrapper>();
-	private readonly Dictionary<int, TypeWrapper> faultTypes = new Dictionary<int, TypeWrapper>();
+	private ExceptionTableEntry[] exceptions;
 
 	static MethodAnalyzer()
 	{
@@ -1187,12 +1085,13 @@ sealed class MethodAnalyzer
 			throw new VerifyError(method.VerifyError);
 		}
 
-		this.wrapper = wrapper;
-		this.mw = mw;
 		this.classFile = classFile;
 		this.method = method;
-		this.classLoader = classLoader;
 		state = new InstructionState[method.Instructions.Length];
+
+		// HACK because types have to have identity, the new types are cached here
+		Dictionary<int, TypeWrapper> newTypes = new Dictionary<int,TypeWrapper>();
+		Dictionary<int, TypeWrapper> faultTypes = new Dictionary<int, TypeWrapper>();
 
 		try
 		{
@@ -1216,6 +1115,7 @@ sealed class MethodAnalyzer
 
 		// start by computing the initial state, the stack is empty and the locals contain the arguments
 		state[0] = new InstructionState(method.MaxLocals, method.MaxStack);
+		TypeWrapper thisType;
 		int firstNonArgLocalIndex = 0;
 		if(!method.IsStatic)
 		{
@@ -1250,25 +1150,17 @@ sealed class MethodAnalyzer
 				firstNonArgLocalIndex++;
 			}
 		}
-		AnalyzeTypeFlow();
-		VerifyPassTwo();
-	}
-
-	internal CodeInfo GetCodeInfoAndErrors(UntangledExceptionTable exceptions, out List<string> errors)
-	{
-		CodeInfo codeInfo = new CodeInfo(state);
-		OptimizationPass(codeInfo, classFile, method, exceptions, wrapper, classLoader);
-		PatchHardErrorsAndDynamicMemberAccess(wrapper, mw);
-		errors = errorMessages;
-		if (AnalyzePotentialFaultBlocks(codeInfo, method, exceptions))
+		AnalyzeTypeFlow(wrapper, thisType, mw, newTypes, faultTypes);
+		exceptions = UntangleExceptionBlocks(classFile, method.ExceptionTable);
+		OptimizationPass(wrapper, classLoader);
+		FinalCodePatchup(wrapper, mw);
+		if (AnalyzePotentialFaultBlocks())
 		{
-			AnalyzeTypeFlow();
+			AnalyzeTypeFlow(wrapper, thisType, mw, newTypes, faultTypes);
 		}
-		ConvertFinallyBlocks(codeInfo, method, exceptions);
-		return codeInfo;
 	}
 
-	private void AnalyzeTypeFlow()
+	private void AnalyzeTypeFlow(TypeWrapper wrapper, TypeWrapper thisType, MethodWrapper mw, Dictionary<int, TypeWrapper> newTypes, Dictionary<int, TypeWrapper> faultTypes)
 	{
 		InstructionState s = new InstructionState(method.MaxLocals, method.MaxStack);
 		bool done = false;
@@ -1448,6 +1340,7 @@ sealed class MethodAnalyzer
 								s.PushDouble();
 								break;
 							case NormalizedByteCode.__dastore:
+							case NormalizedByteCode.__dastore_conv:
 								s.PopDouble();
 								s.PopInt();
 								s.PopObjectType(DoubleArrayType);
@@ -1458,6 +1351,7 @@ sealed class MethodAnalyzer
 								s.PushFloat();
 								break;
 							case NormalizedByteCode.__fastore:
+							case NormalizedByteCode.__fastore_conv:
 								s.PopFloat();
 								s.PopInt();
 								s.PopObjectType(FloatArrayType);
@@ -1597,7 +1491,7 @@ sealed class MethodAnalyzer
 							case NormalizedByteCode.__putfield:
 							case NormalizedByteCode.__dynamic_putfield:
 								s.PopType(GetFieldref(instr.Arg1).GetFieldType());
-								// putfield is allowed to access the uninitialized this
+								// putfield is allowed to access the unintialized this
 								if(s.PeekType() == VerifierTypeWrapper.UninitializedThis
 									&& wrapper.IsAssignableTo(GetFieldref(instr.Arg1).GetClassType()))
 								{
@@ -2075,6 +1969,7 @@ sealed class MethodAnalyzer
 								s.PushFloat();
 								break;
 							case NormalizedByteCode.__fstore:
+							case NormalizedByteCode.__fstore_conv:
 								s.PopFloat();
 								s.SetLocalFloat(instr.NormalizedArg1, i);
 								break;
@@ -2083,6 +1978,7 @@ sealed class MethodAnalyzer
 								s.PushDouble();
 								break;
 							case NormalizedByteCode.__dstore:
+							case NormalizedByteCode.__dstore_conv:
 								s.PopDouble();
 								s.SetLocalDouble(instr.NormalizedArg1, i);
 								break;
@@ -2276,176 +2172,7 @@ sealed class MethodAnalyzer
 		}
 	}
 
-	// this verification pass must run on the unmodified bytecode stream
-	private void VerifyPassTwo()
-	{
-		ClassFile.Method.Instruction[] instructions = method.Instructions;
-		for (int i = 0; i < instructions.Length; i++)
-		{
-			if (state[i] != null)
-			{
-				try
-				{
-					switch (instructions[i].NormalizedOpCode)
-					{
-						case NormalizedByteCode.__invokeinterface:
-						case NormalizedByteCode.__invokespecial:
-						case NormalizedByteCode.__invokestatic:
-						case NormalizedByteCode.__invokevirtual:
-							VerifyInvokePassTwo(i);
-							break;
-					}
-					// verify backward branches
-					switch (ByteCodeMetaData.GetFlowControl(instructions[i].NormalizedOpCode))
-					{
-						case ByteCodeFlowControl.Switch:
-							{
-								bool hasbackbranch = false;
-								for (int j = 0; j < instructions[i].SwitchEntryCount; j++)
-								{
-									hasbackbranch |= instructions[i].GetSwitchTargetIndex(j) < i;
-								}
-								hasbackbranch |= instructions[i].DefaultTarget < i;
-								if (hasbackbranch)
-								{
-									// backward branches cannot have uninitialized objects on
-									// the stack or in local variables
-									state[i].CheckUninitializedObjRefs();
-								}
-								break;
-							}
-						case ByteCodeFlowControl.Branch:
-						case ByteCodeFlowControl.CondBranch:
-							if (instructions[i].TargetIndex < i)
-							{
-								// backward branches cannot have uninitialized objects on
-								// the stack or in local variables
-								state[i].CheckUninitializedObjRefs();
-							}
-							break;
-					}
-				}
-				catch (VerifyError x)
-				{
-					string opcode = instructions[i].NormalizedOpCode.ToString();
-					if (opcode.StartsWith("__"))
-					{
-						opcode = opcode.Substring(2);
-					}
-					throw new VerifyError(string.Format("{5} (class: {0}, method: {1}, signature: {2}, offset: {3}, instruction: {4})",
-						classFile.Name, method.Name, method.Signature, instructions[i].PC, opcode, x.Message), x);
-				}
-			}
-		}
-	}
-
-	private void VerifyInvokePassTwo(int index)
-	{
-		StackState stack = new StackState(state[index]);
-		NormalizedByteCode invoke = method.Instructions[index].NormalizedOpCode;
-		ClassFile.ConstantPoolItemMI cpi = GetMethodref(method.Instructions[index].Arg1);
-		if ((cpi is ClassFile.ConstantPoolItemInterfaceMethodref) != (invoke == NormalizedByteCode.__invokeinterface))
-		{
-			throw new VerifyError("Illegal constant pool index");
-		}
-		if (invoke != NormalizedByteCode.__invokespecial && ReferenceEquals(cpi.Name, StringConstants.INIT))
-		{
-			throw new VerifyError("Must call initializers using invokespecial");
-		}
-		if (ReferenceEquals(cpi.Name, StringConstants.CLINIT))
-		{
-			throw new VerifyError("Illegal call to internal method");
-		}
-		TypeWrapper[] args = cpi.GetArgTypes();
-		for (int j = args.Length - 1; j >= 0; j--)
-		{
-			stack.PopType(args[j]);
-		}
-		if (invoke == NormalizedByteCode.__invokeinterface)
-		{
-			int argcount = args.Length + 1;
-			for (int j = 0; j < args.Length; j++)
-			{
-				if (args[j].IsWidePrimitive)
-				{
-					argcount++;
-				}
-			}
-			if (method.Instructions[index].Arg2 != argcount)
-			{
-				throw new VerifyError("Inconsistent args size");
-			}
-		}
-		bool isnew = false;
-		TypeWrapper thisType;
-		if (invoke == NormalizedByteCode.__invokestatic)
-		{
-			thisType = null;
-		}
-		else
-		{
-			thisType = SigTypeToClassName(stack.PeekType(), cpi.GetClassType(), wrapper);
-			if (ReferenceEquals(cpi.Name, StringConstants.INIT))
-			{
-				TypeWrapper type = stack.PopType();
-				isnew = VerifierTypeWrapper.IsNew(type);
-				if ((isnew && ((VerifierTypeWrapper)type).UnderlyingType != cpi.GetClassType()) ||
-					(type == VerifierTypeWrapper.UninitializedThis && cpi.GetClassType() != wrapper.BaseTypeWrapper && cpi.GetClassType() != wrapper) ||
-					(!isnew && type != VerifierTypeWrapper.UninitializedThis))
-				{
-					// TODO oddly enough, Java fails verification for the class without
-					// even running the constructor, so maybe constructors are always
-					// verified...
-					// NOTE when a constructor isn't verifiable, the static initializer
-					// doesn't run either
-					throw new VerifyError("Call to wrong initialization method");
-				}
-			}
-			else
-			{
-				if (invoke != NormalizedByteCode.__invokeinterface)
-				{
-					TypeWrapper refType = stack.PopObjectType();
-					TypeWrapper targetType = cpi.GetClassType();
-					if (!VerifierTypeWrapper.IsNullOrUnloadable(refType) &&
-						!targetType.IsUnloadable &&
-						!refType.IsAssignableTo(targetType))
-					{
-						throw new VerifyError("Incompatible object argument for function call");
-					}
-					// for invokespecial we also need to make sure we're calling ourself or a base class
-					if (invoke == NormalizedByteCode.__invokespecial)
-					{
-						if (!VerifierTypeWrapper.IsNullOrUnloadable(refType) && !refType.IsSubTypeOf(wrapper))
-						{
-							throw new VerifyError("Incompatible target object for invokespecial");
-						}
-						if (!targetType.IsUnloadable && !wrapper.IsSubTypeOf(targetType))
-						{
-							throw new VerifyError("Invokespecial cannot call subclass methods");
-						}
-					}
-				}
-				else /* __invokeinterface */
-				{
-					// NOTE unlike in the above case, we also allow *any* interface target type
-					// regardless of whether it is compatible or not, because if it is not compatible
-					// we want an IncompatibleClassChangeError at runtime
-					TypeWrapper refType = stack.PopObjectType();
-					TypeWrapper targetType = cpi.GetClassType();
-					if (!VerifierTypeWrapper.IsNullOrUnloadable(refType)
-						&& !targetType.IsUnloadable
-						&& !refType.IsAssignableTo(targetType)
-						&& !targetType.IsInterface)
-					{
-						throw new VerifyError("Incompatible object argument for function call");
-					}
-				}
-			}
-		}
-	}
-
-	private static void OptimizationPass(CodeInfo codeInfo, ClassFile classFile, ClassFile.Method method, UntangledExceptionTable exceptions, TypeWrapper wrapper, ClassLoaderWrapper classLoader)
+	private void OptimizationPass(TypeWrapper wrapper, ClassLoaderWrapper classLoader)
 	{
 		// Optimization pass
 		if (classLoader.RemoveAsserts)
@@ -2465,7 +2192,7 @@ sealed class MethodAnalyzer
 			if (assertionsDisabled != null)
 			{
 				// compute branch targets
-				InstructionFlags[] flags = MethodAnalyzer.ComputePartialReachability(codeInfo, method.Instructions, exceptions, 0, false);
+				InstructionFlags[] flags = ComputePartialReachability(0, false);
 				ClassFile.Method.Instruction[] instructions = method.Instructions;
 				for (int i = 0; i < instructions.Length; i++)
 				{
@@ -2488,9 +2215,9 @@ sealed class MethodAnalyzer
 		}
 	}
 
-	private void PatchHardErrorsAndDynamicMemberAccess(TypeWrapper wrapper, MethodWrapper mw)
+	private void FinalCodePatchup(TypeWrapper wrapper, MethodWrapper mw)
 	{
-		// Now we do another pass to find "hard error" instructions
+		// Now we do another pass to find "hard error" instructions and verify backward branches
 		if(true)
 		{
 			ClassFile.Method.Instruction[] instructions = method.Instructions;
@@ -2501,17 +2228,41 @@ sealed class MethodAnalyzer
 					StackState stack = new StackState(state[i]);
 					switch(instructions[i].NormalizedOpCode)
 					{
+						case NormalizedByteCode.__fstore:
+							if(stack.PeekType() == VerifierTypeWrapper.ExtendedFloat && !method.IsStrictfp)
+							{
+								instructions[i].PatchOpCode(NormalizedByteCode.__fstore_conv);
+							}
+							break;
+						case NormalizedByteCode.__fastore:
+							if(stack.PeekType() == VerifierTypeWrapper.ExtendedFloat && !method.IsStrictfp)
+							{
+								instructions[i].PatchOpCode(NormalizedByteCode.__fastore_conv);
+							}
+							break;
+						case NormalizedByteCode.__dstore:
+							if(stack.PeekType() == VerifierTypeWrapper.ExtendedDouble && !method.IsStrictfp)
+							{
+								instructions[i].PatchOpCode(NormalizedByteCode.__dstore_conv);
+							}
+							break;
+						case NormalizedByteCode.__dastore:
+							if(stack.PeekType() == VerifierTypeWrapper.ExtendedDouble && !method.IsStrictfp)
+							{
+								instructions[i].PatchOpCode(NormalizedByteCode.__dastore_conv);
+							}
+							break;
 						case NormalizedByteCode.__invokeinterface:
 						case NormalizedByteCode.__invokespecial:
 						case NormalizedByteCode.__invokestatic:
 						case NormalizedByteCode.__invokevirtual:
-							PatchInvoke(wrapper, ref instructions[i], stack);
+							VerifyInvoke(wrapper, ref instructions[i], stack);
 							break;
 						case NormalizedByteCode.__getfield:
 						case NormalizedByteCode.__putfield:
 						case NormalizedByteCode.__getstatic:
 						case NormalizedByteCode.__putstatic:
-							PatchFieldAccess(wrapper, mw, ref instructions[i], stack);
+							VerifyFieldAccess(wrapper, mw, ref instructions[i], stack);
 							break;
 						case NormalizedByteCode.__ldc:
 							if(classFile.GetConstantPoolConstantType(instructions[i].Arg1) == ClassFile.ConstantType.Class)
@@ -2581,11 +2332,22 @@ sealed class MethodAnalyzer
 						{
 							stack.PopInt();
 							TypeWrapper tw = stack.PopArrayType();
-							if(tw.IsUnloadable)
+							if(tw == VerifierTypeWrapper.Null)
+							{
+							}
+							else if(tw.IsUnloadable)
 							{
 #if STATIC_COMPILER
 								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
+							}
+							else
+							{
+								tw = tw.ElementTypeWrapper;
+								if(tw.IsPrimitive)
+								{
+									throw new VerifyError("Object array expected");
+								}
 							}
 							break;
 						}
@@ -2600,9 +2362,42 @@ sealed class MethodAnalyzer
 								SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
 							}
+							else
+							{
+								// TODO do we need any other tests?
+							}
 							break;
 						}
 						default:
+							break;
+					}
+					// verify backward branches
+					switch(ByteCodeMetaData.GetFlowControl(instructions[i].NormalizedOpCode))
+					{
+						case ByteCodeFlowControl.Switch:
+						{
+							bool hasbackbranch = false;
+							for(int j = 0; j < instructions[i].SwitchEntryCount; j++)
+							{
+								hasbackbranch |= instructions[i].GetSwitchTargetIndex(j) < i;
+							}
+							hasbackbranch |= instructions[i].DefaultTarget < i;
+							if(hasbackbranch)
+							{
+								// backward branches cannot have uninitialized objects on
+								// the stack or in local variables
+								state[i].CheckUninitializedObjRefs();
+							}
+							break;
+						}
+						case ByteCodeFlowControl.Branch:
+						case ByteCodeFlowControl.CondBranch:
+							if(instructions[i].TargetIndex < i)
+							{
+								// backward branches cannot have uninitialized objects on
+								// the stack or in local variables
+								state[i].CheckUninitializedObjRefs();
+							}
 							break;
 					}
 				}
@@ -2610,17 +2405,12 @@ sealed class MethodAnalyzer
 		}
 	}
 
-	internal static InstructionFlags[] ComputePartialReachability(CodeInfo codeInfo, ClassFile.Method.Instruction[] instructions, UntangledExceptionTable exceptions, int initialInstructionIndex, bool skipFaultBlocks)
+	internal InstructionFlags[] ComputePartialReachability(int initialInstructionIndex, bool skipFaultBlocks)
 	{
+		ClassFile.Method.Instruction[] instructions = method.Instructions;
 		InstructionFlags[] flags = new InstructionFlags[instructions.Length];
-		flags[initialInstructionIndex] |= InstructionFlags.Reachable;
-		UpdatePartialReachability(flags, codeInfo, instructions, exceptions, skipFaultBlocks);
-		return flags;
-	}
-
-	private static void UpdatePartialReachability(InstructionFlags[] flags, CodeInfo codeInfo, ClassFile.Method.Instruction[] instructions, UntangledExceptionTable exceptions, bool skipFaultBlocks)
-	{
 		bool done = false;
+		flags[initialInstructionIndex] |= InstructionFlags.Reachable;
 		while (!done)
 		{
 			done = true;
@@ -2636,53 +2426,49 @@ sealed class MethodAnalyzer
 						if (exceptions[j].startIndex <= i && i < exceptions[j].endIndex)
 						{
 							int idx = exceptions[j].handlerIndex;
-							if (!skipFaultBlocks || !VerifierTypeWrapper.IsFaultBlockException(codeInfo.GetRawStackTypeWrapper(idx, 0)))
+							if (!skipFaultBlocks || !VerifierTypeWrapper.IsFaultBlockException(state[idx].GetStackByIndex(0)))
 							{
 								flags[idx] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
 							}
 						}
 					}
-					MarkSuccessors(instructions, flags, i);
+					// mark the successor instructions
+					switch (ByteCodeMetaData.GetFlowControl(instructions[i].NormalizedOpCode))
+					{
+						case ByteCodeFlowControl.Switch:
+							{
+								for (int j = 0; j < instructions[i].SwitchEntryCount; j++)
+								{
+									flags[instructions[i].GetSwitchTargetIndex(j)] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+								}
+								flags[instructions[i].DefaultTarget] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+								break;
+							}
+						case ByteCodeFlowControl.Branch:
+							flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+							break;
+						case ByteCodeFlowControl.CondBranch:
+							flags[instructions[i].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
+							flags[i + 1] |= InstructionFlags.Reachable;
+							break;
+						case ByteCodeFlowControl.Return:
+						case ByteCodeFlowControl.Throw:
+							break;
+						case ByteCodeFlowControl.Next:
+							flags[i + 1] |= InstructionFlags.Reachable;
+							break;
+						default:
+							throw new InvalidOperationException();
+					}
 				}
 			}
 		}
+		return flags;
 	}
 
-	private static void MarkSuccessors(ClassFile.Method.Instruction[] code, InstructionFlags[] flags, int index)
-	{
-		switch (ByteCodeMetaData.GetFlowControl(code[index].NormalizedOpCode))
-		{
-			case ByteCodeFlowControl.Switch:
-				{
-					for (int i = 0; i < code[index].SwitchEntryCount; i++)
-					{
-						flags[code[index].GetSwitchTargetIndex(i)] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
-					}
-					flags[code[index].DefaultTarget] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
-					break;
-				}
-			case ByteCodeFlowControl.Branch:
-				flags[code[index].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
-				break;
-			case ByteCodeFlowControl.CondBranch:
-				flags[code[index].TargetIndex] |= InstructionFlags.Reachable | InstructionFlags.BranchTarget;
-				flags[index + 1] |= InstructionFlags.Reachable;
-				break;
-			case ByteCodeFlowControl.Return:
-			case ByteCodeFlowControl.Throw:
-				break;
-			case ByteCodeFlowControl.Next:
-				flags[index + 1] |= InstructionFlags.Reachable;
-				break;
-			default:
-				throw new InvalidOperationException();
-		}
-	}
-
-	internal static UntangledExceptionTable UntangleExceptionBlocks(ClassFile classFile, ClassFile.Method method)
+	private ExceptionTableEntry[] UntangleExceptionBlocks(ClassFile classFile, ExceptionTableEntry[] exceptionTable)
 	{
 		ClassFile.Method.Instruction[] instructions = method.Instructions;
-		ExceptionTableEntry[] exceptionTable = method.ExceptionTable;
 		List<ExceptionTableEntry> ar = new List<ExceptionTableEntry>(exceptionTable);
 
 		// This optimization removes the recursive exception handlers that Java compiler place around
@@ -2940,10 +2726,33 @@ sealed class MethodAnalyzer
 		ExceptionTableEntry[] exceptions = ar.ToArray();
 		Array.Sort(exceptions, new ExceptionSorter());
 
-		return new UntangledExceptionTable(exceptions);
+		// TODO remove these checks, if the above exception untangling is correct, this shouldn't ever
+		// be triggered
+		for (int i = 0; i < exceptions.Length; i++)
+		{
+			for (int j = i + 1; j < exceptions.Length; j++)
+			{
+				// check for partially overlapping try blocks (which is legal for the JVM, but not the CLR)
+				if (exceptions[i].startIndex < exceptions[j].startIndex &&
+					exceptions[j].startIndex < exceptions[i].endIndex &&
+					exceptions[i].endIndex < exceptions[j].endIndex)
+				{
+					throw new InvalidOperationException("Partially overlapping try blocks is broken");
+				}
+				// check that we didn't destroy the ordering, when sorting
+				if (exceptions[i].startIndex <= exceptions[j].startIndex &&
+					exceptions[i].endIndex >= exceptions[j].endIndex &&
+					exceptions[i].ordinal < exceptions[j].ordinal)
+				{
+					throw new InvalidOperationException("Non recursive try blocks is broken");
+				}
+			}
+		}
+
+		return exceptions;
 	}
 
-	private static bool AnalyzePotentialFaultBlocks(CodeInfo codeInfo, ClassFile.Method method, UntangledExceptionTable exceptions)
+	private bool AnalyzePotentialFaultBlocks()
 	{
 		ClassFile.Method.Instruction[] code = method.Instructions;
 		bool changed = false;
@@ -2962,10 +2771,10 @@ sealed class MethodAnalyzer
 				}
 				Debug.Assert(exceptions[i].startIndex >= current.startIndex && exceptions[i].endIndex <= current.endIndex);
 				if (exceptions[i].catch_type == 0
-					&& codeInfo.HasState(exceptions[i].handlerIndex)
-					&& VerifierTypeWrapper.IsFaultBlockException(codeInfo.GetRawStackTypeWrapper(exceptions[i].handlerIndex, 0)))
+					&& state[exceptions[i].handlerIndex] != null
+					&& VerifierTypeWrapper.IsFaultBlockException(GetRawStackTypeWrapper(exceptions[i].handlerIndex, 0)))
 				{
-					InstructionFlags[] flags = MethodAnalyzer.ComputePartialReachability(codeInfo, method.Instructions, exceptions, exceptions[i].handlerIndex, true);
+					InstructionFlags[] flags = ComputePartialReachability(exceptions[i].handlerIndex, true);
 					for (int j = 0; j < code.Length; j++)
 					{
 						if ((flags[j] & InstructionFlags.Reachable) != 0)
@@ -3002,7 +2811,7 @@ sealed class MethodAnalyzer
 								continue;
 							}
 						not_fault_block:
-							VerifierTypeWrapper.ClearFaultBlockException(codeInfo.GetRawStackTypeWrapper(exceptions[i].handlerIndex, 0));
+							VerifierTypeWrapper.ClearFaultBlockException(GetRawStackTypeWrapper(exceptions[i].handlerIndex, 0));
 							done = false;
 							changed = true;
 							break;
@@ -3014,254 +2823,6 @@ sealed class MethodAnalyzer
 			}
 		}
 		return changed;
-	}
-
-	private static void ConvertFinallyBlocks(CodeInfo codeInfo, ClassFile.Method method, UntangledExceptionTable exceptions)
-	{
-		ClassFile.Method.Instruction[] code = method.Instructions;
-		InstructionFlags[] flags = ComputePartialReachability(codeInfo, code, exceptions, 0, false);
-		for (int i = 0; i < exceptions.Length; i++)
-		{
-			if (exceptions[i].catch_type == 0
-				&& codeInfo.HasState(exceptions[i].handlerIndex)
-				&& VerifierTypeWrapper.IsFaultBlockException(codeInfo.GetRawStackTypeWrapper(exceptions[i].handlerIndex, 0)))
-			{
-				int exit;
-				if (IsSynchronizedBlockHandler(code, exceptions[i].handlerIndex)
-					&& exceptions[i].endIndex - 2 >= exceptions[i].startIndex
-					&& TryFindSingleTryBlockExit(code, flags, exceptions, new ExceptionTableEntry(exceptions[i].startIndex, exceptions[i].endIndex - 2, exceptions[i].handlerIndex, 0, exceptions[i].ordinal), i, out exit)
-					&& exit == exceptions[i].endIndex - 2
-					&& (flags[exit + 1] & InstructionFlags.BranchTarget) == 0
-					&& MatchInstructions(code, exit, exceptions[i].handlerIndex + 1)
-					&& MatchInstructions(code, exit + 1, exceptions[i].handlerIndex + 2)
-					&& MatchExceptionCoverage(exceptions, i, exceptions[i].handlerIndex + 1, exceptions[i].handlerIndex + 3, exit, exit + 2)
-					&& exceptions[i].handlerIndex <= ushort.MaxValue)
-				{
-					code[exit].PatchOpCode(NormalizedByteCode.__goto_finally, exceptions[i].endIndex, (short)exceptions[i].handlerIndex);
-					exceptions.SetFinally(i);
-				}
-				else if (TryFindSingleTryBlockExit(code, flags, exceptions, exceptions[i], i, out exit)
-					// the stack must be empty
-					&& codeInfo.GetStackHeight(exit) == 0
-					// the exit code must not be reachable (except from within the try-block),
-					// because we're going to patch it to jump around the exit code
-					&& !IsReachableFromOutsideTryBlock(codeInfo, code, exceptions, exceptions[i], exit))
-				{
-					int exitHandlerEnd;
-					int faultHandlerEnd;
-					if (MatchFinallyBlock(codeInfo, code, exceptions, exceptions[i].handlerIndex, exit, out exitHandlerEnd, out faultHandlerEnd))
-					{
-						if (exit != exitHandlerEnd
-							&& codeInfo.GetStackHeight(exitHandlerEnd) == 0
-							&& MatchExceptionCoverage(exceptions, -1, exceptions[i].handlerIndex, faultHandlerEnd, exit, exitHandlerEnd))
-						{
-							// We use Arg2 (which is a short) to store the handler in the __goto_finally pseudo-opcode,
-							// so we can only do that if handlerIndex fits in a short (note that we can use the sign bit too).
-							if (exceptions[i].handlerIndex <= ushort.MaxValue)
-							{
-								code[exit].PatchOpCode(NormalizedByteCode.__goto_finally, exitHandlerEnd, (short)exceptions[i].handlerIndex);
-								exceptions.SetFinally(i);
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	private static bool IsSynchronizedBlockHandler(ClassFile.Method.Instruction[] code, int index)
-	{
-		return code[index].NormalizedOpCode == NormalizedByteCode.__astore
-			&& code[index + 1].NormalizedOpCode == NormalizedByteCode.__aload
-			&& code[index + 2].NormalizedOpCode == NormalizedByteCode.__monitorexit
-			&& code[index + 3].NormalizedOpCode == NormalizedByteCode.__aload && code[index + 3].Arg1 == code[index].Arg1
-			&& code[index + 4].NormalizedOpCode == NormalizedByteCode.__athrow;
-	}
-
-	private static bool MatchExceptionCoverage(UntangledExceptionTable exceptions, int skipException, int startFault, int endFault, int startExit, int endExit)
-	{
-		for (int j = 0; j < exceptions.Length; j++)
-		{
-			if (j != skipException && ExceptionCovers(exceptions[j], startFault, endFault) != ExceptionCovers(exceptions[j], startExit, endExit))
-			{
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private static bool ExceptionCovers(ExceptionTableEntry exception, int start, int end)
-	{
-		return exception.startIndex < end && exception.endIndex > start;
-	}
-
-	private static bool MatchFinallyBlock(CodeInfo codeInfo, ClassFile.Method.Instruction[] code, UntangledExceptionTable exceptions, int faultHandler, int exitHandler, out int exitHandlerEnd, out int faultHandlerEnd)
-	{
-		exitHandlerEnd = -1;
-		faultHandlerEnd = -1;
-		if (code[faultHandler].NormalizedOpCode != NormalizedByteCode.__astore)
-		{
-			return false;
-		}
-		int startFault = faultHandler;
-		int faultLocal = code[faultHandler++].NormalizedArg1;
-		for (; ; )
-		{
-			if (code[faultHandler].NormalizedOpCode == NormalizedByteCode.__aload
-				&& code[faultHandler].NormalizedArg1 == faultLocal
-				&& code[faultHandler + 1].NormalizedOpCode == NormalizedByteCode.__athrow)
-			{
-				// make sure that instructions that we haven't covered aren't reachable
-				InstructionFlags[] flags = ComputePartialReachability(codeInfo, code, exceptions, startFault, false);
-				for (int i = 0; i < flags.Length; i++)
-				{
-					if ((i < startFault || i > faultHandler + 1) && (flags[i] & InstructionFlags.Reachable) != 0)
-					{
-						return false;
-					}
-				}
-				exitHandlerEnd = exitHandler;
-				faultHandlerEnd = faultHandler;
-				return true;
-			}
-			if (!MatchInstructions(code, faultHandler, exitHandler))
-			{
-				return false;
-			}
-			faultHandler++;
-			exitHandler++;
-		}
-	}
-
-	private static bool MatchInstructions(ClassFile.Method.Instruction[] code, int i, int j)
-	{
-		if (code[i].NormalizedOpCode != code[j].NormalizedOpCode)
-		{
-			return false;
-		}
-		switch (ByteCodeMetaData.GetFlowControl(code[i].NormalizedOpCode))
-		{
-			case ByteCodeFlowControl.Branch:
-			case ByteCodeFlowControl.CondBranch:
-				if (code[i].Arg1 - i != code[j].Arg1 - j)
-				{
-					return false;
-				}
-				break;
-			case ByteCodeFlowControl.Switch:
-				if (code[i].SwitchEntryCount != code[j].SwitchEntryCount)
-				{
-					return false;
-				}
-				for (int k = 0; k < code[i].SwitchEntryCount; k++)
-				{
-					if (code[i].GetSwitchTargetIndex(k) != code[j].GetSwitchTargetIndex(k))
-					{
-						return false;
-					}
-				}
-				if (code[i].DefaultTarget != code[j].DefaultTarget)
-				{
-					return false;
-				}
-				break;
-			default:
-				if (code[i].Arg1 != code[j].Arg1)
-				{
-					return false;
-				}
-				if (code[i].Arg2 != code[j].Arg2)
-				{
-					return false;
-				}
-				break;
-		}
-		return true;
-	}
-
-	private static bool IsReachableFromOutsideTryBlock(CodeInfo codeInfo, ClassFile.Method.Instruction[] code, UntangledExceptionTable exceptions, ExceptionTableEntry tryBlock, int instructionIndex)
-	{
-		InstructionFlags[] flags = new InstructionFlags[code.Length];
-		flags[0] |= InstructionFlags.Reachable;
-		// We mark the first instruction of the try-block as already processed, so that UpdatePartialReachability will skip the try-block.
-		// Note that we can do this, because it is not possible to jump into the middle of a try-block (after the exceptions have been untangled).
-		flags[tryBlock.startIndex] = InstructionFlags.Processed;
-		// We mark the successor instructions of the instruction we're examinining as reachable,
-		// to figure out if the code following the handler somehow branches back to it.
-		MarkSuccessors(code, flags, instructionIndex);
-		UpdatePartialReachability(flags, codeInfo, code, exceptions, false);
-		return (flags[instructionIndex] & InstructionFlags.Reachable) != 0;
-	}
-
-	private static bool TryFindSingleTryBlockExit(ClassFile.Method.Instruction[] code, InstructionFlags[] flags, UntangledExceptionTable exceptions, ExceptionTableEntry exception, int exceptionIndex, out int exit)
-	{
-		exit = -1;
-		bool fail = false;
-		bool nextIsReachable = false;
-		for (int i = exception.startIndex; !fail && i < exception.endIndex; i++)
-		{
-			if ((flags[i] & InstructionFlags.Reachable) != 0)
-			{
-				nextIsReachable = false;
-				for (int j = 0; j < exceptions.Length; j++)
-				{
-					if (j != exceptionIndex && exceptions[j].startIndex <= exception.startIndex && exception.endIndex <= exceptions[j].endIndex)
-					{
-						UpdateTryBlockExit(exception, exceptions[j].handlerIndex, ref exit, ref fail);
-					}
-				}
-				switch (ByteCodeMetaData.GetFlowControl(code[i].NormalizedOpCode))
-				{
-					case ByteCodeFlowControl.Switch:
-						{
-							for (int j = 0; j < code[i].SwitchEntryCount; j++)
-							{
-								UpdateTryBlockExit(exception, code[i].GetSwitchTargetIndex(j), ref exit, ref fail);
-							}
-							UpdateTryBlockExit(exception, code[i].DefaultTarget, ref exit, ref fail);
-							break;
-						}
-					case ByteCodeFlowControl.Branch:
-						UpdateTryBlockExit(exception, code[i].TargetIndex, ref exit, ref fail);
-						break;
-					case ByteCodeFlowControl.CondBranch:
-						UpdateTryBlockExit(exception, code[i].TargetIndex, ref exit, ref fail);
-						nextIsReachable = true;
-						break;
-					case ByteCodeFlowControl.Return:
-						fail = true;
-						break;
-					case ByteCodeFlowControl.Throw:
-						break;
-					case ByteCodeFlowControl.Next:
-						nextIsReachable = true;
-						break;
-					default:
-						throw new InvalidOperationException();
-				}
-			}
-		}
-		if (nextIsReachable)
-		{
-			UpdateTryBlockExit(exception, exception.endIndex, ref exit, ref fail);
-		}
-		return !fail && exit != -1;
-	}
-
-	private static void UpdateTryBlockExit(ExceptionTableEntry exception, int targetIndex, ref int exitIndex, ref bool fail)
-	{
-		if (exception.startIndex <= targetIndex && targetIndex < exception.endIndex)
-		{
-			// branch stays inside try block
-		}
-		else if (exitIndex == -1)
-		{
-			exitIndex = targetIndex;
-		}
-		else if (exitIndex != targetIndex)
-		{
-			fail = true;
-		}
 	}
 
 	private void SetHardError(ClassLoaderWrapper classLoader, ref ClassFile.Method.Instruction instruction, HardError hardError, string message, params object[] args)
@@ -3303,10 +2864,42 @@ sealed class MethodAnalyzer
 		instruction.SetHardError(hardError, AllocErrorMessage(text));
 	}
 
-	private void PatchInvoke(TypeWrapper wrapper, ref ClassFile.Method.Instruction instr, StackState stack)
+	private void VerifyInvoke(TypeWrapper wrapper, ref ClassFile.Method.Instruction instr, StackState stack)
 	{
 		ClassFile.ConstantPoolItemMI cpi = GetMethodref(instr.Arg1);
+		if((cpi is ClassFile.ConstantPoolItemInterfaceMethodref) != (instr.NormalizedOpCode == NormalizedByteCode.__invokeinterface))
+		{
+			throw new VerifyError("Illegal constant pool index");
+		}
+		if(instr.NormalizedOpCode != NormalizedByteCode.__invokespecial && ReferenceEquals(cpi.Name, StringConstants.INIT))
+		{
+			throw new VerifyError("Must call initializers using invokespecial");
+		}
+		if(ReferenceEquals(cpi.Name, StringConstants.CLINIT))
+		{
+			throw new VerifyError("Illegal call to internal method");
+		}
 		NormalizedByteCode invoke = instr.NormalizedOpCode;
+		TypeWrapper[] args = cpi.GetArgTypes();
+		for(int j = args.Length - 1; j >= 0; j--)
+		{
+			stack.PopType(args[j]);
+		}
+		if(invoke == NormalizedByteCode.__invokeinterface)
+		{
+			int argcount = args.Length + 1;
+			for(int j = 0; j < args.Length; j++)
+			{
+				if(args[j].IsWidePrimitive)
+				{
+					argcount++;
+				}
+			}
+			if(instr.Arg2 != argcount)
+			{
+				throw new VerifyError("Inconsistent args size");
+			}
+		}
 		bool isnew = false;
 		TypeWrapper thisType;
 		if(invoke == NormalizedByteCode.__invokestatic)
@@ -3315,16 +2908,63 @@ sealed class MethodAnalyzer
 		}
 		else
 		{
-			TypeWrapper[] args = cpi.GetArgTypes();
-			for (int j = args.Length - 1; j >= 0; j--)
-			{
-				stack.PopType(args[j]);
-			}
 			thisType = SigTypeToClassName(stack.PeekType(), cpi.GetClassType(), wrapper);
 			if(ReferenceEquals(cpi.Name, StringConstants.INIT))
 			{
 				TypeWrapper type = stack.PopType();
 				isnew = VerifierTypeWrapper.IsNew(type);
+				if((isnew && ((VerifierTypeWrapper)type).UnderlyingType != cpi.GetClassType()) ||
+					(type == VerifierTypeWrapper.UninitializedThis && cpi.GetClassType() != wrapper.BaseTypeWrapper && cpi.GetClassType() != wrapper) ||
+					(!isnew && type != VerifierTypeWrapper.UninitializedThis))
+				{
+					// TODO oddly enough, Java fails verification for the class without
+					// even running the constructor, so maybe constructors are always
+					// verified...
+					// NOTE when a constructor isn't verifiable, the static initializer
+					// doesn't run either
+					throw new VerifyError("Call to wrong initialization method");
+				}
+			}
+			else
+			{
+				if(invoke != NormalizedByteCode.__invokeinterface)
+				{
+					TypeWrapper refType = stack.PopObjectType();
+					TypeWrapper targetType = cpi.GetClassType();
+					if(!VerifierTypeWrapper.IsNullOrUnloadable(refType) && 
+						!targetType.IsUnloadable &&
+						!refType.IsAssignableTo(targetType))
+					{
+						throw new VerifyError("Incompatible object argument for function call");
+					}
+					// for invokespecial we also need to make sure we're calling ourself or a base class
+					if(invoke == NormalizedByteCode.__invokespecial)
+					{
+						if(!VerifierTypeWrapper.IsNullOrUnloadable(refType) && !refType.IsSubTypeOf(wrapper))
+						{
+							throw new VerifyError("Incompatible target object for invokespecial");
+						}
+						if(!targetType.IsUnloadable && !wrapper.IsSubTypeOf(targetType))
+						{
+							throw new VerifyError("Invokespecial cannot call subclass methods");
+						}
+					}
+				}
+				else /* __invokeinterface */
+				{
+					// NOTE unlike in the above case, we also allow *any* interface target type
+					// regardless of whether it is compatible or not, because if it is not compatible
+					// we want an IncompatibleClassChangeError at runtime
+					TypeWrapper refType = stack.PopObjectType();
+					TypeWrapper targetType = cpi.GetClassType();
+					if(!VerifierTypeWrapper.IsNullOrUnloadable(refType) 
+						&& !targetType.IsUnloadable
+						&& !refType.IsAssignableTo(targetType)
+						&& !targetType.IsInterface)
+					{
+						throw new VerifyError("Incompatible object argument for function call");
+					}
+				}
 			}
 		}
 
@@ -3411,7 +3051,7 @@ sealed class MethodAnalyzer
 		}
 	}
 
-	private void PatchFieldAccess(TypeWrapper wrapper, MethodWrapper mw, ref ClassFile.Method.Instruction instr, StackState stack)
+	private void VerifyFieldAccess(TypeWrapper wrapper, MethodWrapper mw, ref ClassFile.Method.Instruction instr, StackState stack)
 	{
 		ClassFile.ConstantPoolItemFieldref cpi = classFile.GetFieldref(instr.Arg1);
 		bool isStatic;
@@ -3586,6 +3226,11 @@ sealed class MethodAnalyzer
 		return index;
 	}
 
+	internal string GetErrorMessage(int messageId)
+	{
+		return errorMessages[messageId];
+	}
+
 	private string CheckLoaderConstraints(ClassFile.ConstantPoolItemMI cpi, MethodWrapper mw)
 	{
 		if(cpi.GetRetType() != mw.ReturnType && !mw.ReturnType.IsUnloadable)
@@ -3687,80 +3332,50 @@ sealed class MethodAnalyzer
 		throw new VerifyError("Illegal constant pool index");
 	}
 
+	internal int GetStackHeight(int index)
+	{
+		return state[index].GetStackHeight();
+	}
+
+	internal TypeWrapper GetStackTypeWrapper(int index, int pos)
+	{
+		TypeWrapper type = state[index].GetStackSlot(pos);
+		if(VerifierTypeWrapper.IsThis(type))
+		{
+			type = ((VerifierTypeWrapper)type).UnderlyingType;
+		}
+		return type;
+	}
+
+	internal TypeWrapper GetRawStackTypeWrapper(int index, int pos)
+	{
+		return state[index].GetStackSlot(pos);
+	}
+
+	internal TypeWrapper GetLocalTypeWrapper(int index, int local)
+	{
+		return state[index].GetLocalTypeEx(local);
+	}
+
 	internal void ClearFaultBlockException(int instructionIndex)
 	{
 		Debug.Assert(state[instructionIndex].GetStackHeight() == 1);
 		state[instructionIndex].ClearFaultBlockException();
 	}
 
-	private static void DumpMethod(CodeInfo codeInfo, ClassFile.Method method, UntangledExceptionTable exceptions)
+	internal ExceptionTableEntry[] GetExceptionTableFor(InstructionFlags[] flags)
 	{
-		ClassFile.Method.Instruction[] code = method.Instructions;
-		InstructionFlags[] flags = ComputePartialReachability(codeInfo, code, exceptions, 0, false);
-		for (int i = 0; i < code.Length; i++)
-		{
-			bool label = (flags[i] & InstructionFlags.BranchTarget) != 0;
-			if (!label)
-			{
-				for (int j = 0; j < exceptions.Length; j++)
-				{
-					if (exceptions[j].startIndex == i
-						|| exceptions[j].endIndex == i
-						|| exceptions[j].handlerIndex == i)
-					{
-						label = true;
-						break;
-					}
-				}
-			}
-			if (label)
-			{
-				Console.WriteLine("label{0}:", i);
-			}
-			if ((flags[i] & InstructionFlags.Reachable) != 0)
-			{
-				Console.Write("  {1}", i, code[i].NormalizedOpCode.ToString().Substring(2));
-				switch (ByteCodeMetaData.GetFlowControl(code[i].NormalizedOpCode))
-				{
-					case ByteCodeFlowControl.Branch:
-					case ByteCodeFlowControl.CondBranch:
-						Console.Write(" label{0}", code[i].Arg1);
-						break;
-				}
-				switch (code[i].NormalizedOpCode)
-				{
-					case NormalizedByteCode.__iload:
-					case NormalizedByteCode.__lload:
-					case NormalizedByteCode.__fload:
-					case NormalizedByteCode.__dload:
-					case NormalizedByteCode.__aload:
-					case NormalizedByteCode.__istore:
-					case NormalizedByteCode.__lstore:
-					case NormalizedByteCode.__fstore:
-					case NormalizedByteCode.__dstore:
-					case NormalizedByteCode.__astore:
-					case NormalizedByteCode.__iconst:
-						Console.Write(" {0}", code[i].Arg1);
-						break;
-					case NormalizedByteCode.__ldc:
-					case NormalizedByteCode.__getfield:
-					case NormalizedByteCode.__getstatic:
-					case NormalizedByteCode.__putfield:
-					case NormalizedByteCode.__putstatic:
-					case NormalizedByteCode.__invokeinterface:
-					case NormalizedByteCode.__invokespecial:
-					case NormalizedByteCode.__invokestatic:
-					case NormalizedByteCode.__invokevirtual:
-					case NormalizedByteCode.__new:
-						Console.Write(" #{0}", code[i].Arg1);
-						break;
-				}
-				Console.WriteLine();
-			}
-		}
+		List<ExceptionTableEntry> list = new List<ExceptionTableEntry>();
+		// return only reachable exception handlers (because the code gen depends on that)
 		for (int i = 0; i < exceptions.Length; i++)
 		{
-			Console.WriteLine(".catch #{0} from label{1} to label{2} using label{3}", exceptions[i].catch_type, exceptions[i].startIndex, exceptions[i].endIndex, exceptions[i].handlerIndex);
+			// if the first instruction is unreachable, the entire block is unreachable,
+			// because you can't jump into a block (we've just split the blocks to ensure that)
+			if ((flags[exceptions[i].startIndex] & InstructionFlags.Reachable) != 0)
+			{
+				list.Add(exceptions[i]);
+			}
 		}
+		return list.ToArray();
 	}
 }
