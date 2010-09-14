@@ -540,7 +540,7 @@ namespace IKVM.Internal
 		internal static bool IsHideFromJava(Type type)
 		{
 			return type.IsDefined(typeofHideFromJavaAttribute, false)
-				|| (type.IsNested && type.Name.StartsWith("__<", StringComparison.Ordinal));
+				|| (type.IsNested && (type.DeclaringType.IsDefined(typeofHideFromJavaAttribute, false) || type.Name.StartsWith("__<", StringComparison.Ordinal)));
 		}
 
 		internal static bool IsHideFromJava(MemberInfo mi)
@@ -554,6 +554,10 @@ namespace IKVM.Internal
 			}
 			MethodBase mb = mi as MethodBase;
 			if(mb != null && (mb.Attributes & MethodAttributes.MemberAccessMask) == MethodAttributes.PrivateScope)
+			{
+				return true;
+			}
+			if (mi.Name.StartsWith("__<", StringComparison.Ordinal))
 			{
 				return true;
 			}
@@ -3901,7 +3905,7 @@ namespace IKVM.Internal
 			}
 
 #if !STUB_GENERATOR
-			internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
+			internal override void EmitNewobj(CodeEmitter ilgen)
 			{
 				ilgen.Emit(OpCodes.Dup);
 				ilgen.Emit(OpCodes.Ldvirtftn, invoke);
@@ -4653,6 +4657,11 @@ namespace IKVM.Internal
 		internal static TypeWrapper MakeThis(TypeWrapper type)
 		{
 			return new VerifierTypeWrapper(This, 0, type, null);
+		}
+
+		internal static bool IsNotPresentOnStack(TypeWrapper w)
+		{
+			return IsNew(w) || IsFaultBlockException(w);
 		}
 
 		internal static bool IsNew(TypeWrapper w)

@@ -173,6 +173,7 @@ sealed class Compiler
 	private readonly ClassFile.Method m;
 	private readonly CodeEmitter ilGenerator;
 	private readonly MethodAnalyzer ma;
+	private readonly LocalVarInfo localVars;
 	private readonly ISymbolDocumentWriter symboldocument;
 	private readonly LineNumberTableAttribute.LineNumberWriter lineNumbers;
 	private bool nonleaf;
@@ -255,6 +256,7 @@ sealed class Compiler
 				JsrInliner.InlineJsrs(classLoader, mw, classFile, m);
 			}
 			ma = new MethodAnalyzer(clazz, mw, classFile, m, classLoader);
+			localVars = new LocalVarInfo(ma, m, mw, classLoader);
 		}
 		finally
 		{
@@ -262,7 +264,7 @@ sealed class Compiler
 		}
 
 		TypeWrapper[] args = mw.GetParameters();
-		LocalVar[] locals = ma.GetAllLocalVars();
+		LocalVar[] locals = localVars.GetAllLocalVars();
 		foreach(LocalVar v in locals)
 		{
 			if(v.isArg)
@@ -331,7 +333,7 @@ sealed class Compiler
 						// following the store that first initializes the local, so we have to
 						// detect that case and adjust our local scope (because we'll be creating
 						// the local when we encounter the first store).
-						LocalVar v = ma.GetLocalVar(startIndex - 1);
+						LocalVar v = localVars.GetLocalVar(startIndex - 1);
 						if(v != null && v.local == lvt[i].index)
 						{
 							startIndex--;
@@ -964,7 +966,7 @@ sealed class Compiler
 					Instruction handlerInstr = code[handlerIndex];
 					bool unusedException = (handlerInstr.NormalizedOpCode == NormalizedByteCode.__pop ||
 						(handlerInstr.NormalizedOpCode == NormalizedByteCode.__astore &&
-						ma.GetLocalVar(handlerIndex) == null));
+						localVars.GetLocalVar(handlerIndex) == null));
 					int mapFlags = unusedException ? 2 : 0;
 					if(mapSafe && unusedException)
 					{
@@ -1117,44 +1119,22 @@ sealed class Compiler
 				// fool it by calling a trivial method that loops forever which the CLR JIT will then inline
 				// and see that control flow doesn't continue and hence the lifetime of "this" will be
 				// shorter than the constructor.
-				switch(instr.NormalizedOpCode)
+				switch(ByteCodeMetaData.GetFlowControl(instr.NormalizedOpCode))
 				{
-					case NormalizedByteCode.__return:
-					case NormalizedByteCode.__areturn:
-					case NormalizedByteCode.__ireturn:
-					case NormalizedByteCode.__lreturn:
-					case NormalizedByteCode.__freturn:
-					case NormalizedByteCode.__dreturn:
+					case ByteCodeFlowControl.Return:
 						ilGenerator.Emit(OpCodes.Ldarg_0);
 						ilGenerator.Emit(OpCodes.Call, keepAliveMethod);
 						break;
-					case NormalizedByteCode.__if_icmpeq:
-					case NormalizedByteCode.__if_icmpne:
-					case NormalizedByteCode.__if_icmple:
-					case NormalizedByteCode.__if_icmplt:
-					case NormalizedByteCode.__if_icmpge:
-					case NormalizedByteCode.__if_icmpgt:
-					case NormalizedByteCode.__ifle:
-					case NormalizedByteCode.__iflt:
-					case NormalizedByteCode.__ifge:
-					case NormalizedByteCode.__ifgt:
-					case NormalizedByteCode.__ifne:
-					case NormalizedByteCode.__ifeq:
-					case NormalizedByteCode.__ifnonnull:
-					case NormalizedByteCode.__ifnull:
-					case NormalizedByteCode.__if_acmpeq:
-					case NormalizedByteCode.__if_acmpne:
-					case NormalizedByteCode.__goto:
+					case ByteCodeFlowControl.Branch:
+					case ByteCodeFlowControl.CondBranch:
 						if(instr.TargetIndex <= i)
 						{
 							ilGenerator.Emit(OpCodes.Ldarg_0);
 							ilGenerator.Emit(OpCodes.Call, keepAliveMethod);
 						}
 						break;
-					case NormalizedByteCode.__athrow:
-					case NormalizedByteCode.__athrow_no_unmap:
-					case NormalizedByteCode.__lookupswitch:
-					case NormalizedByteCode.__tableswitch:
+					case ByteCodeFlowControl.Throw:
+					case ByteCodeFlowControl.Switch:
 						if(ma.GetLocalTypeWrapper(i, 0) != VerifierTypeWrapper.UninitializedThis)
 						{
 							ilGenerator.Emit(OpCodes.Ldarg_0);
@@ -1264,39 +1244,11 @@ sealed class Compiler
 					switch(classFile.GetConstantPoolConstantType(constant))
 					{
 						case ClassFile.ConstantType.Double:
-						{
-							double v = classFile.GetConstantPoolConstantDouble(constant);
-							if(v == 0.0 && BitConverter.DoubleToInt64Bits(v) < 0)
-							{
-								// FXBUG the x64 CLR JIT has a bug [1] that causes "cond ? -0:0 : 0.0" to be optimized to 0.0
-								// This bug causes problems for the sun.misc.FloatingDecimal code, so as a workaround we obfuscate the -0.0 constant.
-								// [1] https://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=276714
-								ilGenerator.Emit(OpCodes.Ldc_I8, Int64.MinValue);
-								ilGenerator.Emit(OpCodes.Call, JVM.Import(typeof(BitConverter)).GetMethod("Int64BitsToDouble"));
-							}
-							else
-							{
-								ilGenerator.Emit(OpCodes.Ldc_R8, v);
-							}
+							ilGenerator.Emit(OpCodes.Ldc_R8, classFile.GetConstantPoolConstantDouble(constant));
 							break;
-						}
 						case ClassFile.ConstantType.Float:
-						{
-							float v = classFile.GetConstantPoolConstantFloat(constant);
-							if(v == 0.0 && BitConverter.DoubleToInt64Bits(v) < 0)
-							{
-								// FXBUG the x64 CLR JIT has a bug [1] that causes "cond ? -0:0 : 0.0" to be optimized to 0.0
-								// This bug causes problems for the sun.misc.FloatingDecimal code, so as a workaround we obfuscate the -0.0 constant.
-								// [1] https://connect.microsoft.com/VisualStudio/feedback/ViewFeedback.aspx?FeedbackID=276714
-								ilGenerator.Emit(OpCodes.Ldc_I8, Int64.MinValue);
-								ilGenerator.Emit(OpCodes.Call, JVM.Import(typeof(BitConverter)).GetMethod("Int64BitsToDouble"));
-							}
-							else
-							{
-								ilGenerator.Emit(OpCodes.Ldc_R4, v);
-							}
+							ilGenerator.Emit(OpCodes.Ldc_R4, classFile.GetConstantPoolConstantFloat(constant));
 							break;
-						}
 						case ClassFile.ConstantType.Integer:
 							ilGenerator.LazyEmitLdc_I4(classFile.GetConstantPoolConstantInteger(constant));
 							break;
@@ -1490,7 +1442,7 @@ sealed class Compiler
 									}
 								}
 							}
-							method.EmitNewobj(ilGenerator, ma, i);
+							method.EmitNewobj(ilGenerator);
 							if(!thisType.IsUnloadable && thisType.IsSubTypeOf(cli_System_Exception))
 							{
 								// we call Throwable.__<fixate>() to disable remapping the exception
@@ -1517,7 +1469,7 @@ sealed class Compiler
 											tempstack[j] = newobj;
 											ilGenerator.Emit(OpCodes.Pop);
 										}
-										else if(!VerifierTypeWrapper.IsNew(stacktype))
+										else if(!VerifierTypeWrapper.IsNotPresentOnStack(stacktype))
 										{
 											LocalBuilder lb = ilGenerator.DeclareLocal(GetLocalBuilderType(stacktype));
 											ilGenerator.Emit(OpCodes.Stloc, lb);
@@ -1544,7 +1496,7 @@ sealed class Compiler
 										}
 									}
 								}
-								LocalVar[] locals = ma.GetLocalVarsForInvokeSpecial(i);
+								LocalVar[] locals = localVars.GetLocalVarsForInvokeSpecial(i);
 								for(int j = 0; j < locals.Length; j++)
 								{
 									if(locals[j] != null)
@@ -1578,7 +1530,7 @@ sealed class Compiler
 						{
 							Debug.Assert(type == VerifierTypeWrapper.UninitializedThis);
 							method.EmitCall(ilGenerator);
-							LocalVar[] locals = ma.GetLocalVarsForInvokeSpecial(i);
+							LocalVar[] locals = localVars.GetLocalVarsForInvokeSpecial(i);
 							for(int j = 0; j < locals.Length; j++)
 							{
 								if(locals[j] != null)
@@ -1747,9 +1699,9 @@ sealed class Compiler
 						// if the local is known to be null, we just emit a null
 						ilGenerator.Emit(OpCodes.Ldnull);
 					}
-					else if(VerifierTypeWrapper.IsNew(type))
+					else if(VerifierTypeWrapper.IsNotPresentOnStack(type))
 					{
-						// since new objects aren't represented on the stack, we don't need to do anything here
+						// since object isn't represented on the stack, we don't need to do anything here
 					}
 					else if(VerifierTypeWrapper.IsThis(type))
 					{
@@ -1762,10 +1714,6 @@ sealed class Compiler
 						// a different local (due to the way the local variable liveness analysis works),
 						// so we don't have to worry about that.
 						ilGenerator.Emit(OpCodes.Ldarg_0);
-					}
-					else if (VerifierTypeWrapper.IsFaultBlockException(type))
-					{
-						// not really there
 					}
 					else
 					{
@@ -1780,9 +1728,9 @@ sealed class Compiler
 				case NormalizedByteCode.__astore:
 				{
 					TypeWrapper type = ma.GetRawStackTypeWrapper(i, 0);
-					if(VerifierTypeWrapper.IsNew(type))
+					if(VerifierTypeWrapper.IsNotPresentOnStack(type))
 					{
-						// new objects aren't really on the stack, so we can't copy them into the local
+						// object isn't really on the stack, so we can't copy it into the local
 						// (and the local doesn't exist anyway)
 					}
 					else if(type == VerifierTypeWrapper.UninitializedThis)
@@ -1791,10 +1739,6 @@ sealed class Compiler
 						// here (because CLR won't allow unitialized references in locals) and then when
 						// the unitialized ref is loaded we redirect to the this reference
 						ilGenerator.LazyEmitPop();
-					}
-					else if(VerifierTypeWrapper.IsFaultBlockException(type))
-					{
-						// not really there
 					}
 					else
 					{
@@ -2313,8 +2257,8 @@ sealed class Compiler
 					break;
 				}
 				case NormalizedByteCode.__dup:
-					// if the TOS contains a "new" object, it isn't really there, so we don't dup it
-					if(!VerifierTypeWrapper.IsNew(ma.GetRawStackTypeWrapper(i, 0)))
+					// if the TOS contains a "new" object or a fault block exception, it isn't really there, so we don't dup it
+					if(!VerifierTypeWrapper.IsNotPresentOnStack(ma.GetRawStackTypeWrapper(i, 0)))
 					{
 						ilGenerator.Emit(OpCodes.Dup);
 					}
@@ -2509,11 +2453,11 @@ sealed class Compiler
 					}
 					else
 					{
-						if(!VerifierTypeWrapper.IsNew(type1))
+						if (!VerifierTypeWrapper.IsNotPresentOnStack(type1))
 						{
 							ilGenerator.LazyEmitPop();
 						}
-						if(!VerifierTypeWrapper.IsNew(ma.GetRawStackTypeWrapper(i, 1)))
+						if (!VerifierTypeWrapper.IsNotPresentOnStack(ma.GetRawStackTypeWrapper(i, 1)))
 						{
 							ilGenerator.LazyEmitPop();
 						}
@@ -2521,8 +2465,8 @@ sealed class Compiler
 					break;
 				}
 				case NormalizedByteCode.__pop:
-					// if the TOS is a new object, it isn't really there, so we don't need to pop it
-					if(!VerifierTypeWrapper.IsNew(ma.GetRawStackTypeWrapper(i, 0)))
+					// if the TOS is a new object or a fault block exception, it isn't really there, so we don't need to pop it
+					if(!VerifierTypeWrapper.IsNotPresentOnStack(ma.GetRawStackTypeWrapper(i, 0)))
 					{
 						ilGenerator.LazyEmitPop();
 					}
@@ -2681,24 +2625,16 @@ sealed class Compiler
 					throw new NotImplementedException(instr.NormalizedOpCode.ToString());
 			}
 			// mark next instruction as inuse
-			switch(instr.NormalizedOpCode)
+			switch(ByteCodeMetaData.GetFlowControl(instr.NormalizedOpCode))
 			{
-				case NormalizedByteCode.__tableswitch:
-				case NormalizedByteCode.__lookupswitch:
-				case NormalizedByteCode.__goto:
-				case NormalizedByteCode.__ret:
-				case NormalizedByteCode.__ireturn:
-				case NormalizedByteCode.__lreturn:
-				case NormalizedByteCode.__freturn:
-				case NormalizedByteCode.__dreturn:
-				case NormalizedByteCode.__areturn:
-				case NormalizedByteCode.__return:
-				case NormalizedByteCode.__athrow:
-				case NormalizedByteCode.__athrow_no_unmap:
-				case NormalizedByteCode.__static_error:
+				case ByteCodeFlowControl.Switch:
+				case ByteCodeFlowControl.Branch:
+				case ByteCodeFlowControl.Return:
+				case ByteCodeFlowControl.Throw:
 					instructionIsForwardReachable = false;
 					break;
-				default:
+				case ByteCodeFlowControl.CondBranch:
+				case ByteCodeFlowControl.Next:
 					instructionIsForwardReachable = true;
 					Debug.Assert((flags[i + 1] & InstructionFlags.Reachable) != 0);
 					// don't fall through end of try block
@@ -2708,6 +2644,8 @@ sealed class Compiler
 						ilGenerator.Emit(OpCodes.Br, block.GetLabel(i + 1));
 					}
 					break;
+				default:
+					throw new InvalidOperationException();
 			}
 		}
 	}
@@ -3016,7 +2954,7 @@ sealed class Compiler
 			Emit(ByteCodeHelperMethods.DynamicInvokevirtual, ilgen, cpi.GetRetType());
 		}
 
-		internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
+		internal override void EmitNewobj(CodeEmitter ilgen)
 		{
 			Emit(ByteCodeHelperMethods.DynamicInvokeSpecialNew, ilgen, cpi.GetClassType());
 		}
@@ -3123,7 +3061,7 @@ sealed class Compiler
 
 	private LocalVar LoadLocal(int instructionIndex)
 	{
-		LocalVar v = ma.GetLocalVar(instructionIndex);
+		LocalVar v = localVars.GetLocalVar(instructionIndex);
 		if(v.isArg)
 		{
 			ClassFile.Method.Instruction instr = m.Instructions[instructionIndex];
@@ -3183,7 +3121,7 @@ sealed class Compiler
 
 	private LocalVar StoreLocal(int instructionIndex)
 	{
-		LocalVar v = ma.GetLocalVar(instructionIndex);
+		LocalVar v = localVars.GetLocalVar(instructionIndex);
 		if(v == null)
 		{
 			// dead store
