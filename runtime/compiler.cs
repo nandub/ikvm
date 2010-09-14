@@ -173,6 +173,7 @@ sealed class Compiler
 	private readonly ClassFile.Method m;
 	private readonly CodeEmitter ilGenerator;
 	private readonly MethodAnalyzer ma;
+	private readonly LocalVarInfo localVars;
 	private readonly ISymbolDocumentWriter symboldocument;
 	private readonly LineNumberTableAttribute.LineNumberWriter lineNumbers;
 	private bool nonleaf;
@@ -255,6 +256,7 @@ sealed class Compiler
 				JsrInliner.InlineJsrs(classLoader, mw, classFile, m);
 			}
 			ma = new MethodAnalyzer(clazz, mw, classFile, m, classLoader);
+			localVars = new LocalVarInfo(ma, m, mw, classLoader);
 		}
 		finally
 		{
@@ -262,7 +264,7 @@ sealed class Compiler
 		}
 
 		TypeWrapper[] args = mw.GetParameters();
-		LocalVar[] locals = ma.GetAllLocalVars();
+		LocalVar[] locals = localVars.GetAllLocalVars();
 		foreach(LocalVar v in locals)
 		{
 			if(v.isArg)
@@ -331,7 +333,7 @@ sealed class Compiler
 						// following the store that first initializes the local, so we have to
 						// detect that case and adjust our local scope (because we'll be creating
 						// the local when we encounter the first store).
-						LocalVar v = ma.GetLocalVar(startIndex - 1);
+						LocalVar v = localVars.GetLocalVar(startIndex - 1);
 						if(v != null && v.local == lvt[i].index)
 						{
 							startIndex--;
@@ -964,7 +966,7 @@ sealed class Compiler
 					Instruction handlerInstr = code[handlerIndex];
 					bool unusedException = (handlerInstr.NormalizedOpCode == NormalizedByteCode.__pop ||
 						(handlerInstr.NormalizedOpCode == NormalizedByteCode.__astore &&
-						ma.GetLocalVar(handlerIndex) == null));
+						localVars.GetLocalVar(handlerIndex) == null));
 					int mapFlags = unusedException ? 2 : 0;
 					if(mapSafe && unusedException)
 					{
@@ -1283,7 +1285,7 @@ sealed class Compiler
 				{
 					ClassFile.ConstantPoolItemMI cpi = classFile.GetMethodref(instr.Arg1);
 					MethodWrapper method = GetMethodCallEmitter(cpi, instr.NormalizedOpCode);
-					if(method.IsIntrinsic && Intrinsics.Emit(context, ilGenerator, method, ma, i, mw, classFile, code, flags))
+					if(method.IsIntrinsic && method.EmitIntrinsic(context, ilGenerator, method, ma, i, mw, classFile, code, flags))
 					{
 						break;
 					}
@@ -1327,7 +1329,7 @@ sealed class Compiler
 
 					MethodWrapper method = GetMethodCallEmitter(cpi, instr.NormalizedOpCode);
 
-					if(method.IsIntrinsic && Intrinsics.Emit(context, ilGenerator, method, ma, i, mw, classFile, code, flags))
+					if(method.IsIntrinsic && method.EmitIntrinsic(context, ilGenerator, method, ma, i, mw, classFile, code, flags))
 					{
 						break;
 					}
@@ -1440,7 +1442,7 @@ sealed class Compiler
 									}
 								}
 							}
-							method.EmitNewobj(ilGenerator, ma, i);
+							method.EmitNewobj(ilGenerator);
 							if(!thisType.IsUnloadable && thisType.IsSubTypeOf(cli_System_Exception))
 							{
 								// we call Throwable.__<fixate>() to disable remapping the exception
@@ -1494,7 +1496,7 @@ sealed class Compiler
 										}
 									}
 								}
-								LocalVar[] locals = ma.GetLocalVarsForInvokeSpecial(i);
+								LocalVar[] locals = localVars.GetLocalVarsForInvokeSpecial(i);
 								for(int j = 0; j < locals.Length; j++)
 								{
 									if(locals[j] != null)
@@ -1528,7 +1530,7 @@ sealed class Compiler
 						{
 							Debug.Assert(type == VerifierTypeWrapper.UninitializedThis);
 							method.EmitCall(ilGenerator);
-							LocalVar[] locals = ma.GetLocalVarsForInvokeSpecial(i);
+							LocalVar[] locals = localVars.GetLocalVarsForInvokeSpecial(i);
 							for(int j = 0; j < locals.Length; j++)
 							{
 								if(locals[j] != null)
@@ -2952,7 +2954,7 @@ sealed class Compiler
 			Emit(ByteCodeHelperMethods.DynamicInvokevirtual, ilgen, cpi.GetRetType());
 		}
 
-		internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
+		internal override void EmitNewobj(CodeEmitter ilgen)
 		{
 			Emit(ByteCodeHelperMethods.DynamicInvokeSpecialNew, ilgen, cpi.GetClassType());
 		}
@@ -3059,7 +3061,7 @@ sealed class Compiler
 
 	private LocalVar LoadLocal(int instructionIndex)
 	{
-		LocalVar v = ma.GetLocalVar(instructionIndex);
+		LocalVar v = localVars.GetLocalVar(instructionIndex);
 		if(v.isArg)
 		{
 			ClassFile.Method.Instruction instr = m.Instructions[instructionIndex];
@@ -3119,7 +3121,7 @@ sealed class Compiler
 
 	private LocalVar StoreLocal(int instructionIndex)
 	{
-		LocalVar v = ma.GetLocalVar(instructionIndex);
+		LocalVar v = localVars.GetLocalVar(instructionIndex);
 		if(v == null)
 		{
 			// dead store
