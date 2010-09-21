@@ -1058,19 +1058,11 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR && __MonoCS__
-		// MONOBUG this weird hack is to work around an mcs bug
-		private static void SetClassLoadWrapperHack<T>(ref T field, ClassLoaderWrapper wrapper)
-		{
-			field = (T)(object)wrapper;
-		}
-#endif
-
 		protected static void SetWrapperForClassLoader(object javaClassLoader, ClassLoaderWrapper wrapper)
 		{
 #if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
 #if __MonoCS__
-			SetClassLoadWrapperHack(ref ((java.lang.ClassLoader)javaClassLoader).wrapper, wrapper);
+			typeof(java.lang.ClassLoader).GetField("wrapper", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(javaClassLoader, wrapper);
 #else
 			((java.lang.ClassLoader)javaClassLoader).wrapper = wrapper;
 #endif
@@ -1246,7 +1238,18 @@ namespace IKVM.Internal
 				TypeWrapper wrapper = classLoader.LoadClassByDottedNameFast(name);
 				if (wrapper == null)
 				{
-					Tracer.Error(Tracer.ClassLoading, "Class not found: {0}", name);
+					string elementTypeName = name;
+					if (elementTypeName.StartsWith("["))
+					{
+						int skip = 1;
+						while (elementTypeName[skip++] == '[') ;
+						elementTypeName = elementTypeName.Substring(skip, elementTypeName.Length - skip - 1);
+					}
+#if STATIC_COMPILER
+					classLoader.IssueMessage(Message.ClassNotFound, elementTypeName);
+#else
+					Tracer.Error(Tracer.ClassLoading, "Class not found: {0}", elementTypeName);
+#endif
 					wrapper = new UnloadableTypeWrapper(name);
 				}
 				return wrapper;
@@ -1278,6 +1281,15 @@ namespace IKVM.Internal
 				return new UnloadableTypeWrapper(name);
 			}
 		}
+
+#if STATIC_COMPILER
+		internal virtual void IssueMessage(Message msgId, params string[] values)
+		{
+			// only code that is compiled (by the static compiler) can generate warnings
+			// (so that must mean an instance of CompilerClassLoader, which overrides this method.)
+			throw new InvalidOperationException();
+		}
+#endif
 	}
 
 	class GenericClassLoader : ClassLoaderWrapper

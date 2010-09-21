@@ -264,7 +264,7 @@ namespace IKVM.Internal
 			GetAttributeArgsAndTypes(loader, attr, out argTypes, out args);
 			if(attr.Type != null)
 			{
-				Type t = StaticCompiler.GetType(loader, attr.Type);
+				Type t = StaticCompiler.GetTypeForMapXml(loader, attr.Type);
 				isDeclarativeSecurity = t.IsSubclassOf(Types.SecurityAttribute);
 				ConstructorInfo ci = t.GetConstructor(argTypes);
 				if(ci == null)
@@ -1828,7 +1828,7 @@ namespace IKVM.Internal
 						}
 					}
 #if __MonoCS__
-					SetTypeWrapperHack(ref clazz.typeWrapper, this);
+					SetTypeWrapperHack(clazz, this);
 #else
 					clazz.typeWrapper = this;
 #endif
@@ -1841,9 +1841,11 @@ namespace IKVM.Internal
 
 #if __MonoCS__
 		// MONOBUG this method is to work around an mcs bug
-		internal static void SetTypeWrapperHack<T>(ref T field, TypeWrapper type)
+		internal static void SetTypeWrapperHack(object clazz, TypeWrapper type)
 		{
-			field = (T)(object)type;
+#if !FIRST_PASS
+			typeof(java.lang.Class).GetField("typeWrapper", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(clazz, type);
+#endif
 		}
 #endif
 
@@ -1891,7 +1893,7 @@ namespace IKVM.Internal
 					tw = ClassLoaderWrapper.GetWrapperFromType(type);
 				}
 #if __MonoCS__
-				SetTypeWrapperHack(ref clazz.typeWrapper, tw);
+				SetTypeWrapperHack(clazz, tw);
 #else
 				clazz.typeWrapper = tw;
 #endif
@@ -3905,7 +3907,7 @@ namespace IKVM.Internal
 			}
 
 #if !STUB_GENERATOR
-			internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
+			internal override void EmitNewobj(CodeEmitter ilgen)
 			{
 				ilgen.Emit(OpCodes.Dup);
 				ilgen.Emit(OpCodes.Ldvirtftn, invoke);
