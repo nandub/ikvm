@@ -964,7 +964,7 @@ namespace IKVM.Internal
 					invoke = (MethodInfo)mw.GetMethod();
 				}
 
-				internal override void EmitNewobj(CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex)
+				internal override void EmitNewobj(CodeEmitter ilgen)
 				{
 					ilgen.Emit(OpCodes.Dup);
 					ilgen.Emit(OpCodes.Ldvirtftn, invoke);
@@ -3707,7 +3707,7 @@ namespace IKVM.Internal
 								// see if there exists an IKVM.NativeCode class for this type
 								Type nativeCodeType = null;
 #if STATIC_COMPILER
-								nativeCodeType = StaticCompiler.GetType(wrapper.GetClassLoader(), "IKVM.NativeCode." + classFile.Name.Replace('$', '+'), false);
+								nativeCodeType = StaticCompiler.GetType(wrapper.GetClassLoader(), "IKVM.NativeCode." + classFile.Name.Replace('$', '+'));
 #endif
 								MethodInfo nativeMethod = null;
 								TypeWrapper[] args = methods[i].GetParameters();
@@ -5108,7 +5108,23 @@ namespace IKVM.Internal
 						{
 							if (constant is int)
 							{
-								ilGenerator.Emit(OpCodes.Ldc_I4, (int)constant);
+								ilGenerator.LazyEmitLdc_I4((int)constant);
+							}
+							else if (constant is bool)
+							{
+								ilGenerator.LazyEmitLdc_I4((bool)constant ? 1 : 0);
+							}
+							else if (constant is byte)
+							{
+								ilGenerator.LazyEmitLdc_I4((byte)constant);
+							}
+							else if (constant is char)
+							{
+								ilGenerator.LazyEmitLdc_I4((char)constant);
+							}
+							else if (constant is short)
+							{
+								ilGenerator.LazyEmitLdc_I4((short)constant);
 							}
 							else if (constant is long)
 							{
