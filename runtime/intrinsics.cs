@@ -40,17 +40,19 @@ namespace IKVM.Internal
 {
 	sealed class EmitIntrinsicContext
 	{
+		internal readonly MethodWrapper Method;
 		internal readonly DynamicTypeWrapper.FinishContext Context;
 		internal readonly CodeEmitter Emitter;
-		readonly MethodAnalyzer ma;
+		private readonly CodeInfo ma;
 		internal readonly int OpcodeIndex;
 		internal readonly MethodWrapper Caller;
 		internal readonly ClassFile ClassFile;
 		internal readonly Instruction[] Code;
 		internal readonly InstructionFlags[] Flags;
 
-		internal EmitIntrinsicContext(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
+		internal EmitIntrinsicContext(MethodWrapper method, DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, CodeInfo ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
 		{
+			this.Method = method;
 			this.Context = context;
 			this.Emitter = ilgen;
 			this.ma = ma;
@@ -187,10 +189,10 @@ namespace IKVM.Internal
 			return intrinsics.ContainsKey(new IntrinsicKey(mw)) && mw.DeclaringType.GetClassLoader() == CoreClasses.java.lang.Object.Wrapper.GetClassLoader();
 		}
 
-		internal static bool Emit(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
+		internal static bool Emit(EmitIntrinsicContext context)
 		{
 			// note that intrinsics can always refuse to emit code and the code generator will fall back to a normal method call
-			return intrinsics[new IntrinsicKey(method)](new EmitIntrinsicContext(context, ilgen, method, ma, opcodeIndex, caller, classFile, code, flags));
+			return intrinsics[new IntrinsicKey(context.Method)](context);
 		}
 
 		private static bool Object_getClass(EmitIntrinsicContext eic)
