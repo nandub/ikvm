@@ -37,7 +37,7 @@ using System.Diagnostics;
 
 namespace IKVM.Internal
 {
-	sealed class CodeEmitterLabel
+	class CodeEmitterLabel
 	{
 		private Label label;
 		private int offset = -1;
@@ -61,54 +61,9 @@ namespace IKVM.Internal
 			{
 				return offset;
 			}
-		}
-
-		internal void Mark(ILGenerator ilgen, int offset)
-		{
-			ilgen.MarkLabel(label);
-			this.offset = offset;
-		}
-	}
-
-	sealed class CodeEmitterLocal
-	{
-		private Type type;
-		private string name;
-		private LocalBuilder local;
-
-		internal CodeEmitterLocal(Type type)
-		{
-			this.type = type;
-		}
-
-		internal Type LocalType
-		{
-			get { return type; }
-		}
-
-		internal void SetLocalSymInfo(string name)
-		{
-			this.name = name;
-		}
-
-#if !STATIC_COMPILER
-		internal int __LocalIndex
-		{
-			get { return local.LocalIndex; }
-		}
-#endif
-
-		internal void Emit(ILGenerator ilgen, OpCode opcode)
-		{
-			ilgen.Emit(opcode, local);
-		}
-
-		internal void Declare(ILGenerator ilgen)
-		{
-			local = ilgen.DeclareLocal(type);
-			if (name != null)
+			set
 			{
-				local.SetLocalSymInfo(name);
+				offset = value;
 			}
 		}
 	}
@@ -120,68 +75,18 @@ namespace IKVM.Internal
 		private ILGenerator ilgen_real;
 #if !STATIC_COMPILER
 		private int offset;
-		private bool inFinally;
-		private Stack<bool> exceptionStack = new Stack<bool>();
 #endif
+		private Stack<bool> exceptionStack = new Stack<bool>();
+		private bool inFinally;
 		private IKVM.Attributes.LineNumberTableAttribute.LineNumberWriter linenums;
 		private Expr[] stackArray = new Expr[8];
 		private int topOfStack;
-		private CodeEmitterLocal[] tempLocals = new CodeEmitterLocal[32];
+		private CodeEmitterLabel lazyBranch;
+		private LocalBuilder[] tempLocals = new LocalBuilder[32];
 		private ISymbolDocumentWriter symbols;
-		private List<OpCodeWrapper> code = new List<OpCodeWrapper>();
 #if LABELCHECK
 		private Dictionary<CodeEmitterLabel, System.Diagnostics.StackFrame> labels = new Dictionary<CodeEmitterLabel, System.Diagnostics.StackFrame>();
 #endif
-
-		enum CodeType
-		{
-			OpCode,
-			Nop,
-			BeginScope,
-			EndScope,
-			DeclareLocal,
-			SequencePoint,
-			LineNumber,
-			Label,
-			WriteLine,
-			ThrowException,
-			BeginExceptionBlock,
-			BeginCatchBlock,
-			BeginFaultBlock,
-			BeginFinallyBlock,
-			EndExceptionBlock,
-#if !STATIC_COMPILER
-			EndExceptionBlockFinally,
-#endif
-		}
-
-		struct OpCodeWrapper
-		{
-			internal readonly CodeType type;
-			internal readonly OpCode opcode;
-			internal readonly object data;
-
-			internal OpCodeWrapper(CodeType type, OpCode opcode, object data)
-			{
-				this.type = type;
-				this.opcode = opcode;
-				this.data = data;
-			}
-		}
-
-		sealed class CalliWrapper
-		{
-			internal readonly CallingConvention unmanagedCallConv;
-			internal readonly Type returnType;
-			internal readonly Type[] parameterTypes;
-
-			internal CalliWrapper(CallingConvention unmanagedCallConv, Type returnType, Type[] parameterTypes)
-			{
-				this.unmanagedCallConv = unmanagedCallConv;
-				this.returnType = returnType;
-				this.parameterTypes = parameterTypes == null ? null : (Type[])parameterTypes.Clone();
-			}
-		}
 
 		internal static CodeEmitter Create(MethodBuilder mb)
 		{
@@ -206,297 +111,6 @@ namespace IKVM.Internal
 			ilgen.__CleverExceptionBlockAssistance();
 #endif
 			this.ilgen_real = ilgen;
-		}
-
-		private void EmitPseudoOpCode(CodeType type, object data)
-		{
-			code.Add(new OpCodeWrapper(type, OpCodes.Nop, data));
-		}
-
-		private void EmitOpCode(OpCode opcode, object arg)
-		{
-			code.Add(new OpCodeWrapper(CodeType.OpCode, opcode, arg));
-		}
-
-		private void RealEmitPseudoOpCode(CodeType type, object data)
-		{
-			switch (type)
-			{
-				case CodeType.Nop:
-					break;
-				case CodeType.BeginScope:
-					ilgen_real.BeginScope();
-					break;
-				case CodeType.EndScope:
-					ilgen_real.EndScope();
-					break;
-				case CodeType.DeclareLocal:
-					((CodeEmitterLocal)data).Declare(ilgen_real);
-					break;
-				case CodeType.SequencePoint:
-					ilgen_real.MarkSequencePoint(symbols, (int)data, 0, (int)data + 1, 0);
-					// we emit a nop to make sure we always have an instruction associated with the sequence point
-					ilgen_real.Emit(OpCodes.Nop);
-					break;
-				case CodeType.LineNumber:
-					if (linenums == null)
-					{
-						linenums = new IKVM.Attributes.LineNumberTableAttribute.LineNumberWriter(32);
-					}
-					linenums.AddMapping(GetILOffset(), (int)data);
-					break;
-				case CodeType.Label:
-					((CodeEmitterLabel)data).Mark(ilgen_real, GetILOffset());
-					break;
-				case CodeType.WriteLine:
-#if !STATIC_COMPILER
-					offset += 10;
-#endif
-					ilgen_real.EmitWriteLine((string)data);
-					break;
-				case CodeType.ThrowException:
-#if !STATIC_COMPILER
-					offset += 6;
-#endif
-					ilgen_real.ThrowException((Type)data);
-					break;
-				case CodeType.BeginExceptionBlock:
-					ilgen_real.BeginExceptionBlock();
-					break;
-				case CodeType.BeginCatchBlock:
-#if !STATIC_COMPILER
-					offset += 5;
-#endif
-					ilgen_real.BeginCatchBlock((Type)data);
-					break;
-				case CodeType.BeginFaultBlock:
-#if !STATIC_COMPILER
-					offset += 5;
-#endif
-					ilgen_real.BeginFaultBlock();
-					break;
-				case CodeType.BeginFinallyBlock:
-#if !STATIC_COMPILER
-					offset += 5;
-#endif
-					ilgen_real.BeginFinallyBlock();
-					break;
-#if !STATIC_COMPILER
-				case CodeType.EndExceptionBlockFinally:
-					offset += 1;
-					ilgen_real.EndExceptionBlock();
-					break;
-#endif
-				case CodeType.EndExceptionBlock:
-#if !STATIC_COMPILER
-					offset += 5;
-#endif
-					ilgen_real.EndExceptionBlock();
-					break;
-				default:
-					throw new InvalidOperationException();
-			}
-		}
-
-		private void RealEmitOpCode(OpCode opcode, object arg)
-		{
-			if (arg == null)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size;
-#endif
-				ilgen_real.Emit(opcode);
-			}
-			else if (arg is int)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (int)arg);
-			}
-			else if (arg is long)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 8;
-#endif
-				ilgen_real.Emit(opcode, (long)arg);
-			}
-			else if (arg is MethodInfo)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (MethodInfo)arg);
-			}
-			else if (arg is ConstructorInfo)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (ConstructorInfo)arg);
-			}
-			else if (arg is FieldInfo)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (FieldInfo)arg);
-			}
-			else if (arg is sbyte)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 1;
-#endif
-				ilgen_real.Emit(opcode, (sbyte)arg);
-			}
-			else if (arg is byte)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 1;
-#endif
-				ilgen_real.Emit(opcode, (byte)arg);
-			}
-			else if (arg is short)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 2;
-#endif
-				ilgen_real.Emit(opcode, (short)arg);
-			}
-			else if (arg is float)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (float)arg);
-			}
-			else if (arg is double)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 8;
-#endif
-				ilgen_real.Emit(opcode, (double)arg);
-			}
-			else if (arg is string)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (string)arg);
-			}
-			else if (arg is Type)
-			{
-#if !STATIC_COMPILER
-				offset += opcode.Size + 4;
-#endif
-				ilgen_real.Emit(opcode, (Type)arg);
-			}
-			else if (arg is CodeEmitterLocal)
-			{
-				CodeEmitterLocal local = (CodeEmitterLocal)arg;
-#if !STATIC_COMPILER
-				int index = local.__LocalIndex;
-				if(index < 4 && opcode.Value != OpCodes.Ldloca.Value && opcode.Value != OpCodes.Ldloca_S.Value)
-				{
-					offset += 1;
-				}
-				else if(index < 256)
-				{
-					offset += 2;
-				}
-				else
-				{
-					offset += 4;
-				}
-#endif
-				local.Emit(ilgen_real, opcode);
-			}
-			else if (arg is CodeEmitterLabel)
-			{
-				CodeEmitterLabel label = (CodeEmitterLabel)arg;
-				int currOffset = GetILOffset();
-				if (label.Offset == -1)
-				{
-				}
-				else if (currOffset - label.Offset < 126)
-				{
-					if (opcode.Value == OpCodes.Brtrue.Value)
-					{
-						opcode = OpCodes.Brtrue_S;
-					}
-					else if (opcode.Value == OpCodes.Brfalse.Value)
-					{
-						opcode = OpCodes.Brfalse_S;
-					}
-					else if (opcode.Value == OpCodes.Br.Value)
-					{
-						opcode = OpCodes.Br_S;
-					}
-					else if (opcode.Value == OpCodes.Beq.Value)
-					{
-						opcode = OpCodes.Beq_S;
-					}
-					else if (opcode.Value == OpCodes.Bne_Un.Value)
-					{
-						opcode = OpCodes.Bne_Un_S;
-					}
-					else if (opcode.Value == OpCodes.Ble.Value)
-					{
-						opcode = OpCodes.Ble_S;
-					}
-					else if (opcode.Value == OpCodes.Blt.Value)
-					{
-						opcode = OpCodes.Blt_S;
-					}
-					else if (opcode.Value == OpCodes.Bge.Value)
-					{
-						opcode = OpCodes.Bge_S;
-					}
-					else if (opcode.Value == OpCodes.Bgt.Value)
-					{
-						opcode = OpCodes.Bgt_S;
-					}
-				}
-#if !STATIC_COMPILER
-				switch(opcode.OperandType)
-				{
-					case OperandType.InlineBrTarget:
-						offset += opcode.Size + 4;
-						break;
-					case OperandType.ShortInlineBrTarget:
-						offset += opcode.Size + 1;
-						break;
-					default:
-						throw new NotImplementedException();
-				}
-#endif
-				ilgen_real.Emit(opcode, label.Label);
-			}
-			else if (arg is CodeEmitterLabel[])
-			{
-				CodeEmitterLabel[] labels = (CodeEmitterLabel[])arg;
-#if !STATIC_COMPILER
-				offset += 5 + labels.Length * 4;
-#endif
-				Label[] real = new Label[labels.Length];
-				for (int i = 0; i < labels.Length; i++)
-				{
-					real[i] = labels[i].Label;
-				}
-				ilgen_real.Emit(opcode, real);
-			}
-			else if (arg is CalliWrapper)
-			{
-				CalliWrapper args = (CalliWrapper)arg;
-				ilgen_real.EmitCalli(opcode, args.unmanagedCallConv, args.returnType, args.parameterTypes);
-#if !STATIC_COMPILER
-				offset += 5;
-#endif
-			}
-			else
-			{
-				throw new InvalidOperationException();
-			}
 		}
 
 		private void PushStack(Expr expr)
@@ -535,47 +149,17 @@ namespace IKVM.Internal
 			return stackArray[topOfStack - 1];
 		}
 
-		private void RemoveJumpNext()
-		{
-			for (int i = 1; i < code.Count; i++)
-			{
-				if (code[i].type == CodeType.Label
-					&& code[i - 1].type == CodeType.OpCode
-					&& code[i - 1].opcode == OpCodes.Br
-					&& code[i - 1].data == code[i].data)
-				{
-					code[i - 1] = new OpCodeWrapper(CodeType.Nop, OpCodes.Nop, null);
-				}
-			}
-		}
-
-		internal void DoEmit()
-		{
-			RemoveJumpNext();
-			for (int i = 0; i < code.Count; i++)
-			{
-				if (code[i].type == CodeType.OpCode)
-				{
-					RealEmitOpCode(code[i].opcode, code[i].data);
-				}
-				else
-				{
-					RealEmitPseudoOpCode(code[i].type, code[i].data);
-				}
-			}
-		}
-
 		internal void DefineSymbolDocument(ModuleBuilder module, string url, Guid language, Guid languageVendor, Guid documentType)
 		{
 			symbols = module.DefineDocument(url, language, languageVendor, documentType);
 		}
 
-		internal CodeEmitterLocal UnsafeAllocTempLocal(Type type)
+		internal LocalBuilder UnsafeAllocTempLocal(Type type)
 		{
 			int free = -1;
 			for (int i = 0; i < tempLocals.Length; i++)
 			{
-				CodeEmitterLocal lb = tempLocals[i];
+				LocalBuilder lb = tempLocals[i];
 				if (lb == null)
 				{
 					if (free == -1)
@@ -588,7 +172,7 @@ namespace IKVM.Internal
 					return lb;
 				}
 			}
-			CodeEmitterLocal lb1 = DeclareLocal(type);
+			LocalBuilder lb1 = DeclareLocal(type);
 			if (free != -1)
 			{
 				tempLocals[free] = lb1;
@@ -596,11 +180,11 @@ namespace IKVM.Internal
 			return lb1;
 		}
 
-		internal CodeEmitterLocal AllocTempLocal(Type type)
+		internal LocalBuilder AllocTempLocal(Type type)
 		{
 			for (int i = 0; i < tempLocals.Length; i++)
 			{
-				CodeEmitterLocal lb = tempLocals[i];
+				LocalBuilder lb = tempLocals[i];
 				if (lb != null && lb.LocalType == type)
 				{
 					tempLocals[i] = null;
@@ -610,7 +194,7 @@ namespace IKVM.Internal
 			return DeclareLocal(type);
 		}
 
-		internal void ReleaseTempLocal(CodeEmitterLocal lb)
+		internal void ReleaseTempLocal(LocalBuilder lb)
 		{
 			for (int i = 0; i < tempLocals.Length; i++)
 			{
@@ -619,6 +203,14 @@ namespace IKVM.Internal
 					tempLocals[i] = lb;
 					break;
 				}
+			}
+		}
+
+		internal bool IsStackEmpty
+		{
+			get
+			{
+				return topOfStack == 0;
 			}
 		}
 
@@ -635,48 +227,49 @@ namespace IKVM.Internal
 		internal void BeginCatchBlock(Type exceptionType)
 		{
 			LazyGen();
-			EmitPseudoOpCode(CodeType.BeginCatchBlock, exceptionType);
+#if !STATIC_COMPILER
+			offset += 5;
+#endif
+			ilgen_real.BeginCatchBlock(exceptionType);
 		}
 
-		internal void BeginExceptionBlock()
+		internal Label BeginExceptionBlock()
 		{
 			LazyGen();
-#if !STATIC_COMPILER
 			exceptionStack.Push(inFinally);
 			inFinally = false;
-#endif
-			EmitPseudoOpCode(CodeType.BeginExceptionBlock, null);
+			return ilgen_real.BeginExceptionBlock();
 		}
 
 		internal void BeginFaultBlock()
 		{
 			LazyGen();
-#if !STATIC_COMPILER
 			inFinally = true;
+#if !STATIC_COMPILER
+			offset += 5;
 #endif
-			EmitPseudoOpCode(CodeType.BeginFaultBlock, null);
+			ilgen_real.BeginFaultBlock();
 		}
 
 		internal void BeginFinallyBlock()
 		{
 			LazyGen();
-#if !STATIC_COMPILER
 			inFinally = true;
+#if !STATIC_COMPILER
+			offset += 5;
 #endif
-			EmitPseudoOpCode(CodeType.BeginFinallyBlock, null);
+			ilgen_real.BeginFinallyBlock();
 		}
 
 		internal void BeginScope()
 		{
 			LazyGen();
-			EmitPseudoOpCode(CodeType.BeginScope, null);
+			ilgen_real.BeginScope();
 		}
 
-		internal CodeEmitterLocal DeclareLocal(Type localType)
+		internal LocalBuilder DeclareLocal(Type localType)
 		{
-			CodeEmitterLocal local = new CodeEmitterLocal(localType);
-			EmitPseudoOpCode(CodeType.DeclareLocal, local);
-			return local;
+			return ilgen_real.DeclareLocal(localType);
 		}
 
 		internal CodeEmitterLabel DefineLabel()
@@ -691,109 +284,237 @@ namespace IKVM.Internal
 		internal void Emit(OpCode opcode)
 		{
 			LazyGen();
-			EmitOpCode(opcode, null);
+#if !STATIC_COMPILER
+			offset += opcode.Size;
+#endif
+			ilgen_real.Emit(opcode);
 		}
 
 		internal void Emit(OpCode opcode, byte arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 1;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, ConstructorInfo con)
 		{
 			LazyGen();
-			EmitOpCode(opcode, con);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, con);
 		}
 
 		internal void Emit(OpCode opcode, double arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 8;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, FieldInfo field)
 		{
 			LazyGen();
-			EmitOpCode(opcode, field);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, field);
 		}
 
 		internal void Emit(OpCode opcode, short arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 2;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, int arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, long arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 8;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, CodeEmitterLabel label)
 		{
-			LazyGen();
-			EmitOpCode(opcode, label);
+			int currOffset = GetILOffset();
+			if(label.Offset == -1)
+			{
+				if(opcode.Value == OpCodes.Br.Value)
+				{
+					lazyBranch = label;
+					return;
+				}
+			}
+			else if(currOffset - label.Offset < 126)
+			{
+				if(opcode.Value == OpCodes.Brtrue.Value)
+				{
+					opcode = OpCodes.Brtrue_S;
+				}
+				else if(opcode.Value == OpCodes.Brfalse.Value)
+				{
+					opcode = OpCodes.Brfalse_S;
+				}
+				else if(opcode.Value == OpCodes.Br.Value)
+				{
+					opcode = OpCodes.Br_S;
+				}
+				else if(opcode.Value == OpCodes.Beq.Value)
+				{
+					opcode = OpCodes.Beq_S;
+				}
+				else if(opcode.Value == OpCodes.Bne_Un.Value)
+				{
+					opcode = OpCodes.Bne_Un_S;
+				}
+				else if(opcode.Value == OpCodes.Ble.Value)
+				{
+					opcode = OpCodes.Ble_S;
+				}
+				else if(opcode.Value == OpCodes.Blt.Value)
+				{
+					opcode = OpCodes.Blt_S;
+				}
+				else if(opcode.Value == OpCodes.Bge.Value)
+				{
+					opcode = OpCodes.Bge_S;
+				}
+				else if(opcode.Value == OpCodes.Bgt.Value)
+				{
+					opcode = OpCodes.Bgt_S;
+				}
+			}
+#if !STATIC_COMPILER
+			switch(opcode.OperandType)
+			{
+				case OperandType.InlineBrTarget:
+					offset += opcode.Size + 4;
+					break;
+				case OperandType.ShortInlineBrTarget:
+					offset += opcode.Size + 1;
+					break;
+				default:
+					throw new NotImplementedException();
+			}
+#endif
+			ilgen_real.Emit(opcode, label.Label);
 		}
 
 		internal void Emit(OpCode opcode, CodeEmitterLabel[] labels)
 		{
 			LazyGen();
-			EmitOpCode(opcode, labels);
+#if !STATIC_COMPILER
+			offset += 5 + labels.Length * 4;
+#endif
+			Label[] real = new Label[labels.Length];
+			for(int i = 0; i < labels.Length; i++)
+			{
+				real[i] = labels[i].Label;
+			}
+			ilgen_real.Emit(opcode, real);
 		}
 
-		internal void Emit(OpCode opcode, CodeEmitterLocal local)
+		internal void Emit(OpCode opcode, LocalBuilder local)
 		{
 			LazyGen();
-			EmitOpCode(opcode, local);
+#if !STATIC_COMPILER
+			int index = local.LocalIndex;
+			if(index < 4 && opcode.Value != OpCodes.Ldloca.Value && opcode.Value != OpCodes.Ldloca_S.Value)
+			{
+				offset += 1;
+			}
+			else if(index < 256)
+			{
+				offset += 2;
+			}
+			else
+			{
+				offset += 4;
+			}
+#endif
+			ilgen_real.Emit(opcode, local);
 		}
 
 		internal void Emit(OpCode opcode, MethodInfo meth)
 		{
 			LazyGen();
-			EmitOpCode(opcode, meth);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, meth);
 		}
 
 		internal void Emit(OpCode opcode, sbyte arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 1;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, float arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, string arg)
 		{
 			LazyGen();
-			EmitOpCode(opcode, arg);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, arg);
 		}
 
 		internal void Emit(OpCode opcode, Type cls)
 		{
 			LazyGen();
-			EmitOpCode(opcode, cls);
+#if !STATIC_COMPILER
+			offset += opcode.Size + 4;
+#endif
+			ilgen_real.Emit(opcode, cls);
 		}
 
 		internal void EmitCalli(OpCode opcode, CallingConvention unmanagedCallConv, Type returnType, Type[] parameterTypes)
 		{
 			LazyGen();
-			EmitOpCode(opcode, new CalliWrapper(unmanagedCallConv, returnType, parameterTypes));
+#if !STATIC_COMPILER
+			offset += 5;
+#endif
+			ilgen_real.EmitCalli(opcode, unmanagedCallConv, returnType, parameterTypes);
 		}
 
 		internal void EmitWriteLine(string value)
 		{
 			LazyGen();
-			EmitPseudoOpCode(CodeType.WriteLine, value);
+#if !STATIC_COMPILER
+			offset += 10;
+#endif
+			ilgen_real.EmitWriteLine(value);
 		}
 
 		internal void EndExceptionBlockNoFallThrough()
@@ -809,40 +530,47 @@ namespace IKVM.Internal
 		internal void EndExceptionBlock()
 		{
 			LazyGen();
-#if STATIC_COMPILER
-			EmitPseudoOpCode(CodeType.EndExceptionBlock, null);
-#else
+#if !STATIC_COMPILER
 			if(inFinally)
 			{
-				EmitPseudoOpCode(CodeType.EndExceptionBlockFinally, null);
+				offset += 1;
 			}
 			else
 			{
-				EmitPseudoOpCode(CodeType.EndExceptionBlock, null);
+				offset += 5;
 			}
-			inFinally = exceptionStack.Pop();
 #endif
+			inFinally = exceptionStack.Pop();
+			ilgen_real.EndExceptionBlock();
 		}
 
 		internal void EndScope()
 		{
 			LazyGen();
-			EmitPseudoOpCode(CodeType.EndScope, null);
+			ilgen_real.EndScope();
 		}
 
 		internal void MarkLabel(CodeEmitterLabel loc)
 		{
+			if(lazyBranch == loc)
+			{
+				lazyBranch = null;
+			}
 			LazyGen();
 #if LABELCHECK
 			labels.Remove(loc);
 #endif
-			EmitPseudoOpCode(CodeType.Label, loc);
+			ilgen_real.MarkLabel(loc.Label);
+			loc.Offset = GetILOffset();
 		}
 
 		internal void ThrowException(Type excType)
 		{
 			LazyGen();
-			EmitPseudoOpCode(CodeType.ThrowException, excType);
+#if !STATIC_COMPILER
+			offset += 6;
+#endif
+			ilgen_real.ThrowException(excType);
 		}
 
 		internal void SetLineNumber(ushort line)
@@ -850,13 +578,19 @@ namespace IKVM.Internal
 			if (symbols != null)
 			{
 				LazyGen();
-				EmitPseudoOpCode(CodeType.SequencePoint, (int)line);
+				ilgen_real.MarkSequencePoint(symbols, line, 0, line + 1, 0);
+				// we emit a nop to make sure we always have an instruction associated with the sequence point
+				Emit(OpCodes.Nop);
 			}
 			// we only add a line number mapping if the stack is empty because the CLR JIT only generates native to IL mappings
 			// for locations where the stack is empty and we don't want to needlessly flush the stack
 			if (topOfStack == 0)
 			{
-				EmitPseudoOpCode(CodeType.LineNumber, (int)line);
+				if (linenums == null)
+				{
+					linenums = new IKVM.Attributes.LineNumberTableAttribute.LineNumberWriter(32);
+				}
+				linenums.AddMapping(GetILOffset(), line);
 			}
 		}
 
@@ -905,7 +639,7 @@ namespace IKVM.Internal
 		{
 			if (verboseCastFailure != null)
 			{
-				CodeEmitterLocal lb = DeclareLocal(Types.Object);
+				LocalBuilder lb = DeclareLocal(Types.Object);
 				Emit(OpCodes.Stloc, lb);
 				Emit(OpCodes.Ldloc, lb);
 				Emit(OpCodes.Isinst, type);
@@ -929,7 +663,7 @@ namespace IKVM.Internal
 		// throws an IncompatibleClassChangeError on failure.
 		internal void EmitAssertType(Type type)
 		{
-			CodeEmitterLocal lb = DeclareLocal(Types.Object);
+			LocalBuilder lb = DeclareLocal(Types.Object);
 			Emit(OpCodes.Stloc, lb);
 			Emit(OpCodes.Ldloc, lb);
 			Emit(OpCodes.Isinst, type);
@@ -1308,6 +1042,14 @@ namespace IKVM.Internal
 
 		private void LazyGen()
 		{
+			if(lazyBranch != null)
+			{
+#if !STATIC_COMPILER
+				offset += OpCodes.Br.Size + 4;
+#endif
+				ilgen_real.Emit(OpCodes.Br, lazyBranch.Label);
+				lazyBranch = null;
+			}
 			int len = topOfStack;
 			topOfStack = 0;
 			for(int i = 0; i < len; i++)
@@ -1416,7 +1158,7 @@ namespace IKVM.Internal
 				// unbox leaves a pointer to the value of the stack (instead of the value)
 				// so we have to copy the value into a local variable and load the address
 				// of the local onto the stack
-				CodeEmitterLocal local = ilgen.DeclareLocal(Type);
+				LocalBuilder local = ilgen.DeclareLocal(Type);
 				ilgen.Emit(OpCodes.Stloc, local);
 				ilgen.Emit(OpCodes.Ldloca, local);
 			}
@@ -1648,8 +1390,8 @@ namespace IKVM.Internal
 
 			internal sealed override void Emit(CodeEmitter ilgen)
 			{
-				CodeEmitterLocal value1 = ilgen.AllocTempLocal(Types.Int64);
-				CodeEmitterLocal value2 = ilgen.AllocTempLocal(Types.Int64);
+				LocalBuilder value1 = ilgen.AllocTempLocal(Types.Int64);
+				LocalBuilder value2 = ilgen.AllocTempLocal(Types.Int64);
 				ilgen.Emit(OpCodes.Stloc, value2);
 				ilgen.Emit(OpCodes.Stloc, value1);
 				ilgen.Emit(OpCodes.Ldloc, value1);
@@ -1678,8 +1420,8 @@ namespace IKVM.Internal
 
 			internal sealed override void Emit(CodeEmitter ilgen)
 			{
-				CodeEmitterLocal value1 = ilgen.AllocTempLocal(FloatOrDouble());
-				CodeEmitterLocal value2 = ilgen.AllocTempLocal(FloatOrDouble());
+				LocalBuilder value1 = ilgen.AllocTempLocal(FloatOrDouble());
+				LocalBuilder value2 = ilgen.AllocTempLocal(FloatOrDouble());
 				ilgen.Emit(OpCodes.Stloc, value2);
 				ilgen.Emit(OpCodes.Stloc, value1);
 				ilgen.Emit(OpCodes.Ldloc, value1);
@@ -1722,8 +1464,8 @@ namespace IKVM.Internal
 
 			internal sealed override void Emit(CodeEmitter ilgen)
 			{
-				CodeEmitterLocal value1 = ilgen.AllocTempLocal(FloatOrDouble());
-				CodeEmitterLocal value2 = ilgen.AllocTempLocal(FloatOrDouble());
+				LocalBuilder value1 = ilgen.AllocTempLocal(FloatOrDouble());
+				LocalBuilder value2 = ilgen.AllocTempLocal(FloatOrDouble());
 				ilgen.Emit(OpCodes.Stloc, value2);
 				ilgen.Emit(OpCodes.Stloc, value1);
 				ilgen.Emit(OpCodes.Ldloc, value1);
