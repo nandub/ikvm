@@ -1828,7 +1828,7 @@ namespace IKVM.Internal
 						}
 					}
 #if __MonoCS__
-					SetTypeWrapperHack(ref clazz.typeWrapper, this);
+					SetTypeWrapperHack(clazz, this);
 #else
 					clazz.typeWrapper = this;
 #endif
@@ -1841,9 +1841,11 @@ namespace IKVM.Internal
 
 #if __MonoCS__
 		// MONOBUG this method is to work around an mcs bug
-		internal static void SetTypeWrapperHack<T>(ref T field, TypeWrapper type)
+		internal static void SetTypeWrapperHack(object clazz, TypeWrapper type)
 		{
-			field = (T)(object)type;
+#if !FIRST_PASS
+			typeof(java.lang.Class).GetField("typeWrapper", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(clazz, type);
+#endif
 		}
 #endif
 
@@ -1891,7 +1893,7 @@ namespace IKVM.Internal
 					tw = ClassLoaderWrapper.GetWrapperFromType(type);
 				}
 #if __MonoCS__
-				SetTypeWrapperHack(ref clazz.typeWrapper, tw);
+				SetTypeWrapperHack(clazz, tw);
 #else
 				clazz.typeWrapper = tw;
 #endif
@@ -2813,7 +2815,7 @@ namespace IKVM.Internal
 			}
 			else if(IsGhost)
 			{
-				LocalBuilder local = ilgen.DeclareLocal(TypeAsSignatureType);
+				CodeEmitterLocal local = ilgen.DeclareLocal(TypeAsSignatureType);
 				ilgen.Emit(OpCodes.Stloc, local);
 				ilgen.Emit(OpCodes.Ldloca, local);
 				ilgen.Emit(OpCodes.Ldfld, GhostRefField);
@@ -2828,9 +2830,9 @@ namespace IKVM.Internal
 			{
 				if(IsGhost)
 				{
-					LocalBuilder local1 = ilgen.DeclareLocal(TypeAsLocalOrStackType);
+					CodeEmitterLocal local1 = ilgen.DeclareLocal(TypeAsLocalOrStackType);
 					ilgen.Emit(OpCodes.Stloc, local1);
-					LocalBuilder local2 = ilgen.DeclareLocal(TypeAsSignatureType);
+					CodeEmitterLocal local2 = ilgen.DeclareLocal(TypeAsSignatureType);
 					ilgen.Emit(OpCodes.Ldloca, local2);
 					ilgen.Emit(OpCodes.Ldloc, local1);
 					ilgen.Emit(OpCodes.Stfld, GhostRefField);

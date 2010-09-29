@@ -3803,26 +3803,26 @@ namespace IKVM.Internal
 								continue;
 							}
 #endif // STATIC_COMPILER
-							LineNumberTableAttribute.LineNumberWriter lineNumberTable = null;
 							bool nonleaf = false;
-							Compiler.Compile(this, wrapper, methods[i], classFile, m, ilGenerator, ref nonleaf, invokespecialstubcache, ref lineNumberTable);
+							Compiler.Compile(this, wrapper, methods[i], classFile, m, ilGenerator, ref nonleaf, invokespecialstubcache);
 							ilGenerator.CheckLabels();
 							if (nonleaf)
 							{
 								mbld.SetImplementationFlags(mbld.GetMethodImplementationFlags() | MethodImplAttributes.NoInlining);
 							}
-							if (lineNumberTable != null)
-							{
 #if STATIC_COMPILER
-								AttributeHelper.SetLineNumberTable(methods[i].GetMethod(), lineNumberTable);
+							ilGenerator.EmitLineNumberTable(methods[i].GetMethod());
 #else // STATIC_COMPILER
+							byte[] linenumbers = ilGenerator.GetLineNumberTable();
+							if (linenumbers != null)
+							{
 								if (wrapper.lineNumberTables == null)
 								{
 									wrapper.lineNumberTables = new byte[methods.Length][];
 								}
-								wrapper.lineNumberTables[i] = lineNumberTable.ToArray();
-#endif // STATIC_COMPILER
+								wrapper.lineNumberTables[i] = linenumbers;
 							}
+#endif // STATIC_COMPILER
 						}
 					}
 				}
@@ -4589,7 +4589,7 @@ namespace IKVM.Internal
 
 				internal static void Generate(DynamicTypeWrapper.FinishContext context, CodeEmitter ilGenerator, DynamicTypeWrapper wrapper, MethodWrapper mw, TypeBuilder typeBuilder, ClassFile classFile, ClassFile.Method m, TypeWrapper[] args, bool thruProxy)
 				{
-					LocalBuilder syncObject = null;
+					CodeEmitterLocal syncObject = null;
 					if (m.IsSynchronized && m.IsStatic)
 					{
 						wrapper.EmitClassLiteral(ilGenerator);
@@ -4602,7 +4602,7 @@ namespace IKVM.Internal
 					string sig = m.Signature.Replace('.', '/');
 					// TODO use/unify JNI.METHOD_PTR_FIELD_PREFIX
 					FieldBuilder methodPtr = typeBuilder.DefineField("__<jniptr>" + m.Name + sig, Types.IntPtr, FieldAttributes.Static | FieldAttributes.PrivateScope);
-					LocalBuilder localRefStruct = ilGenerator.DeclareLocal(localRefStructType);
+					CodeEmitterLocal localRefStruct = ilGenerator.DeclareLocal(localRefStructType);
 					ilGenerator.Emit(OpCodes.Ldloca, localRefStruct);
 					ilGenerator.Emit(OpCodes.Initobj, localRefStructType);
 					ilGenerator.Emit(OpCodes.Ldsfld, methodPtr);
@@ -4632,7 +4632,7 @@ namespace IKVM.Internal
 						context.EmitCallerID(ilGenerator);
 					}
 					ilGenerator.Emit(OpCodes.Call, enterLocalRefStruct);
-					LocalBuilder jnienv = ilGenerator.DeclareLocal(Types.IntPtr);
+					CodeEmitterLocal jnienv = ilGenerator.DeclareLocal(Types.IntPtr);
 					ilGenerator.Emit(OpCodes.Stloc, jnienv);
 					ilGenerator.BeginExceptionBlock();
 					TypeWrapper retTypeWrapper = mw.ReturnType;
@@ -4705,7 +4705,7 @@ namespace IKVM.Internal
 						realRetType = Types.IntPtr;
 					}
 					ilGenerator.EmitCalli(OpCodes.Calli, System.Runtime.InteropServices.CallingConvention.StdCall, realRetType, modargs);
-					LocalBuilder retValue = null;
+					CodeEmitterLocal retValue = null;
 					if (retTypeWrapper != PrimitiveTypeWrapper.VOID)
 					{
 						if (!retTypeWrapper.IsUnloadable && !retTypeWrapper.IsPrimitive)
@@ -4717,8 +4717,8 @@ namespace IKVM.Internal
 							}
 							else if (retTypeWrapper.IsGhost)
 							{
-								LocalBuilder ghost = ilGenerator.DeclareLocal(retTypeWrapper.TypeAsSignatureType);
-								LocalBuilder obj = ilGenerator.DeclareLocal(Types.Object);
+								CodeEmitterLocal ghost = ilGenerator.DeclareLocal(retTypeWrapper.TypeAsSignatureType);
+								CodeEmitterLocal obj = ilGenerator.DeclareLocal(Types.Object);
 								ilGenerator.Emit(OpCodes.Stloc, obj);
 								ilGenerator.Emit(OpCodes.Ldloca, ghost);
 								ilGenerator.Emit(OpCodes.Ldloc, obj);
@@ -4957,7 +4957,7 @@ namespace IKVM.Internal
 								MethodBuilder mb = typeBuilder.DefineMethod("op_Implicit", MethodAttributes.HideBySig | MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName, iface.TypeAsSignatureType, new Type[] { wrapper.TypeAsSignatureType });
 								AttributeHelper.HideFromJava(mb);
 								CodeEmitter ilgen = CodeEmitter.Create(mb);
-								LocalBuilder local = ilgen.DeclareLocal(iface.TypeAsSignatureType);
+								CodeEmitterLocal local = ilgen.DeclareLocal(iface.TypeAsSignatureType);
 								ilgen.Emit(OpCodes.Ldloca, local);
 								ilgen.Emit(OpCodes.Ldarg_0);
 								ilgen.Emit(OpCodes.Stfld, iface.GhostRefField);
@@ -5031,21 +5031,21 @@ namespace IKVM.Internal
 					return;
 				}
 #endif
-				LineNumberTableAttribute.LineNumberWriter lineNumberTable = null;
 				bool nonLeaf = false;
-				Compiler.Compile(context, wrapper, methods[methodIndex], classFile, m, ilGenerator, ref nonLeaf, invokespecialstubcache, ref lineNumberTable);
-				if (lineNumberTable != null)
-				{
+				Compiler.Compile(context, wrapper, methods[methodIndex], classFile, m, ilGenerator, ref nonLeaf, invokespecialstubcache);
 #if STATIC_COMPILER
-					AttributeHelper.SetLineNumberTable(methods[methodIndex].GetMethod(), lineNumberTable);
+				ilGenerator.EmitLineNumberTable(methods[methodIndex].GetMethod());
 #else // STATIC_COMPILER
+				byte[] linenumbers = ilGenerator.GetLineNumberTable();
+				if (linenumbers != null)
+				{
 					if (wrapper.lineNumberTables == null)
 					{
 						wrapper.lineNumberTables = new byte[methods.Length][];
 					}
-					wrapper.lineNumberTables[methodIndex] = lineNumberTable.ToArray();
-#endif // STATIC_COMPILER
+					wrapper.lineNumberTables[methodIndex] = linenumbers;
 				}
+#endif // STATIC_COMPILER
 			}
 
 			private static bool IsCompatibleArgList(TypeWrapper[] caller, TypeWrapper[] callee)
@@ -5108,7 +5108,23 @@ namespace IKVM.Internal
 						{
 							if (constant is int)
 							{
-								ilGenerator.Emit(OpCodes.Ldc_I4, (int)constant);
+								ilGenerator.LazyEmitLdc_I4((int)constant);
+							}
+							else if (constant is bool)
+							{
+								ilGenerator.LazyEmitLdc_I4((bool)constant ? 1 : 0);
+							}
+							else if (constant is byte)
+							{
+								ilGenerator.LazyEmitLdc_I4((byte)constant);
+							}
+							else if (constant is char)
+							{
+								ilGenerator.LazyEmitLdc_I4((char)constant);
+							}
+							else if (constant is short)
+							{
+								ilGenerator.LazyEmitLdc_I4((short)constant);
 							}
 							else if (constant is long)
 							{

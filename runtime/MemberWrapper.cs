@@ -363,9 +363,9 @@ namespace IKVM.Internal
 			throw new InvalidOperationException();
 		}
 
-		internal virtual bool EmitIntrinsic(DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodWrapper method, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, ClassFile.Method.Instruction[] code, ClassFile.Method.InstructionFlags[] flags)
+		internal virtual bool EmitIntrinsic(EmitIntrinsicContext context)
 		{
-			return Intrinsics.Emit(context, ilgen, method, ma, opcodeIndex, caller, classFile, code, flags);
+			return Intrinsics.Emit(context);
 		}
 #endif // STUB_GENERATOR
 
@@ -1437,7 +1437,7 @@ namespace IKVM.Internal
 			FieldInfo fi = GetField();
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
-				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
+				CodeEmitterLocal temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
 				ilgen.Emit(OpCodes.Stloc, temp);
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
@@ -1490,7 +1490,7 @@ namespace IKVM.Internal
 		protected override void EmitSetImpl(CodeEmitter ilgen)
 		{
 			FieldInfo fi = GetField();
-			LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
+			CodeEmitterLocal temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
 			ilgen.Emit(OpCodes.Stloc, temp);
 			if(fi.IsStatic)
 			{
@@ -1568,7 +1568,7 @@ namespace IKVM.Internal
 		{
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
-				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
+				CodeEmitterLocal temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
 				ilgen.Emit(OpCodes.Stloc, temp);
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
