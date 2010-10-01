@@ -1447,10 +1447,6 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Volatile);
 			}
 			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
-			if(IsVolatile)
-			{
-				ilgen.EmitMemoryBarrier();
-			}
 		}
 #endif // !STUB_GENERATOR
 	}

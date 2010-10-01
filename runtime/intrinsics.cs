@@ -43,14 +43,14 @@ namespace IKVM.Internal
 		internal readonly MethodWrapper Method;
 		internal readonly DynamicTypeWrapper.FinishContext Context;
 		internal readonly CodeEmitter Emitter;
-		readonly MethodAnalyzer ma;
+		private readonly CodeInfo ma;
 		internal readonly int OpcodeIndex;
 		internal readonly MethodWrapper Caller;
 		internal readonly ClassFile ClassFile;
 		internal readonly Instruction[] Code;
 		internal readonly InstructionFlags[] Flags;
 
-		internal EmitIntrinsicContext(MethodWrapper method, DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, MethodAnalyzer ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
+		internal EmitIntrinsicContext(MethodWrapper method, DynamicTypeWrapper.FinishContext context, CodeEmitter ilgen, CodeInfo ma, int opcodeIndex, MethodWrapper caller, ClassFile classFile, Instruction[] code, InstructionFlags[] flags)
 		{
 			this.Method = method;
 			this.Context = context;
@@ -102,6 +102,11 @@ namespace IKVM.Internal
 		internal ClassFile.ConstantPoolItemMI GetMethodref(int offset)
 		{
 			return ClassFile.GetMethodref(Code[OpcodeIndex + offset].Arg1);
+		}
+
+		internal TypeWrapper GetClassLiteral(int offset)
+		{
+			return ClassFile.GetConstantPoolClassType(Code[OpcodeIndex + offset].Arg1);
 		}
 
 		internal void PatchOpCode(int offset, NormalizedByteCode opc)
@@ -226,17 +231,18 @@ namespace IKVM.Internal
 
 		private static bool Class_desiredAssertionStatus(EmitIntrinsicContext eic)
 		{
-			TypeWrapper classLiteral = eic.Emitter.PeekLazyClassLiteral();
-			if (classLiteral != null && classLiteral.GetClassLoader().RemoveAsserts)
+			if (eic.MatchRange(-1, 2)
+				&& eic.Match(-1, NormalizedByteCode.__ldc))
 			{
-				eic.Emitter.LazyEmitPop();
-				eic.Emitter.LazyEmitLdc_I4(0);
-				return true;
+				TypeWrapper classLiteral = eic.GetClassLiteral(-1);
+				if (!classLiteral.IsUnloadable && classLiteral.GetClassLoader().RemoveAsserts)
+				{
+					eic.Emitter.Emit(OpCodes.Pop);
+					eic.Emitter.Emit_Ldc_I4(0);
+					return true;
+				}
 			}
-			else
-			{
-				return false;
-			}
+			return false;
 		}
 
 		private static bool IsSafeForGetClassOptimization(TypeWrapper tw)
@@ -271,7 +277,7 @@ namespace IKVM.Internal
 
 		private static void EmitConversion(CodeEmitter ilgen, Type converterType, string method)
 		{
-			LocalBuilder converter = ilgen.UnsafeAllocTempLocal(converterType);
+			CodeEmitterLocal converter = ilgen.UnsafeAllocTempLocal(converterType);
 			ilgen.Emit(OpCodes.Ldloca, converter);
 			ilgen.Emit(OpCodes.Call, converterType.GetMethod(method));
 		}
@@ -336,16 +342,17 @@ namespace IKVM.Internal
 
 		private static bool String_toCharArray(EmitIntrinsicContext eic)
 		{
-			string str = eic.Emitter.PopLazyLdstr();
-			if (str != null)
+			if (eic.MatchRange(-1, 2)
+				&& eic.Match(-1, NormalizedByteCode.__ldc))
 			{
+				string str = eic.ClassFile.GetConstantPoolConstantString(eic.Code[eic.OpcodeIndex - 1].Arg1);
 				// arbitrary length for "big" strings
 				if (str.Length > 128)
 				{
+					eic.Emitter.Emit(OpCodes.Pop);
 					EmitLoadCharArrayLiteral(eic.Emitter, str, eic.Caller.DeclaringType);
 					return true;
 				}
-				eic.Emitter.Emit(OpCodes.Ldstr, str);
 			}
 			return false;
 		}
@@ -409,7 +416,7 @@ namespace IKVM.Internal
 				&& eic.MatchRange(-1, 2)
 				&& eic.Match(-1, NormalizedByteCode.__iconst, 2))
 			{
-				eic.Emitter.LazyEmitPop();
+				eic.Emitter.Emit(OpCodes.Pop);
 				int arg = eic.Caller.GetParametersForDefineMethod().Length - 1;
 				if (!eic.Caller.IsStatic)
 				{
@@ -463,20 +470,24 @@ namespace IKVM.Internal
 
 		private static bool Util_getInstanceTypeFromClass(EmitIntrinsicContext eic)
 		{
-			TypeWrapper tw = eic.Emitter.PeekLazyClassLiteral();
-			if (tw != null)
+			if (eic.MatchRange(-1, 2)
+				&& eic.Match(-1, NormalizedByteCode.__ldc))
 			{
-				eic.Emitter.LazyEmitPop();
-				if (tw.IsRemapped && tw.IsFinal)
+				TypeWrapper tw = eic.GetClassLiteral(-1);
+				if (!tw.IsUnloadable)
 				{
-					eic.Emitter.Emit(OpCodes.Ldtoken, tw.TypeAsTBD);
+					eic.Emitter.Emit(OpCodes.Pop);
+					if (tw.IsRemapped && tw.IsFinal)
+					{
+						eic.Emitter.Emit(OpCodes.Ldtoken, tw.TypeAsTBD);
+					}
+					else
+					{
+						eic.Emitter.Emit(OpCodes.Ldtoken, tw.TypeAsBaseType);
+					}
+					eic.Emitter.Emit(OpCodes.Call, Compiler.getTypeFromHandleMethod);
+					return true;
 				}
-				else
-				{
-					eic.Emitter.Emit(OpCodes.Ldtoken, tw.TypeAsBaseType);
-				}
-				eic.Emitter.Emit(OpCodes.Call, Compiler.getTypeFromHandleMethod);
-				return true;
 			}
 			return false;
 		}
@@ -484,7 +495,7 @@ namespace IKVM.Internal
 #if STATIC_COMPILER
 		private static bool Class_getPrimitiveClass(EmitIntrinsicContext eic)
 		{
-			eic.Emitter.LazyEmitPop();
+			eic.Emitter.Emit(OpCodes.Pop);
 			eic.Emitter.Emit(OpCodes.Ldnull);
 			MethodWrapper mw = CoreClasses.java.lang.Class.Wrapper.GetMethodWrapper("<init>", "(Lcli.System.Type;)V", false);
 			mw.Link();
@@ -541,6 +552,7 @@ namespace IKVM.Internal
 			basector.Link();
 			basector.EmitCall(ctorilgen);
 			ctorilgen.Emit(OpCodes.Ret);
+			ctorilgen.DoEmit();
 			context.RegisterPostFinishProc(delegate
 			{
 				threadLocal.Finish();
