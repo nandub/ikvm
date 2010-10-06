@@ -292,7 +292,7 @@ namespace IKVM.Internal
 				return null;
 			}
 
-			internal TypeWrapper CreateWrapperForAssemblyType(Type type)
+			internal string GetTypeNameAndType(Type type, out bool isJavaType)
 			{
 				Module mod = type.Module;
 				int moduleIndex = -1;
@@ -304,35 +304,42 @@ namespace IKVM.Internal
 						break;
 					}
 				}
-				string name;
 				if (isJavaModule[moduleIndex])
 				{
-					name = CompiledTypeWrapper.GetName(type);
-				}
-				else
-				{
-					name = DotNetTypeWrapper.GetName(type);
-				}
-				if (name == null)
-				{
-					return null;
-				}
-				if (isJavaModule[moduleIndex])
-				{
+					isJavaType = true;
 					if (AttributeHelper.IsHideFromJava(type))
 					{
 						return null;
 					}
+					return CompiledTypeWrapper.GetName(type);
+				}
+				else
+				{
+					isJavaType = false;
+					if (!DotNetTypeWrapper.IsAllowedOutside(type))
+					{
+						return null;
+					}
+					return DotNetTypeWrapper.GetName(type);
+				}
+			}
+
+			internal TypeWrapper CreateWrapperForAssemblyType(Type type)
+			{
+				bool isJavaType;
+				string name = GetTypeNameAndType(type, out isJavaType);
+				if (name == null)
+				{
+					return null;
+				}
+				if (isJavaType)
+				{
 					// since this type was compiled from Java source, we have to look for our
 					// attributes
 					return CompiledTypeWrapper.newInstance(name, type);
 				}
 				else
 				{
-					if (!DotNetTypeWrapper.IsAllowedOutside(type))
-					{
-						return null;
-					}
 					// since this type was not compiled from Java source, we don't need to
 					// look for our attributes, but we do need to filter unrepresentable
 					// stuff (and transform some other stuff)
@@ -544,25 +551,57 @@ namespace IKVM.Internal
 				{
 					foreach (int index in assemblies)
 					{
-						AssemblyLoader loader = exportedAssemblies[index];
-						if (loader == null)
+						AssemblyLoader loader = TryGetLoaderByIndex(index);
+						if (loader != null)
 						{
-							Assembly asm = LoadAssemblyOrClearName(ref exportedAssemblyNames[index], true);
-							if (asm == null)
+							tw = loader.DoLoad(name);
+							if (tw != null)
 							{
-								continue;
+								return RegisterInitiatingLoader(tw);
 							}
-							loader = exportedAssemblies[index] = GetLoaderForExportedAssembly(asm);
-						}
-						tw = loader.DoLoad(name);
-						if (tw != null)
-						{
-							return RegisterInitiatingLoader(tw);
 						}
 					}
 				}
 			}
 			return null;
+		}
+
+		internal string GetTypeNameAndType(Type type, out bool isJavaType)
+		{
+			return GetLoader(type.Assembly).GetTypeNameAndType(type, out isJavaType);
+		}
+
+		private AssemblyLoader TryGetLoaderByIndex(int index)
+		{
+			AssemblyLoader loader = exportedAssemblies[index];
+			if (loader == null)
+			{
+				Assembly asm = LoadAssemblyOrClearName(ref exportedAssemblyNames[index], true);
+				if (asm != null)
+				{
+					loader = exportedAssemblies[index] = GetLoaderForExportedAssembly(asm);
+				}
+			}
+			return loader;
+		}
+
+		internal List<Assembly> GetAllAvailableAssemblies()
+		{
+			List<Assembly> list = new List<Assembly>();
+			list.Add(assemblyLoader.Assembly);
+			LazyInitExports();
+			if (exportedAssemblies != null)
+			{
+				for (int i = 0; i < exportedAssemblies.Length; i++)
+				{
+					AssemblyLoader loader = TryGetLoaderByIndex(i);
+					if (loader != null && FromAssembly(loader.Assembly) == this)
+					{
+						list.Add(loader.Assembly);
+					}
+				}
+			}
+			return list;
 		}
 
 		private AssemblyLoader GetLoader(Assembly assembly)
@@ -944,6 +983,13 @@ namespace IKVM.Internal
 					return FromAssembly(mainAssembly);
 				}
 			}
+#if STATIC_COMPILER
+			if (JVM.CoreAssembly == null && CompilerClassLoader.IsCoreAssembly(assembly))
+			{
+				JVM.CoreAssembly = assembly;
+				ClassLoaderWrapper.LoadRemappedTypes();
+			}
+#endif
 			if (assembly == JVM.CoreAssembly)
 			{
 				// This cast is necessary for ikvmc and a no-op for the runtime.
