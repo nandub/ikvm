@@ -666,7 +666,7 @@ sealed class Compiler
 				ilGenerator.Emit(OpCodes.Ldloc, monitor);
 				ilGenerator.Emit(OpCodes.Call, monitorExitMethod);
 				ilGenerator.Emit(OpCodes.Endfinally);
-				ilGenerator.EndExceptionBlockNoFallThrough();
+				ilGenerator.EndExceptionBlock();
 				b.LeaveStubs(new Block(c, 0, int.MaxValue, -1, null, false));
 			}
 			else
@@ -947,8 +947,8 @@ sealed class Compiler
 					{
 						ilGenerator.BeginFaultBlock();
 					}
-					Compile(new Block(this, 0, block.EndIndex, exceptionIndex, null, false), ComputePartialReachability(handlerIndex, true));
-					ilGenerator.EndExceptionBlockNoFallThrough();
+					Compile(new Block(this, 0, block.EndIndex, -1, null, false), ComputePartialReachability(handlerIndex, true));
+					ilGenerator.EndExceptionBlock();
 				}
 				else
 				{
@@ -1026,7 +1026,7 @@ sealed class Compiler
 						bc.dh.Store(0);
 					}
 					ilGenerator.Emit(OpCodes.Leave, bc.Stub);
-					ilGenerator.EndExceptionBlockNoFallThrough();
+					ilGenerator.EndExceptionBlock();
 				}
 				prevBlock.LeaveStubs(block);
 			}
