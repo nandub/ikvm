@@ -1437,7 +1437,7 @@ namespace IKVM.Internal
 			FieldInfo fi = GetField();
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
-				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
+				CodeEmitterLocal temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
 				ilgen.Emit(OpCodes.Stloc, temp);
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
@@ -1447,6 +1447,10 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Volatile);
 			}
 			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			if(IsVolatile)
+			{
+				ilgen.EmitMemoryBarrier();
+			}
 		}
 #endif // !STUB_GENERATOR
 	}
@@ -1490,7 +1494,7 @@ namespace IKVM.Internal
 		protected override void EmitSetImpl(CodeEmitter ilgen)
 		{
 			FieldInfo fi = GetField();
-			LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
+			CodeEmitterLocal temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
 			ilgen.Emit(OpCodes.Stloc, temp);
 			if(fi.IsStatic)
 			{
@@ -1568,7 +1572,7 @@ namespace IKVM.Internal
 		{
 			if(!IsStatic && DeclaringType.IsNonPrimitiveValueType)
 			{
-				LocalBuilder temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
+				CodeEmitterLocal temp = ilgen.DeclareLocal(FieldTypeWrapper.TypeAsSignatureType);
 				ilgen.Emit(OpCodes.Stloc, temp);
 				ilgen.Emit(OpCodes.Unbox, DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, temp);
@@ -1701,10 +1705,10 @@ namespace IKVM.Internal
 			{
 				if(this.IsFinal)
 				{
-					ilgen.LazyEmitPop();
+					ilgen.Emit(OpCodes.Pop);
 					if(!this.IsStatic)
 					{
-						ilgen.LazyEmitPop();
+						ilgen.Emit(OpCodes.Pop);
 					}
 				}
 				else
@@ -1775,10 +1779,10 @@ namespace IKVM.Internal
 			{
 				if(this.IsFinal)
 				{
-					ilgen.LazyEmitPop();
+					ilgen.Emit(OpCodes.Pop);
 					if(!this.IsStatic)
 					{
-						ilgen.LazyEmitPop();
+						ilgen.Emit(OpCodes.Pop);
 					}
 				}
 				else
@@ -1875,7 +1879,7 @@ namespace IKVM.Internal
 		{
 			// when constant static final fields are updated, the JIT normally doesn't see that (because the
 			// constant value is inlined), so we emulate that behavior by emitting a Pop
-			ilgen.LazyEmitPop();
+			ilgen.Emit(OpCodes.Pop);
 		}
 #endif // !STUB_GENERATOR
 
