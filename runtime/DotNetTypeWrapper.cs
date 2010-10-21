@@ -748,6 +748,21 @@ namespace IKVM.Internal
 						}
 					}
 				}
+				if (type.Assembly == Types.Object.Assembly)
+				{
+					if (type.FullName == "System.Runtime.CompilerServices.MethodImplAttribute")
+					{
+						foreach (ConstructorInfo ci in constructors)
+						{
+							ParameterInfo[] p = ci.GetParameters();
+							if (p.Length == 1 && p[0].ParameterType.IsEnum)
+							{
+								singleOneArgCtor = ci;
+								return;
+							}
+						}
+					}
+				}
 				foreach (ConstructorInfo ci in constructors)
 				{
 					ParameterInfo[] args = ci.GetParameters();
@@ -1740,7 +1755,7 @@ namespace IKVM.Internal
 			internal override void EmitNewobj(CodeEmitter ilgen)
 			{
 				MethodInfo createDelegate = Types.Delegate.GetMethod("CreateDelegate", new Type[] { Types.Type, Types.Object, Types.String });
-				LocalBuilder targetObj = ilgen.DeclareLocal(Types.Object);
+				CodeEmitterLocal targetObj = ilgen.DeclareLocal(Types.Object);
 				ilgen.Emit(OpCodes.Stloc, targetObj);
 				ilgen.Emit(OpCodes.Ldtoken, delegateConstructor.DeclaringType);
 				ilgen.Emit(OpCodes.Call, Types.Type.GetMethod("GetTypeFromHandle", new Type[] { Types.RuntimeTypeHandle }));
@@ -1795,7 +1810,7 @@ namespace IKVM.Internal
 
 			protected override void PreEmit(CodeEmitter ilgen)
 			{
-				LocalBuilder[] locals = new LocalBuilder[args.Length];
+				CodeEmitterLocal[] locals = new CodeEmitterLocal[args.Length];
 				for (int i = args.Length - 1; i >= 0; i--)
 				{
 					Type type = args[i];
@@ -1851,14 +1866,14 @@ namespace IKVM.Internal
 			protected override void EmitGetImpl(CodeEmitter ilgen)
 			{
 				// NOTE if the reference on the stack is null, we *want* the NullReferenceException, so we don't use TypeWrapper.EmitUnbox
-				ilgen.LazyEmitUnbox(underlyingType);
-				ilgen.LazyEmitLdobj(underlyingType);
+				ilgen.Emit(OpCodes.Unbox, underlyingType);
+				ilgen.Emit(OpCodes.Ldobj, underlyingType);
 			}
 
 			protected override void EmitSetImpl(CodeEmitter ilgen)
 			{
 				// NOTE even though the field is final, JNI reflection can still be used to set its value!
-				LocalBuilder temp = ilgen.AllocTempLocal(underlyingType);
+				CodeEmitterLocal temp = ilgen.AllocTempLocal(underlyingType);
 				ilgen.Emit(OpCodes.Stloc, temp);
 				ilgen.Emit(OpCodes.Unbox, underlyingType);
 				ilgen.Emit(OpCodes.Ldloc, temp);
@@ -1878,7 +1893,7 @@ namespace IKVM.Internal
 #if !STUB_GENERATOR
 			internal override void EmitNewobj(CodeEmitter ilgen)
 			{
-				LocalBuilder local = ilgen.DeclareLocal(DeclaringType.TypeAsTBD);
+				CodeEmitterLocal local = ilgen.DeclareLocal(DeclaringType.TypeAsTBD);
 				ilgen.Emit(OpCodes.Ldloc, local);
 				ilgen.Emit(OpCodes.Box, DeclaringType.TypeAsTBD);
 			}
@@ -2561,7 +2576,7 @@ namespace IKVM.Internal
 					return;
 				}
 			}
-			ilgen.LazyEmit_instanceof(type);
+			ilgen.Emit_instanceof(type);
 		}
 
 		internal override void EmitCheckcast(TypeWrapper context, CodeEmitter ilgen)
