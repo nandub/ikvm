@@ -152,9 +152,9 @@ namespace IKVM.Internal
 		{
 			if(referencedType.IsAccessibleFrom(caller))
 			{
-				return (IsPublic ||
+				return (
 					caller == DeclaringType ||
-					IsProtectedFieldAccessible(caller, instance) ||
+					IsPublicOrProtectedMemberAccessible(caller, instance) ||
 					(IsInternal && DeclaringType.InternalsVisibleTo(caller)) ||
 					(!IsPrivate && DeclaringType.IsPackageAccessibleFrom(caller)))
 					// The JVM supports accessing members that have non-public types in their signature from another package,
@@ -165,11 +165,11 @@ namespace IKVM.Internal
 			return false;
 		}
 
-		private bool IsProtectedFieldAccessible(TypeWrapper caller, TypeWrapper instance)
+		private bool IsPublicOrProtectedMemberAccessible(TypeWrapper caller, TypeWrapper instance)
 		{
-			if (IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller)))
+			if (IsPublic || (IsProtected && caller.IsSubTypeOf(DeclaringType) && (IsStatic || instance.IsSubTypeOf(caller))))
 			{
-				return DeclaringType.IsPublic || DeclaringType.InternalsVisibleTo(caller);
+				return DeclaringType.IsPublic || InPracticeInternalsVisibleTo(caller);
 			}
 			return false;
 		}
@@ -1447,6 +1447,10 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Volatile);
 			}
 			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			if(IsVolatile)
+			{
+				ilgen.EmitMemoryBarrier();
+			}
 		}
 #endif // !STUB_GENERATOR
 	}
