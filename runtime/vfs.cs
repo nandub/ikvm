@@ -115,7 +115,8 @@ namespace IKVM.Internal
 #if FIRST_PASS
 			return null;
 #else
-			return RootPath + "assembly" + global::java.io.File.separatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + global::java.io.File.separatorChar + "classes" + global::java.io.File.separatorChar;
+			// we can't use java.io.File.separatorChar here, because we're invoked by the system property setup code
+			return RootPath + "assembly" + System.IO.Path.DirectorySeparatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + System.IO.Path.DirectorySeparatorChar + "classes" + System.IO.Path.DirectorySeparatorChar;
 #endif
 		}
 
@@ -124,7 +125,7 @@ namespace IKVM.Internal
 #if FIRST_PASS
 			return null;
 #else
-			return RootPath + "assembly" + global::java.io.File.separatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + global::java.io.File.separatorChar + "resources" + global::java.io.File.separatorChar;
+			return RootPath + "assembly" + System.IO.Path.DirectorySeparatorChar + VfsAssembliesDirectory.GetName(asm.GetName()) + System.IO.Path.DirectorySeparatorChar + "resources" + System.IO.Path.DirectorySeparatorChar;
 #endif
 		}
 
@@ -175,6 +176,7 @@ namespace IKVM.Internal
 				{
 					if (simpleName[i] == '_')
 					{
+						sb.Append("_!");
 					}
 					else
 					{
@@ -211,7 +213,12 @@ namespace IKVM.Internal
 					{
 						if (i == directoryName.Length || directoryName[i] == '_')
 						{
-							if (i == directoryName.Length || directoryName[i + 1] == '_')
+							if (i < directoryName.Length - 1 && directoryName[i + 1] == '!')
+							{
+								sb.Append('_');
+								i++;
+							}
+							else if (i == directoryName.Length || directoryName[i + 1] == '_')
 							{
 								switch (part++)
 								{
@@ -404,38 +411,66 @@ namespace IKVM.Internal
 				}
 				if (populate)
 				{
-					Type[] types;
-					try
+					Dictionary<string, string> names = new Dictionary<string, string>();
+					AssemblyClassLoader acl = AssemblyClassLoader.FromAssembly(this.asm);
+					foreach (Assembly asm in acl.GetAllAvailableAssemblies())
 					{
-						types = asm.GetTypes();
-					}
-					catch (ReflectionTypeLoadException x)
-					{
-						types = x.Types;
-					}
-					catch
-					{
-						types = Type.EmptyTypes;
-					}
-					foreach (Type type in types)
-					{
-						if (type != null)
+						Type[] types;
+						try
 						{
-							TypeWrapper tw = ClassLoaderWrapper.GetWrapperFromType(type);
-							if (tw != null)
+							types = asm.GetTypes();
+						}
+						catch (ReflectionTypeLoadException x)
+						{
+							types = x.Types;
+						}
+						catch
+						{
+							types = Type.EmptyTypes;
+						}
+						foreach (Type type in types)
+						{
+							if (type != null)
 							{
-								string[] parts = tw.Name.Split('.');
-								lock (entries)
+								string name = null;
+								try
 								{
-									VfsDirectory dir = this;
-									for (int i = 0; i < parts.Length - 1; i++)
+									bool isJavaType;
+									name = acl.GetTypeNameAndType(type, out isJavaType);
+#if !FIRST_PASS
+									// annotation custom attributes are pseudo proxies and are not loadable by name (and should not exist in the file systems,
+									// because proxies are, ostensibly, created on the fly)
+									if (isJavaType && type.BaseType == typeof(global::ikvm.@internal.AnnotationAttributeBase) && name.Contains(".$Proxy"))
 									{
-										dir = dir.GetEntry(parts[i]) as VfsDirectory ?? dir.AddDirectory(parts[i]);
+										name = null;
 									}
-									// we're adding a dummy file, to make the file appear in the directory listing, it will not actually
-									// be accessed, because the code above handles that
-									dir.Add(parts[parts.Length - 1] + ".class", VfsDummyFile.Instance);
+#endif
 								}
+								catch
+								{
+								}
+								if (name != null)
+								{
+									names[name] = name;
+								}
+							}
+						}
+					}
+					lock (entries)
+					{
+						if (entries.Count == 0)
+						{
+							foreach (string name in names.Keys)
+							{
+								string[] parts = name.Split('.');
+								VfsDirectory dir = this;
+								for (int i = 0; i < parts.Length - 1; i++)
+								{
+									dir = dir.GetEntry(parts[i]) as VfsDirectory ?? dir.AddDirectory(parts[i]);
+								}
+								// we're adding a dummy file, to make the file appear in the directory listing, it will not actually
+								// be accessed, because the code above handles that
+								dir.Add(parts[parts.Length - 1] + ".class", VfsDummyFile.Instance);
 							}
 						}
 					}
