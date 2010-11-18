@@ -821,8 +821,8 @@ namespace IKVM.NativeCode.java
 
 						// we want the getters to be verifiable (because writeObject can be used from partial trust),
 						// so we create a local to hold the properly typed object reference
-						LocalBuilder objGetterThis = ilgenObjGetter.DeclareLocal(tw.TypeAsBaseType);
-						LocalBuilder primGetterThis = ilgenPrimGetter.DeclareLocal(tw.TypeAsBaseType);
+						CodeEmitterLocal objGetterThis = ilgenObjGetter.DeclareLocal(tw.TypeAsBaseType);
+						CodeEmitterLocal primGetterThis = ilgenPrimGetter.DeclareLocal(tw.TypeAsBaseType);
 						ilgenObjGetter.Emit(OpCodes.Ldarg_0);
 						ilgenObjGetter.Emit(OpCodes.Castclass, tw.TypeAsBaseType);
 						ilgenObjGetter.Emit(OpCodes.Stloc, objGetterThis);
@@ -958,6 +958,10 @@ namespace IKVM.NativeCode.java
 						ilgenPrimGetter.Emit(OpCodes.Ret);
 						ilgenObjSetter.Emit(OpCodes.Ret);
 						ilgenPrimSetter.Emit(OpCodes.Ret);
+						ilgenObjGetter.DoEmit();
+						ilgenPrimGetter.DoEmit();
+						ilgenObjSetter.DoEmit();
+						ilgenPrimSetter.DoEmit();
 						objFieldGetter = (ObjFieldGetterSetter)dmObjGetter.CreateDelegate(typeof(ObjFieldGetterSetter));
 						primFieldGetter = (PrimFieldGetterSetter)dmPrimGetter.CreateDelegate(typeof(PrimFieldGetterSetter));
 						objFieldSetter = (ObjFieldGetterSetter)dmObjSetter.CreateDelegate(typeof(ObjFieldGetterSetter));
@@ -1251,7 +1255,15 @@ namespace IKVM.NativeCode.java
 			{
 				try
 				{
-					return DateTimeToJavaLongTime(System.IO.File.GetLastWriteTime(GetPathFromFile(f)));
+					DateTime dt = System.IO.File.GetLastWriteTime(GetPathFromFile(f));
+					if (dt.ToFileTime() == 0)
+					{
+						return 0;
+					}
+					else
+					{
+						return DateTimeToJavaLongTime(dt);
+					}
 				}
 				catch (System.UnauthorizedAccessException)
 				{
@@ -3598,10 +3610,15 @@ namespace IKVM.NativeCode.java
 
 		static class InetAddressImplFactory
 		{
+			// On Linux we can't bind both an IPv4 and IPv6 to the same port, so we have to disable IPv6 until we have a dual-stack implementation.
+			// Mono on Windows doesn't appear to support IPv6 either (Mono on Linux does).
+			private static readonly bool ipv6supported = Type.GetType("Mono.Runtime") == null
+				&& Environment.OSVersion.Platform == PlatformID.Win32NT
+				&& System.Net.Sockets.Socket.OSSupportsIPv6;
+
 			public static bool isIPv6Supported()
 			{
-				// TODO System.Net.Sockets.Socket.OSSupportsIPv6;
-				return false;
+				return ipv6supported;
 			}
 		}
 
@@ -3649,6 +3666,10 @@ namespace IKVM.NativeCode.java
 						{
 							addresses.Add(jnInetAddress.getByAddress(hostname, b));
 						}
+					}
+					if (addresses.Count == 0)
+					{
+						throw new jnUnknownHostException(hostname);
 					}
 					return addresses.ToArray();
 				}
@@ -3776,6 +3797,10 @@ namespace IKVM.NativeCode.java
 							addresses[pos++] = InetAddress.ConvertIPAddress(addr[i], hostname);
 						}
 					}
+					if (addresses.Length == 0)
+					{
+						throw new jnUnknownHostException(hostname);
+					}
 					return addresses;
 				}
 				catch (System.ArgumentException x)
@@ -3791,12 +3816,72 @@ namespace IKVM.NativeCode.java
 
 			public static string getHostByAddr(object thisInet6AddressImpl, byte[] addr)
 			{
-				throw new NotImplementedException();
+#if FIRST_PASS
+				return null;
+#else
+				try
+				{
+					return System.Net.Dns.GetHostEntry(new System.Net.IPAddress(addr)).HostName;
+				}
+				catch (System.ArgumentException x)
+				{
+					throw new jnUnknownHostException(x.Message);
+				}
+				catch (System.Net.Sockets.SocketException x)
+				{
+					throw new jnUnknownHostException(x.Message);
+				}
+#endif
 			}
 
 			public static bool isReachable0(object thisInet6AddressImpl, byte[] addr, int scope, int timeout, byte[] inf, int ttl, int if_scope)
 			{
-				throw new NotImplementedException();
+				if (addr.Length == 4)
+				{
+					return Inet4AddressImpl.isReachable0(null, addr, timeout, inf, ttl);
+				}
+				// like the JDK, we don't use Ping, but we try a TCP connection to the echo port
+				// (.NET 2.0 has a System.Net.NetworkInformation.Ping class, but that doesn't provide the option of binding to a specific interface)
+				try
+				{
+					using (System.Net.Sockets.Socket sock = new System.Net.Sockets.Socket(System.Net.Sockets.AddressFamily.InterNetworkV6, System.Net.Sockets.SocketType.Stream, System.Net.Sockets.ProtocolType.Tcp))
+					{
+						if (inf != null)
+						{
+							sock.Bind(new System.Net.IPEndPoint(new System.Net.IPAddress(inf, (uint)if_scope), 0));
+						}
+						if (ttl > 0)
+						{
+							sock.SetSocketOption(System.Net.Sockets.SocketOptionLevel.IPv6, System.Net.Sockets.SocketOptionName.HopLimit, ttl);
+						}
+						System.Net.IPEndPoint ep = new System.Net.IPEndPoint(new System.Net.IPAddress(addr, (uint)scope), 7);
+						IAsyncResult res = sock.BeginConnect(ep, null, null);
+						if (res.AsyncWaitHandle.WaitOne(timeout, false))
+						{
+							try
+							{
+								sock.EndConnect(res);
+								return true;
+							}
+							catch (System.Net.Sockets.SocketException x)
+							{
+								const int WSAECONNREFUSED = 10061;
+								if (x.ErrorCode == WSAECONNREFUSED)
+								{
+									// we got back an explicit "connection refused", that means the host was reachable.
+									return true;
+								}
+							}
+						}
+					}
+				}
+				catch (System.ArgumentException)
+				{
+				}
+				catch (System.Net.Sockets.SocketException)
+				{
+				}
+				return false;
 			}
 		}
 
@@ -3827,15 +3912,26 @@ namespace IKVM.NativeCode.java
 
 			private static int GetIndex(System.Net.NetworkInformation.NetworkInterface ni)
 			{
-				System.Net.NetworkInformation.IPv4InterfaceProperties ipv4props = ni.GetIPProperties().GetIPv4Properties();
+				System.Net.NetworkInformation.IPInterfaceProperties ipprops = ni.GetIPProperties();
+				System.Net.NetworkInformation.IPv4InterfaceProperties ipv4props = ipprops.GetIPv4Properties();
 				if (ipv4props != null)
 				{
 					return ipv4props.Index;
 				}
 				else
 				{
-					return ni.GetIPProperties().GetIPv6Properties().Index;
+					System.Net.NetworkInformation.IPv6InterfaceProperties ipv6props = ipprops.GetIPv6Properties();
+					if (ipv6props != null)
+					{
+						return ipv6props.Index;
+					}
+					return -1;
 				}
+			}
+
+			private static bool IsValid(System.Net.NetworkInformation.NetworkInterface ni)
+			{
+				return GetIndex(ni) != -1;
 			}
 
 			private static NetworkInterfaceInfo GetInterfaces()
@@ -3847,6 +3943,8 @@ namespace IKVM.NativeCode.java
 					return cache;
 				}
 				System.Net.NetworkInformation.NetworkInterface[] ifaces = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces();
+				// on Mono (on Windows) we need to filter out the network interfaces that don't have any IP properties
+				ifaces = Array.FindAll(ifaces, IsValid);
 				Array.Sort(ifaces, Compare);
 				jnNetworkInterface[] ret = new jnNetworkInterface[ifaces.Length];
 				int eth = 0;
@@ -3892,15 +3990,46 @@ namespace IKVM.NativeCode.java
 					ret[i] = netif;
 					netif._set1(name, ifaces[i].Description, GetIndex(ifaces[i]));
 					System.Net.NetworkInformation.UnicastIPAddressInformationCollection uipaic = ifaces[i].GetIPProperties().UnicastAddresses;
-					jnInetAddress[] addresses = new jnInetAddress[uipaic.Count];
-					for (int j = 0; j < addresses.Length; j++)
+					List<jnInetAddress> addresses = new List<jnInetAddress>();
+					List<jnInterfaceAddress> bindings = new List<jnInterfaceAddress>();
+					for (int j = 0; j < uipaic.Count; j++)
 					{
 						System.Net.IPAddress addr = uipaic[j].Address;
 						if (addr.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
 						{
-							addresses[j] = new jnInet4Address(null, addr.GetAddressBytes());
+							jnInet4Address address = new jnInet4Address(null, addr.GetAddressBytes());
+							jnInterfaceAddress binding = new jnInterfaceAddress();
+							short mask = 32;
+							jnInet4Address broadcast = null;
+							System.Net.IPAddress v4mask;
+							try
+							{
+								v4mask = uipaic[j].IPv4Mask;
+							}
+							catch (NotImplementedException)
+							{
+								// Mono (as of 2.6.7) doesn't implement the IPv4Mask property
+								v4mask = null;
+							}
+							if (v4mask != null && !v4mask.Equals(System.Net.IPAddress.Any))
+							{
+								broadcast = new jnInet4Address(null, -1);
+								mask = 0;
+								foreach (byte b in v4mask.GetAddressBytes())
+								{
+									mask += (short)global::java.lang.Integer.bitCount(b);
+								}
+							}
+							else if ((address.address & ~0xffffff) == 0x7f000000)
+							{
+								mask = 8;
+								broadcast = new jnInet4Address(null, 0xffffff);
+							}
+							binding._set(address, broadcast, mask);
+							addresses.Add(address);
+							bindings.Add(binding);
 						}
-						else
+						else if (InetAddressImplFactory.isIPv6Supported())
 						{
 							int scope = 0;
 							if (addr.IsIPv6LinkLocal || addr.IsIPv6SiteLocal)
@@ -3913,12 +4042,15 @@ namespace IKVM.NativeCode.java
 							{
 								ia6._set(scope, netif);
 							}
-							addresses[j] = ia6;
+							jnInterfaceAddress binding = new jnInterfaceAddress();
+							// TODO where do we get the IPv6 subnet prefix length?
+							short mask = 128;
+							binding._set(ia6, null, mask);
+							addresses.Add(ia6);
+							bindings.Add(binding);
 						}
 					}
-					// TODO should implement bindings
-					jnInterfaceAddress[] bindings = new jnInterfaceAddress[0];
-					netif._set2(addresses, bindings, new jnNetworkInterface[0]);
+					netif._set2(addresses.ToArray(), bindings.ToArray(), new jnNetworkInterface[0]);
 				}
 				NetworkInterfaceInfo nii = new NetworkInterfaceInfo();
 				nii.dotnetInterfaces = ifaces;
@@ -4872,7 +5004,23 @@ namespace IKVM.NativeCode.java
 				Type typeofTimeZoneInfo = Type.GetType("System.TimeZoneInfo, System.Core, Version=3.5.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089");
 				if (typeofTimeZoneInfo != null)
 				{
-					return (string)typeofTimeZoneInfo.GetProperty("Id").GetValue(typeofTimeZoneInfo.GetProperty("Local").GetValue(null, null), null);
+					try
+					{
+						return (string)typeofTimeZoneInfo.GetProperty("Id").GetValue(typeofTimeZoneInfo.GetProperty("Local").GetValue(null, null), null);
+					}
+					catch (Exception x)
+					{
+						if (typeofTimeZoneInfo.Assembly.GetType("System.TimeZoneNotFoundException").IsInstanceOfType(x))
+						{
+							// MONOBUG Mono's TimeZoneInfo.Local property throws a TimeZoneNotFoundException on Windows
+							// (https://bugzilla.novell.com/show_bug.cgi?id=622524)
+							return SystemTimeZone.CurrentTimeZone.StandardName;
+						}
+						else
+						{
+							throw;
+						}
+					}
 				}
 				else
 				{
@@ -5815,7 +5963,7 @@ namespace IKVM.NativeCode.sun.reflect
 				mw.ResolveMethod();
 				DynamicMethod dm = DynamicMethodUtils.Create("__<Invoker>", mw.DeclaringType.TypeAsBaseType, !mw.IsPublic || !mw.DeclaringType.IsPublic || nonvirtual, typeof(object), new Type[] { typeof(object), typeof(object[]), typeof(global::ikvm.@internal.CallerID) });
 				CodeEmitter ilgen = CodeEmitter.Create(dm);
-				LocalBuilder ret = ilgen.DeclareLocal(typeof(object));
+				CodeEmitterLocal ret = ilgen.DeclareLocal(typeof(object));
 				if (!mw.IsStatic)
 				{
 					// check target for null
@@ -5840,7 +5988,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.MarkLabel(argsLengthOK);
 
 				int thisCount = mw.IsStatic ? 0 : 1;
-				LocalBuilder[] args = new LocalBuilder[mw.GetParameters().Length + thisCount];
+				CodeEmitterLocal[] args = new CodeEmitterLocal[mw.GetParameters().Length + thisCount];
 				if (!mw.IsStatic)
 				{
 					args[0] = ilgen.DeclareLocal(mw.DeclaringType.TypeAsSignatureType);
@@ -5868,6 +6016,8 @@ namespace IKVM.NativeCode.sun.reflect
 					tw.EmitConvStackTypeToSignatureType(ilgen, null);
 					ilgen.Emit(OpCodes.Stloc, args[i]);
 				}
+				CodeEmitterLabel label1 = ilgen.DefineLabel();
+				ilgen.Emit(OpCodes.Leave, label1);
 				ilgen.BeginCatchBlock(typeof(InvalidCastException));
 				ilgen.Emit(OpCodes.Newobj, illegalArgumentExceptionCtor);
 				ilgen.Emit(OpCodes.Throw);
@@ -5877,6 +6027,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.EndExceptionBlock();
 
 				// this is the actual call
+				ilgen.MarkLabel(label1);
 				ilgen.BeginExceptionBlock();
 				for (int i = 0; i < args.Length; i++)
 				{
@@ -5904,8 +6055,11 @@ namespace IKVM.NativeCode.sun.reflect
 				mw.ReturnType.EmitConvSignatureTypeToStackType(ilgen);
 				BoxReturnValue(ilgen, mw.ReturnType);
 				ilgen.Emit(OpCodes.Stloc, ret);
+				CodeEmitterLabel label2 = ilgen.DefineLabel();
+				ilgen.Emit(OpCodes.Leave, label2);
 				ilgen.BeginCatchBlock(typeof(Exception));
 				CodeEmitterLabel label = ilgen.DefineLabel();
+				CodeEmitterLabel labelWrap = ilgen.DefineLabel();
 				if (IntPtr.Size == 8 && nonvirtual)
 				{
 					// This is a workaround for the x64 JIT, which is completely broken as usual.
@@ -5916,12 +6070,19 @@ namespace IKVM.NativeCode.sun.reflect
 				}
 				else
 				{
+					// If the exception we caught is a jlrInvocationTargetException, we know it must be
+					// wrapped, because .NET won't throw that exception and we also cannot check the target site,
+					// because it may be the same as us if a method is recursively invoking itself.
+					ilgen.Emit(OpCodes.Dup);
+					ilgen.Emit(OpCodes.Isinst, typeof(jlrInvocationTargetException));
+					ilgen.Emit(OpCodes.Brtrue_S, labelWrap);
 					ilgen.Emit(OpCodes.Dup);
 					ilgen.Emit(OpCodes.Callvirt, get_TargetSite);
 					ilgen.Emit(OpCodes.Call, GetCurrentMethod);
 					ilgen.Emit(OpCodes.Ceq);
 					ilgen.Emit(OpCodes.Brtrue_S, label);
 				}
+				ilgen.MarkLabel(labelWrap);
 				ilgen.Emit(OpCodes.Ldc_I4_0);
 				ilgen.Emit(OpCodes.Call, ByteCodeHelperMethods.mapException.MakeGenericMethod(Types.Exception));
 				ilgen.Emit(OpCodes.Newobj, invocationTargetExceptionCtor);
@@ -5929,8 +6090,10 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.Emit(OpCodes.Throw);
 				ilgen.EndExceptionBlock();
 
+				ilgen.MarkLabel(label2);
 				ilgen.Emit(OpCodes.Ldloc, ret);
 				ilgen.Emit(OpCodes.Ret);
+				ilgen.DoEmit();
 				invoker = (Invoker)dm.CreateDelegate(typeof(Invoker));
 				if ((mw.IsStatic || mw.DeclaringType.IsInterface) && mw.DeclaringType.HasStaticInitializer)
 				{
@@ -6170,7 +6333,7 @@ namespace IKVM.NativeCode.sun.reflect
 				mw.ResolveMethod();
 				DynamicMethod dm = DynamicMethodUtils.Create("__<Invoker>", mw.DeclaringType.TypeAsTBD, !mw.IsPublic || !mw.DeclaringType.IsPublic, typeof(object), new Type[] { typeof(object[]) });
 				CodeEmitter ilgen = CodeEmitter.Create(dm);
-				LocalBuilder ret = ilgen.DeclareLocal(typeof(object));
+				CodeEmitterLocal ret = ilgen.DeclareLocal(typeof(object));
 
 				// check args length
 				CodeEmitterLabel argsLengthOK = ilgen.DefineLabel();
@@ -6188,7 +6351,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.Emit(OpCodes.Throw);
 				ilgen.MarkLabel(argsLengthOK);
 
-				LocalBuilder[] args = new LocalBuilder[mw.GetParameters().Length];
+				CodeEmitterLocal[] args = new CodeEmitterLocal[mw.GetParameters().Length];
 				for (int i = 0; i < args.Length; i++)
 				{
 					mw.GetParameters()[i].Finish();
@@ -6205,6 +6368,8 @@ namespace IKVM.NativeCode.sun.reflect
 					tw.EmitConvStackTypeToSignatureType(ilgen, null);
 					ilgen.Emit(OpCodes.Stloc, args[i]);
 				}
+				CodeEmitterLabel label1 = ilgen.DefineLabel();
+				ilgen.Emit(OpCodes.Leave, label1);
 				ilgen.BeginCatchBlock(typeof(InvalidCastException));
 				ilgen.Emit(OpCodes.Newobj, FastMethodAccessorImpl.illegalArgumentExceptionCtor);
 				ilgen.Emit(OpCodes.Throw);
@@ -6214,6 +6379,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.EndExceptionBlock();
 
 				// this is the actual call
+				ilgen.MarkLabel(label1);
 				ilgen.BeginExceptionBlock();
 				for (int i = 0; i < args.Length; i++)
 				{
@@ -6221,6 +6387,8 @@ namespace IKVM.NativeCode.sun.reflect
 				}
 				mw.EmitNewobj(ilgen);
 				ilgen.Emit(OpCodes.Stloc, ret);
+				CodeEmitterLabel label2 = ilgen.DefineLabel();
+				ilgen.Emit(OpCodes.Leave, label2);
 				ilgen.BeginCatchBlock(typeof(Exception));
 				ilgen.Emit(OpCodes.Dup);
 				ilgen.Emit(OpCodes.Callvirt, FastMethodAccessorImpl.get_TargetSite);
@@ -6235,8 +6403,10 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.Emit(OpCodes.Throw);
 				ilgen.EndExceptionBlock();
 
+				ilgen.MarkLabel(label2);
 				ilgen.Emit(OpCodes.Ldloc, ret);
 				ilgen.Emit(OpCodes.Ret);
+				ilgen.DoEmit();
 				invoker = (Invoker)dm.CreateDelegate(typeof(Invoker));
 			}
 
@@ -6290,6 +6460,7 @@ namespace IKVM.NativeCode.sun.reflect
 				ilgen.Emit(OpCodes.Dup);
 				constructor.EmitCall(ilgen);
 				ilgen.Emit(OpCodes.Ret);
+				ilgen.DoEmit();
 				invoker = (InvokeCtor)dm.CreateDelegate(typeof(InvokeCtor));
 			}
 
@@ -7336,17 +7507,21 @@ namespace IKVM.NativeCode.sun.reflect
 					ilgen.Emit(OpCodes.Castclass, fw.DeclaringType.TypeAsBaseType);
 					fw.EmitGet(ilgen);
 					fw.FieldTypeWrapper.EmitConvSignatureTypeToStackType(ilgen);
-					LocalBuilder local = ilgen.DeclareLocal(fieldType);
+					CodeEmitterLocal local = ilgen.DeclareLocal(fieldType);
 					ilgen.Emit(OpCodes.Stloc, local);
+					CodeEmitterLabel label = ilgen.DefineLabel();
+					ilgen.Emit(OpCodes.Leave, label);
 					ilgen.BeginCatchBlock(typeof(InvalidCastException));
 					ilgen.Emit(OpCodes.Ldarg_0);
 					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Callvirt, typeof(IReflectionException).GetMethod("GetIllegalArgumentException"));
 					ilgen.Emit(OpCodes.Throw);
 					ilgen.EndExceptionBlock();
+					ilgen.MarkLabel(label);
 					ilgen.Emit(OpCodes.Ldloc, local);
 				}
 				ilgen.Emit(OpCodes.Ret);
+				ilgen.DoEmit();
 				return dm.CreateDelegate(delegateType, this);
 			}
 
@@ -7366,12 +7541,15 @@ namespace IKVM.NativeCode.sun.reflect
 						fw.FieldTypeWrapper.EmitCheckcast(null, ilgen);
 						fw.FieldTypeWrapper.EmitConvStackTypeToSignatureType(ilgen, null);
 						fw.EmitSet(ilgen);
+						CodeEmitterLabel label = ilgen.DefineLabel();
+						ilgen.Emit(OpCodes.Leave, label);
 						ilgen.BeginCatchBlock(typeof(InvalidCastException));
 						ilgen.Emit(OpCodes.Ldarg_0);
 						ilgen.Emit(OpCodes.Ldarg_1);
 						ilgen.Emit(OpCodes.Callvirt, typeof(IReflectionException).GetMethod("SetIllegalArgumentException"));
 						ilgen.Emit(OpCodes.Throw);
 						ilgen.EndExceptionBlock();
+						ilgen.MarkLabel(label);
 					}
 					else
 					{
@@ -7391,14 +7569,18 @@ namespace IKVM.NativeCode.sun.reflect
 					}
 					fw.FieldTypeWrapper.EmitConvStackTypeToSignatureType(ilgen, null);
 					fw.EmitSet(ilgen);
+					CodeEmitterLabel label = ilgen.DefineLabel();
+					ilgen.Emit(OpCodes.Leave, label);
 					ilgen.BeginCatchBlock(typeof(InvalidCastException));
 					ilgen.Emit(OpCodes.Ldarg_0);
 					ilgen.Emit(OpCodes.Ldarg_1);
 					ilgen.Emit(OpCodes.Callvirt, typeof(IReflectionException).GetMethod("SetIllegalArgumentException"));
 					ilgen.Emit(OpCodes.Throw);
 					ilgen.EndExceptionBlock();
+					ilgen.MarkLabel(label);
 				}
 				ilgen.Emit(OpCodes.Ret);
+				ilgen.DoEmit();
 				return dm.CreateDelegate(delegateType, this);
 			}
 
