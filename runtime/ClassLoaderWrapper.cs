@@ -121,19 +121,11 @@ namespace IKVM.Internal
 			Assembly coreAssembly = JVM.CoreAssembly;
 			if(coreAssembly != null)
 			{
-				try
-				{
-					Tracer.Info(Tracer.Runtime, "Core assembly: {0}", coreAssembly.Location);
-				}
-				catch(System.Security.SecurityException)
-				{
-				}
 				RemappedClassAttribute[] remapped = AttributeHelper.GetRemappedClasses(coreAssembly);
 				if(remapped.Length > 0)
 				{
 					foreach(RemappedClassAttribute r in remapped)
 					{
-						Tracer.Info(Tracer.Runtime, "Remapping type {0} to {1}", r.RemappedType, r.Name);
 						remappedTypes.Add(r.RemappedType, r.Name);
 					}
 				}
@@ -1058,19 +1050,11 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR && __MonoCS__
-		// MONOBUG this weird hack is to work around an mcs bug
-		private static void SetClassLoadWrapperHack<T>(ref T field, ClassLoaderWrapper wrapper)
-		{
-			field = (T)(object)wrapper;
-		}
-#endif
-
 		protected static void SetWrapperForClassLoader(object javaClassLoader, ClassLoaderWrapper wrapper)
 		{
 #if !STATIC_COMPILER && !FIRST_PASS && !STUB_GENERATOR
 #if __MonoCS__
-			SetClassLoadWrapperHack(ref ((java.lang.ClassLoader)javaClassLoader).wrapper, wrapper);
+			typeof(java.lang.ClassLoader).GetField("wrapper", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(javaClassLoader, wrapper);
 #else
 			((java.lang.ClassLoader)javaClassLoader).wrapper = wrapper;
 #endif
