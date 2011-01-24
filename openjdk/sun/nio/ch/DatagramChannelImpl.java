@@ -32,7 +32,6 @@ import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.nio.channels.spi.*;
 import java.lang.ref.SoftReference;
-import sun.net.ResourceManager;
 
 
 /**
@@ -98,22 +97,16 @@ class DatagramChannelImpl
         throws IOException
     {
         super(sp);
-        ResourceManager.beforeUdpCreate();
-        try {
-            this.fd = Net.socket(false);
-            this.state = ST_UNCONNECTED;
-            try
-            {
-                if (false) throw new cli.System.Net.Sockets.SocketException();
-                fd.getSocket().IOControl(SIO_UDP_CONNRESET, new byte[] { 0 }, null);
-            }
-            catch (cli.System.Net.Sockets.SocketException x)
-            {
-                throw SocketUtil.convertSocketExceptionToIOException(x);
-            }
-        } catch (IOException ioe) {
-            ResourceManager.afterUdpClose();
-            throw ioe;
+        this.fd = Net.socket(false);
+        this.state = ST_UNCONNECTED;
+        try
+        {
+            if (false) throw new cli.System.Net.Sockets.SocketException();
+            fd.getSocket().IOControl(SIO_UDP_CONNRESET, new byte[] { 0 }, null);
+        }
+        catch (cli.System.Net.Sockets.SocketException x)
+        {
+            throw SocketUtil.convertSocketExceptionToIOException(x);
         }
     }
 
@@ -522,7 +515,6 @@ class DatagramChannelImpl
     protected void implCloseSelectableChannel() throws IOException {
         synchronized (stateLock) {
             closeImpl();
-            ResourceManager.afterUdpClose();
             long th;
             if ((th = readerThread) != 0)
                 NativeThread.signal(th);

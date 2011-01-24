@@ -122,7 +122,7 @@ public class ProtectionDomain {
             java.net.URL url;
             try {
                 if (false) throw new cli.System.NotSupportedException();
-                url = new java.net.URL(assembly.get_EscapedCodeBase());
+                url = new java.net.URL(assembly.get_CodeBase());
             } catch (java.net.MalformedURLException _) {
                 url = null;
             } catch (cli.System.NotSupportedException _) {

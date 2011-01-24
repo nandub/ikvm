@@ -79,7 +79,6 @@ java/lang/ref/SoftReference.java
 java/lang/reflect/Constructor.java
 java/lang/reflect/Field.java
 java/lang/reflect/Method.java
-java/lang/reflect/Proxy.java
 java/lang/reflect/ReflectHelper.java
 java/net/net_util_md.java
 java/net/SocketInputStream.java
@@ -132,7 +131,6 @@ sun/awt/SunToolkit.java
 sun/awt/image/ByteComponentRaster.java
 sun/awt/image/BytePackedRaster.java
 sun/awt/image/GifImageDecoder.java
-sun/awt/image/IkvmImageDecoder.java
 sun/awt/image/ImageRepresentation.java
 sun/awt/image/ImagingLib.java
 sun/awt/image/IntegerComponentRaster.java
@@ -8615,6 +8613,7 @@ sun/security/jgss/wrapper/SunNativeProvider.java
 @OPENJDK@/jdk/src/share/classes/java/lang/reflect/Modifier.java
 @OPENJDK@/jdk/src/share/classes/java/lang/reflect/package-info.java
 @OPENJDK@/jdk/src/share/classes/java/lang/reflect/ParameterizedType.java
+@OPENJDK@/jdk/src/share/classes/java/lang/reflect/Proxy.java
 @OPENJDK@/jdk/src/share/classes/java/lang/reflect/ReflectAccess.java
 @OPENJDK@/jdk/src/share/classes/java/lang/reflect/ReflectPermission.java
 @OPENJDK@/jdk/src/share/classes/java/lang/reflect/Type.java
@@ -10786,7 +10785,6 @@ sun/security/jgss/wrapper/SunNativeProvider.java
 @OPENJDK@/jdk/src/share/classes/org/jcp/xml/dsig/internal/MacOutputStream.java
 @OPENJDK@/jdk/src/share/classes/org/jcp/xml/dsig/internal/SignerOutputStream.java
 @OPENJDK@/jdk/src/share/classes/sun/applet/AppletAudioClip.java
-@OPENJDK@/jdk/src/share/classes/sun/awt/AWTAccessor.java
 @OPENJDK@/jdk/src/share/classes/sun/awt/AWTAutoShutdown.java
 @OPENJDK@/jdk/src/share/classes/sun/awt/AWTCharset.java
 @OPENJDK@/jdk/src/share/classes/sun/awt/AWTSecurityManager.java
@@ -11348,7 +11346,6 @@ sun/security/jgss/wrapper/SunNativeProvider.java
 @OPENJDK@/jdk/src/share/classes/sun/misc/JavaIOFileDescriptorAccess.java
 @OPENJDK@/jdk/src/share/classes/sun/misc/JavaLangAccess.java
 @OPENJDK@/jdk/src/share/classes/sun/misc/JavaNetAccess.java
-@OPENJDK@/jdk/src/share/classes/sun/misc/JavaSecurityAccess.java
 @OPENJDK@/jdk/src/share/classes/sun/misc/JavaSecurityProtectionDomainAccess.java
 @OPENJDK@/jdk/src/share/classes/sun/misc/JavaUtilJarAccess.java
 @OPENJDK@/jdk/src/share/classes/sun/misc/Lock.java
@@ -11439,7 +11436,6 @@ sun/security/jgss/wrapper/SunNativeProvider.java
 @OPENJDK@/jdk/src/share/classes/sun/net/ProgressMeteringPolicy.java
 @OPENJDK@/jdk/src/share/classes/sun/net/ProgressMonitor.java
 @OPENJDK@/jdk/src/share/classes/sun/net/ProgressSource.java
-@OPENJDK@/jdk/src/share/classes/sun/net/ResourceManager.java
 @OPENJDK@/jdk/src/share/classes/sun/net/smtp/SmtpClient.java
 @OPENJDK@/jdk/src/share/classes/sun/net/smtp/SmtpProtocolException.java
 @OPENJDK@/jdk/src/share/classes/sun/net/spi/DefaultProxySelector.java
