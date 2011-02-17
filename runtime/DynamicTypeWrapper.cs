@@ -2923,7 +2923,9 @@ namespace IKVM.Internal
 									ilgen.BeginExceptionBlock();
 									ilgen.Emit(OpCodes.Ldarg_0);
 									ilgen.Emit(OpCodes.Callvirt, mb);
+									ilgen.Emit(OpCodes.Leave, skip);
 									ilgen.BeginCatchBlock(Types.Object);
+									ilgen.Emit(OpCodes.Leave, skip);
 									ilgen.EndExceptionBlock();
 								}
 								else
@@ -3674,7 +3676,6 @@ namespace IKVM.Internal
 						}
 						CodeEmitter ilGenerator = CodeEmitter.Create((ConstructorBuilder)mb);
 						CompileConstructorBody(this, ilGenerator, i, invokespecialstubcache);
-						ilGenerator.DoEmit();
 					}
 					else
 					{
@@ -3877,8 +3878,8 @@ namespace IKVM.Internal
 					else
 					{
 						ilGenerator.Emit(OpCodes.Ret);
+						ilGenerator.DoEmit();
 					}
-					ilGenerator.DoEmit();
 					ilGenerator.CheckLabels();
 				}
 
@@ -4380,7 +4381,7 @@ namespace IKVM.Internal
 					{
 						// Miranda methods already have a methodimpl (if needed) to implement the correct interface method
 					}
-					else if (!mce.IsPublic)
+					else if (!mce.IsPublic && !mce.IsInternal)
 					{
 						// NOTE according to the ECMA spec it isn't legal for a privatescope method to be virtual, but this works and
 						// it makes sense, so I hope the spec is wrong
@@ -4394,7 +4395,7 @@ namespace IKVM.Internal
 						typeBuilder.DefineMethodOverride(mb, (MethodInfo)ifmethod.GetMethod());
 						wrapper.HasIncompleteInterfaceImplementation = true;
 					}
-					else if (mce.GetMethod() == null || mce.RealName != ifmethod.RealName)
+					else if (mce.GetMethod() == null || mce.RealName != ifmethod.RealName || mce.IsInternal)
 					{
 						MethodBuilder mb = typeBuilder.DefineMethod(mangledName, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.Final, ifmethod.ReturnTypeForDefineMethod, ifmethod.GetParametersForDefineMethod());
 						AttributeHelper.HideFromJava(mb);
@@ -4772,21 +4773,27 @@ namespace IKVM.Internal
 						retValue = ilGenerator.DeclareLocal(retTypeWrapper.TypeAsSignatureType);
 						ilGenerator.Emit(OpCodes.Stloc, retValue);
 					}
+					CodeEmitterLabel retLabel = ilGenerator.DefineLabel();
+					ilGenerator.Emit(OpCodes.Leave, retLabel);
 					ilGenerator.BeginCatchBlock(Types.Object);
-					ilGenerator.EmitWriteLine("*** exception in native code ***");
+					ilGenerator.Emit(OpCodes.Ldstr, "*** exception in native code ***");
+					ilGenerator.Emit(OpCodes.Call, writeLine);
 					ilGenerator.Emit(OpCodes.Call, writeLine);
 					ilGenerator.Emit(OpCodes.Rethrow);
 					ilGenerator.BeginFinallyBlock();
 					ilGenerator.Emit(OpCodes.Ldloca, localRefStruct);
 					ilGenerator.Emit(OpCodes.Call, leaveLocalRefStruct);
+					ilGenerator.Emit(OpCodes.Endfinally);
 					ilGenerator.EndExceptionBlock();
 					if (m.IsSynchronized && m.IsStatic)
 					{
 						ilGenerator.BeginFinallyBlock();
 						ilGenerator.Emit(OpCodes.Ldloc, syncObject);
 						ilGenerator.Emit(OpCodes.Call, monitorExit);
+						ilGenerator.Emit(OpCodes.Endfinally);
 						ilGenerator.EndExceptionBlock();
 					}
+					ilGenerator.MarkLabel(retLabel);
 					if (retTypeWrapper != PrimitiveTypeWrapper.VOID)
 					{
 						ilGenerator.Emit(OpCodes.Ldloc, retValue);
@@ -5073,11 +5080,13 @@ namespace IKVM.Internal
 				// do we have a native implementation in map.xml?
 				if (wrapper.EmitMapXmlMethodBody(ilGenerator, classFile, m))
 				{
+					ilGenerator.DoEmit();
 					return;
 				}
 #endif
 				bool nonLeaf = false;
 				Compiler.Compile(context, wrapper, methods[methodIndex], classFile, m, ilGenerator, ref nonLeaf, invokespecialstubcache);
+				ilGenerator.DoEmit();
 #if STATIC_COMPILER
 				ilGenerator.EmitLineNumberTable(methods[methodIndex].GetMethod());
 #else // STATIC_COMPILER
