@@ -38,7 +38,7 @@ namespace IKVM.Reflection.Emit
 	public sealed class ModuleBuilder : Module, ITypeOwner
 	{
 		private static readonly bool usePublicKeyAssemblyReference = false;
-		private Guid mvid = Guid.NewGuid();
+		private readonly Guid mvid = Guid.NewGuid();
 		private long imageBaseAddress = 0x00400000;
 		private readonly AssemblyBuilder asm;
 		internal readonly string moduleName;
@@ -210,7 +210,7 @@ namespace IKVM.Reflection.Emit
 			TypeBuilder typeBuilder = __DefineType(ns, name);
 			typeBuilder.__SetAttributes(attr);
 			typeBuilder.SetParent(parent);
-			typeBuilder.SetPackingSizeAndTypeSize(packingSize, typesize);
+			SetPackingSizeAndTypeSize(typeBuilder, packingSize, typesize);
 			return typeBuilder;
 		}
 
@@ -224,6 +224,18 @@ namespace IKVM.Reflection.Emit
 			TypeBuilder typeBuilder = new TypeBuilder(owner, ns, name);
 			types.Add(typeBuilder);
 			return typeBuilder;
+		}
+
+		internal void SetPackingSizeAndTypeSize(TypeBuilder typeBuilder, PackingSize packingSize, int typesize)
+		{
+			if (packingSize != PackingSize.Unspecified || typesize != 0)
+			{
+				ClassLayoutTable.Record rec = new ClassLayoutTable.Record();
+				rec.PackingSize = (short)packingSize;
+				rec.ClassSize = typesize;
+				rec.Parent = typeBuilder.MetadataToken;
+				this.ClassLayout.AddRecord(rec);
+			}
 		}
 
 		public EnumBuilder DefineEnum(string name, TypeAttributes visibility, Type underlyingType)
@@ -386,11 +398,6 @@ namespace IKVM.Reflection.Emit
 			bb.WriteCompressedInt(list.Count);
 			foreach (CustomAttributeBuilder cab in list)
 			{
-				if (cab.Constructor.Module != this)
-				{
-					// to make ildasm show the type properly, we need to have a TypeRef to the type
-					ImportType(cab.Constructor.DeclaringType);
-				}
 				bb.Write(cab.Constructor.DeclaringType.AssemblyQualifiedName);
 				namedArgs.Clear();
 				cab.WriteNamedArgumentsForDeclSecurity(this, namedArgs);
@@ -402,6 +409,7 @@ namespace IKVM.Reflection.Emit
 
 		public void DefineManifestResource(string name, Stream stream, ResourceAttributes attribute)
 		{
+			manifestResources.Align(8);
 			ManifestResourceTable.Record rec = new ManifestResourceTable.Record();
 			rec.Offset = manifestResources.Position;
 			rec.Flags = (int)attribute;
@@ -468,11 +476,7 @@ namespace IKVM.Reflection.Emit
 
 		internal int GetTypeTokenForMemberRef(Type type)
 		{
-			if (type.__IsMissing)
-			{
-				return ImportType(type);
-			}
-			else if (type.IsGenericTypeDefinition)
+			if (type.IsGenericTypeDefinition)
 			{
 				int token;
 				if (!memberRefTypeTokens.TryGetValue(type, out token))
@@ -497,7 +501,7 @@ namespace IKVM.Reflection.Emit
 		private static bool IsFromGenericTypeDefinition(MemberInfo member)
 		{
 			Type decl = member.DeclaringType;
-			return decl != null && !decl.__IsMissing && decl.IsGenericTypeDefinition;
+			return decl != null && decl.IsGenericTypeDefinition;
 		}
 
 		public FieldToken GetFieldToken(FieldInfo field)
@@ -603,7 +607,7 @@ namespace IKVM.Reflection.Emit
 			int token;
 			if (!typeTokens.TryGetValue(type, out token))
 			{
-				if (type.HasElementType || type.IsGenericTypeInstance)
+				if (type.HasElementType || (type.IsGenericType && !type.IsGenericTypeDefinition))
 				{
 					ByteBuffer spec = new ByteBuffer(5);
 					Signature.WriteTypeSpec(this, spec, type);
@@ -675,7 +679,7 @@ namespace IKVM.Reflection.Emit
 		private int FindOrAddAssemblyRef(AssemblyName name)
 		{
 			AssemblyRefTable.Record rec = new AssemblyRefTable.Record();
-			Version ver = name.Version ?? new Version(0, 0, 0, 0);
+			Version ver = name.Version;
 			rec.MajorVersion = (ushort)ver.Major;
 			rec.MinorVersion = (ushort)ver.Minor;
 			rec.BuildNumber = (ushort)ver.Build;
@@ -688,7 +692,7 @@ namespace IKVM.Reflection.Emit
 			}
 			if (publicKeyOrToken == null || publicKeyOrToken.Length == 0)
 			{
-				publicKeyOrToken = name.GetPublicKeyToken() ?? Empty<byte>.Array;
+				publicKeyOrToken = name.GetPublicKeyToken();
 			}
 			else
 			{
@@ -1075,11 +1079,6 @@ namespace IKVM.Reflection.Emit
 		public override Guid ModuleVersionId
 		{
 			get { return mvid; }
-		}
-
-		public void __SetModuleVersionId(Guid guid)
-		{
-			mvid = guid;
 		}
 
 		public override Type[] __ResolveOptionalParameterTypes(int metadataToken)

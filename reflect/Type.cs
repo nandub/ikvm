@@ -45,20 +45,6 @@ namespace IKVM.Reflection
 	{
 		public static readonly Type[] EmptyTypes = Empty<Type>.Array;
 		protected readonly Type underlyingType;
-		protected TypeFlags typeFlags;
-
-		[Flags]
-		protected enum TypeFlags
-		{
-			// for use by TypeBuilder
-			IsGenericTypeDefinition = 1,
-			HasNestedTypes = 2,
-			Baked = 4,
-
-			// for general use
-			ValueType = 8,
-			NotValueType = 16,
-		}
 
 		// prevent subclassing by outsiders
 		internal Type()
@@ -304,11 +290,6 @@ namespace IKVM.Reflection
 		}
 
 		public virtual bool IsGenericTypeDefinition
-		{
-			get { return false; }
-		}
-
-		internal virtual bool IsGenericTypeInstance
 		{
 			get { return false; }
 		}
@@ -1242,7 +1223,7 @@ namespace IKVM.Reflection
 
 		public Type __MakeGenericType(Type[] typeArguments, Type[][] requiredCustomModifiers, Type[][] optionalCustomModifiers)
 		{
-			if (!this.__IsMissing && !this.IsGenericTypeDefinition)
+			if (!this.IsGenericTypeDefinition)
 			{
 				throw new InvalidOperationException();
 			}
@@ -1572,7 +1553,7 @@ namespace IKVM.Reflection
 			return null;
 		}
 
-		internal virtual FieldInfo FindField(string name, FieldSignature signature)
+		internal FieldInfo FindField(string name, FieldSignature signature)
 		{
 			foreach (FieldInfo field in __GetDeclaredFields())
 			{
@@ -1623,28 +1604,6 @@ namespace IKVM.Reflection
 					|| this == u.System_Runtime_CompilerServices_MethodImplAttribute
 					;
 			}
-		}
-
-		internal Type MarkNotValueType()
-		{
-			typeFlags |= TypeFlags.NotValueType;
-			return this;
-		}
-
-		internal Type MarkValueType()
-		{
-			typeFlags |= TypeFlags.ValueType;
-			return this;
-		}
-
-		internal ConstructorInfo GetPseudoCustomAttributeConstructor(params Type[] parameterTypes)
-		{
-			Universe u = this.Module.universe;
-			MethodSignature methodSig = MethodSignature.MakeFromBuilder(u.System_Void, parameterTypes, null, CallingConventions.Standard | CallingConventions.HasThis, 0);
-			MethodBase mb =
-				FindMethod(".ctor", methodSig) ??
-				u.GetMissingMethodOrThrow(this, ".ctor", methodSig);
-			return (ConstructorInfo)mb;
 		}
 	}
 
@@ -2406,9 +2365,11 @@ namespace IKVM.Reflection
 				}
 				StringBuilder sb = new StringBuilder(this.type.FullName);
 				sb.Append('[');
+				string sep = "";
 				foreach (Type type in args)
 				{
-					sb.Append('[').Append(type.AssemblyQualifiedName.Replace("]", "\\]")).Append(']');
+					sb.Append(sep).Append('[').Append(type.FullName).Append(", ").Append(type.Assembly.FullName.Replace("]", "\\]")).Append(']');
+					sep = ",";
 				}
 				sb.Append(']');
 				return sb.ToString();
@@ -2436,11 +2397,6 @@ namespace IKVM.Reflection
 		}
 
 		public override bool IsGenericType
-		{
-			get { return true; }
-		}
-
-		internal override bool IsGenericTypeInstance
 		{
 			get { return true; }
 		}
