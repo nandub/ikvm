@@ -483,6 +483,11 @@ namespace IKVM.Internal
 			this.declaredExceptions = (string[])exceptions.Clone();
 		}
 
+		internal string[] GetDeclaredExceptions()
+		{
+			return declaredExceptions;
+		}
+
 #if !STATIC_COMPILER && !STUB_GENERATOR
 		internal object ToMethodOrConstructor(bool copy)
 		{
@@ -1447,6 +1452,10 @@ namespace IKVM.Internal
 				ilgen.Emit(OpCodes.Volatile);
 			}
 			ilgen.Emit(IsStatic ? OpCodes.Stsfld : OpCodes.Stfld, fi);
+			if(IsVolatile)
+			{
+				ilgen.EmitMemoryBarrier();
+			}
 		}
 #endif // !STUB_GENERATOR
 	}
