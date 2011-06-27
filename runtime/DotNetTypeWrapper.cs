@@ -2128,8 +2128,6 @@ namespace IKVM.Internal
 								TypeWrapper tw = ClassLoaderWrapper.GetWrapperFromType(interfaces[i]);
 								foreach (MethodWrapper mw in tw.GetMethods())
 								{
-									// HACK we need to link here, because during a core library build we might reference java.lang.AutoCloseable (via IDisposable) before it has been linked
-									mw.Link();
 									InterfaceMethodStubHelper(methodsList, mw.GetMethod(), mw.Name, mw.Signature, mw.GetParameters(), mw.ReturnType);
 								}
 							}
@@ -2693,7 +2691,7 @@ namespace IKVM.Internal
 
 		internal override bool IsFastClassLiteralSafe
 		{
-			get { return type != Types.Void && !type.IsPrimitive && !IsRemapped; }
+			get { return true; }
 		}
 	}
 }
