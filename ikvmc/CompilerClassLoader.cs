@@ -2642,6 +2642,10 @@ namespace IKVM.Internal
 				{
 					compiler.PrepareSave();
 				}
+				if (StaticCompiler.errorCount > 0)
+				{
+					return 1;
+				}
 				foreach (CompilerClassLoader compiler in compilers)
 				{
 					compiler.Save();
@@ -2652,7 +2656,7 @@ namespace IKVM.Internal
 				Console.Error.WriteLine("Error: {0}", x.Message);
 				return 1;
 			}
-			return 0;
+			return StaticCompiler.errorCount == 0 ? 0 : 1;
 		}
 
 		private static int CreateCompiler(CompilerOptions options, ref CompilerClassLoader loader, ref bool compilingCoreAssembly)
@@ -3318,7 +3322,8 @@ namespace IKVM.Internal
 		internal long baseAddress;
 		internal List<CompilerClassLoader> sharedclassloader; // should *not* be deep copied in Copy(), because we want the list of all compilers that share a class loader
 		internal Dictionary<string, string> suppressWarnings = new Dictionary<string, string>();
-		internal Dictionary<string, string> errorWarnings = new Dictionary<string, string>();
+		internal Dictionary<string, string> errorWarnings = new Dictionary<string, string>();	// treat specific warnings as errors
+		internal bool warnaserror; // treat all warnings as errors
 		internal string writeSuppressWarningsFile;
 		internal List<string> proxies = new List<string>();
 
@@ -3408,6 +3413,7 @@ namespace IKVM.Internal
 		internal static Assembly runtimeAssembly;
 		internal static Assembly runtimeJniAssembly;
 		internal static CompilerOptions toplevel;
+		internal static int errorCount;
 
 		internal static Assembly Load(string assemblyString)
 		{
@@ -3624,9 +3630,14 @@ namespace IKVM.Internal
 					throw new InvalidProgramException();
 			}
 			bool error = msgId >= Message.StartErrors
+				|| options.warnaserror
 				|| options.errorWarnings.ContainsKey(key)
 				|| options.errorWarnings.ContainsKey(((int)msgId).ToString());
 			Console.Error.Write("{0} IKVMC{1:D4}: ", error ? "Error" : msgId < Message.StartWarnings ? "Note" : "Warning", (int)msgId);
+			if (error && msgId < Message.StartErrors)
+			{
+				Console.Error.Write("Warning as Error: ");
+			}
 			Console.Error.WriteLine(msg, values);
 			if(options != toplevel && options.path != null)
 			{
@@ -3634,7 +3645,11 @@ namespace IKVM.Internal
 			}
 			if(error)
 			{
-				Environment.Exit(1);
+				if (++errorCount == 100)
+				{
+					Console.Error.WriteLine("Maximum error count reached, exiting.");
+					Environment.Exit(1);
+				}
 			}
 		}
 
