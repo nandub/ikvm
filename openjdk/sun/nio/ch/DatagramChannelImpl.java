@@ -25,6 +25,8 @@
 
 package sun.nio.ch;
 
+import ikvm.internal.NotYetImplementedError;
+
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.net.*;
@@ -32,6 +34,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.*;
 import java.nio.channels.spi.*;
 import java.lang.ref.SoftReference;
+import sun.net.ResourceManager;
 
 
 /**
@@ -97,17 +100,30 @@ class DatagramChannelImpl
         throws IOException
     {
         super(sp);
-        this.fd = Net.socket(false);
-        this.state = ST_UNCONNECTED;
-        try
-        {
-            if (false) throw new cli.System.Net.Sockets.SocketException();
-            fd.getSocket().IOControl(SIO_UDP_CONNRESET, new byte[] { 0 }, null);
+        ResourceManager.beforeUdpCreate();
+        try {
+            this.fd = Net.socket(false);
+            this.state = ST_UNCONNECTED;
+            try
+            {
+                if (false) throw new cli.System.Net.Sockets.SocketException();
+                fd.getSocket().IOControl(SIO_UDP_CONNRESET, new byte[] { 0 }, null);
+            }
+            catch (cli.System.Net.Sockets.SocketException x)
+            {
+                throw SocketUtil.convertSocketExceptionToIOException(x);
+            }
+        } catch (IOException ioe) {
+            ResourceManager.afterUdpClose();
+            throw ioe;
         }
-        catch (cli.System.Net.Sockets.SocketException x)
-        {
-            throw SocketUtil.convertSocketExceptionToIOException(x);
-        }
+    }
+
+    public DatagramChannelImpl(SelectorProvider sp, ProtocolFamily family)
+            throws IOException
+    {
+        super(sp);
+        throw new NotYetImplementedError(); //TODO JDK7
     }
 
     public DatagramChannelImpl(SelectorProvider sp, FileDescriptor fd)
@@ -418,7 +434,7 @@ class DatagramChannelImpl
         }
     }
 
-    public void bind(SocketAddress local) throws IOException {
+    public DatagramChannel bind(SocketAddress local) throws IOException {
         synchronized (readLock) {
             synchronized (writeLock) {
                 synchronized (stateLock) {
@@ -434,6 +450,7 @@ class DatagramChannelImpl
                 }
             }
         }
+        return this;
     }
 
     public boolean isConnected() {
@@ -515,6 +532,7 @@ class DatagramChannelImpl
     protected void implCloseSelectableChannel() throws IOException {
         synchronized (stateLock) {
             closeImpl();
+            ResourceManager.afterUdpClose();
             long th;
             if ((th = readerThread) != 0)
                 NativeThread.signal(th);
