@@ -1252,33 +1252,6 @@ sealed class MethodAnalyzer
 		}
 		AnalyzeTypeFlow();
 		VerifyPassTwo();
-		PatchLoadConstants();
-	}
-
-	private void PatchLoadConstants()
-	{
-		ClassFile.Method.Instruction[] code = method.Instructions;
-		for (int i = 0; i < code.Length; i++)
-		{
-			if (state[i] != null)
-			{
-				switch (code[i].NormalizedOpCode)
-				{
-					case NormalizedByteCode.__ldc:
-						switch (GetConstantPoolConstantType(code[i].Arg1))
-						{
-							case ClassFile.ConstantType.Double:
-							case ClassFile.ConstantType.Float:
-							case ClassFile.ConstantType.Integer:
-							case ClassFile.ConstantType.Long:
-							case ClassFile.ConstantType.String:
-								code[i].PatchOpCode(NormalizedByteCode.__ldc_nothrow);
-								break;
-						}
-						break;
-				}
-			}
-		}
 	}
 
 	internal CodeInfo GetCodeInfoAndErrors(UntangledExceptionTable exceptions, out List<string> errors)
@@ -1635,7 +1608,6 @@ sealed class MethodAnalyzer
 									s.PopObjectType(GetFieldref(instr.Arg1).GetClassType());
 								}
 								break;
-							case NormalizedByteCode.__ldc_nothrow:
 							case NormalizedByteCode.__ldc:
 							{
 								switch(GetConstantPoolConstantType(instr.Arg1))
@@ -1661,12 +1633,6 @@ sealed class MethodAnalyzer
 											throw new VerifyError("Illegal type in constant pool");
 										}
 										s.PushType(CoreClasses.java.lang.Class.Wrapper);
-										break;
-									case ClassFile.ConstantType.MethodHandle:
-										s.PushType(CoreClasses.java.lang.invoke.MethodHandle.Wrapper);
-										break;
-									case ClassFile.ConstantType.MethodType:
-										s.PushType(CoreClasses.java.lang.invoke.MethodType.Wrapper);
 										break;
 									default:
 										// NOTE this is not a VerifyError, because it cannot happen (unless we have
@@ -1728,28 +1694,6 @@ sealed class MethodAnalyzer
 										s.PushExtendedDouble();
 									}
 									else if(retType == PrimitiveTypeWrapper.FLOAT)
-									{
-										s.PushExtendedFloat();
-									}
-									else
-									{
-										s.PushType(retType);
-									}
-								}
-								break;
-							}
-							case NormalizedByteCode.__invokedynamic:
-							{
-								ClassFile.ConstantPoolItemInvokeDynamic cpi = GetInvokeDynamic(instr.Arg1);
-								s.MultiPopAnyType(cpi.GetArgTypes().Length);
-								TypeWrapper retType = cpi.GetRetType();
-								if (retType != PrimitiveTypeWrapper.VOID)
-								{
-									if (retType == PrimitiveTypeWrapper.DOUBLE)
-									{
-										s.PushExtendedDouble();
-									}
-									else if (retType == PrimitiveTypeWrapper.FLOAT)
 									{
 										s.PushExtendedFloat();
 									}
@@ -2352,9 +2296,6 @@ sealed class MethodAnalyzer
 						case NormalizedByteCode.__invokevirtual:
 							VerifyInvokePassTwo(i);
 							break;
-						case NormalizedByteCode.__invokedynamic:
-							VerifyInvokeDynamic(i);
-							break;
 					}
 					// verify backward branches
 					switch (ByteCodeMetaData.GetFlowControl(instructions[i].NormalizedOpCode))
@@ -2506,17 +2447,6 @@ sealed class MethodAnalyzer
 		}
 	}
 
-	private void VerifyInvokeDynamic(int index)
-	{
-		StackState stack = new StackState(state[index]);
-		ClassFile.ConstantPoolItemInvokeDynamic cpi = GetInvokeDynamic(method.Instructions[index].Arg1);
-		TypeWrapper[] args = cpi.GetArgTypes();
-		for (int j = args.Length - 1; j >= 0; j--)
-		{
-			stack.PopType(args[j]);
-		}
-	}
-
 	private static void OptimizationPass(CodeInfo codeInfo, ClassFile classFile, ClassFile.Method method, UntangledExceptionTable exceptions, TypeWrapper wrapper, ClassLoaderWrapper classLoader)
 	{
 		// Optimization pass
@@ -2586,37 +2516,15 @@ sealed class MethodAnalyzer
 							PatchFieldAccess(wrapper, mw, ref instructions[i], stack);
 							break;
 						case NormalizedByteCode.__ldc:
-							switch(classFile.GetConstantPoolConstantType(instructions[i].Arg1))
+							if(classFile.GetConstantPoolConstantType(instructions[i].Arg1) == ClassFile.ConstantType.Class)
 							{
+								TypeWrapper tw = classFile.GetConstantPoolClassType(instructions[i].Arg1);
+								if(tw.IsUnloadable)
+								{
 #if STATIC_COMPILER
-								case ClassFile.ConstantType.Class:
-								{
-									TypeWrapper tw = classFile.GetConstantPoolClassType(instructions[i].Arg1);
-									if(tw.IsUnloadable)
-									{
-										SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
-									}
-									break;
-								}
+									SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
 #endif
-								case ClassFile.ConstantType.MethodType:
-								{
-									ClassFile.ConstantPoolItemMethodType cpi = classFile.GetConstantPoolConstantMethodType(instructions[i].Arg1);
-									TypeWrapper[] args = cpi.GetArgTypes();
-									TypeWrapper tw = cpi.GetRetType();
-									for(int j = 0; !tw.IsUnloadable && j < args.Length; j++)
-									{
-										tw = args[j];
-									}
-									if(tw.IsUnloadable)
-									{
-										SetHardError(wrapper.GetClassLoader(), ref instructions[i], HardError.NoClassDefFoundError, "{0}", tw.Name);
-									}
-									break;
 								}
-								case ClassFile.ConstantType.MethodHandle:
-									PatchLdcMethodHandle(ref instructions[i]);
-									break;
 							}
 							break;
 						case NormalizedByteCode.__new:
@@ -2702,148 +2610,6 @@ sealed class MethodAnalyzer
 				}
 			}
 		}
-	}
-
-	private static TypeWrapper FirstUnloadable(ClassFile.ConstantPoolItemMethodHandle cpi)
-	{
-		if (cpi.GetClassType().IsUnloadable)
-		{
-			return cpi.GetClassType();
-		}
-		ClassFile.ConstantPoolItemMI method = cpi.MemberConstantPoolItem as ClassFile.ConstantPoolItemMI;
-		if (method != null)
-		{
-			if (method.GetRetType().IsUnloadable)
-			{
-				return method.GetRetType();
-			}
-			foreach (TypeWrapper tw in method.GetArgTypes())
-			{
-				if (tw.IsUnloadable)
-				{
-					return tw;
-				}
-			}
-		}
-		else if (((ClassFile.ConstantPoolItemFieldref)cpi.MemberConstantPoolItem).GetFieldType().IsUnloadable)
-		{
-			return ((ClassFile.ConstantPoolItemFieldref)cpi.MemberConstantPoolItem).GetFieldType();
-		}
-		return null;
-	}
-
-	private void PatchLdcMethodHandle(ref ClassFile.Method.Instruction instr)
-	{
-		ClassFile.ConstantPoolItemMethodHandle cpi = classFile.GetConstantPoolConstantMethodHandle(instr.Arg1);
-		TypeWrapper twUnloadable;
-		if ((twUnloadable = FirstUnloadable(cpi)) != null)
-		{
-			SetHardError(wrapper.GetClassLoader(), ref instr, HardError.NoClassDefFoundError, "{0}", twUnloadable.Name);
-		}
-		else if (!cpi.GetClassType().IsAccessibleFrom(wrapper))
-		{
-			SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IllegalAccessError, "tried to access class {0} from class {1}", cpi.Class, wrapper.Name);
-		}
-		else if (cpi.Kind == ClassFile.RefKind.invokeVirtual
-			&& cpi.GetClassType() == CoreClasses.java.lang.invoke.MethodHandle.Wrapper
-			&& (cpi.Name == "invoke" || cpi.Name == "invokeExact"))
-		{
-			// it's allowed to use ldc to create a MethodHandle invoker
-		}
-		else if (cpi.Member == null
-			|| cpi.Member.IsStatic != (cpi.Kind == ClassFile.RefKind.getStatic || cpi.Kind == ClassFile.RefKind.putStatic || cpi.Kind == ClassFile.RefKind.invokeStatic))
-		{
-			HardError err;
-			string msg;
-			switch (cpi.Kind)
-			{
-				case ClassFile.RefKind.getField:
-				case ClassFile.RefKind.getStatic:
-				case ClassFile.RefKind.putField:
-				case ClassFile.RefKind.putStatic:
-					err = HardError.NoSuchFieldException;
-					msg = "no such field: {0}.{1}{2}";
-					break;
-				default:
-					err = HardError.NoSuchMethodException;
-					msg = "no such method: {0}.{1}{2}";
-					break;
-			}
-			SetHardError(wrapper.GetClassLoader(), ref instr, err, msg, cpi.Class, cpi.Name, SigToString(cpi.Signature));
-		}
-		else if (!cpi.Member.IsAccessibleFrom(cpi.GetClassType(), wrapper, cpi.GetClassType()))
-		{
-			if (cpi.Member.IsProtected && wrapper.IsSubTypeOf(cpi.Member.DeclaringType))
-			{
-				// this is allowed, the receiver will be narrowed to current type
-			}
-			else
-			{
-				SetHardError(wrapper.GetClassLoader(), ref instr, HardError.IllegalAccessException, "member is private: {0}.{1}/{2}, from {3}", cpi.Class, cpi.Name, SigToString(cpi.Signature), wrapper.Name);
-			}
-		}
-	}
-
-	private static string SigToString(string sig)
-	{
-		System.Text.StringBuilder sb = new System.Text.StringBuilder();
-		string sep = "";
-		int dims = 0;
-		for (int i = 0; i < sig.Length; i++)
-		{
-			if (sig[i] == '(' || sig[i] == ')')
-			{
-				sb.Append(sig[i]);
-				sep = "";
-				continue;
-			}
-			else if (sig[i] == '[')
-			{
-				dims++;
-				continue;
-			}
-			sb.Append(sep);
-			sep = ",";
-			switch (sig[i])
-			{
-				case 'V':
-					sb.Append("void");
-					break;
-				case 'B':
-					sb.Append("byte");
-					break;
-				case 'Z':
-					sb.Append("boolean");
-					break;
-				case 'S':
-					sb.Append("short");
-					break;
-				case 'C':
-					sb.Append("char");
-					break;
-				case 'I':
-					sb.Append("int");
-					break;
-				case 'J':
-					sb.Append("long");
-					break;
-				case 'F':
-					sb.Append("float");
-					break;
-				case 'D':
-					sb.Append("double");
-					break;
-				case 'L':
-					sb.Append(sig, i + 1, sig.IndexOf(';', i + 1) - (i + 1));
-					i = sig.IndexOf(';', i + 1);
-					break;
-			}
-			for (; dims != 0; dims--)
-			{
-				sb.Append("[]");
-			}
-		}
-		return sb.ToString();
 	}
 
 	internal static InstructionFlags[] ComputePartialReachability(CodeInfo codeInfo, ClassFile.Method.Instruction[] instructions, UntangledExceptionTable exceptions, int initialInstructionIndex, bool skipFaultBlocks)
@@ -3517,9 +3283,6 @@ sealed class MethodAnalyzer
 				msg = Message.EmittedIllegalAccessError;
 				break;
 			case HardError.IncompatibleClassChangeError:
-			case HardError.NoSuchFieldException:
-			case HardError.IllegalAccessException:
-			case HardError.NoSuchMethodException:
 				msg = Message.EmittedIncompatibleClassChangeError;
 				break;
 			case HardError.NoSuchFieldError:
@@ -3864,26 +3627,7 @@ sealed class MethodAnalyzer
 		return null;
 	}
 
-	private ClassFile.ConstantPoolItemInvokeDynamic GetInvokeDynamic(int index)
-	{
-		try
-		{
-			ClassFile.ConstantPoolItemInvokeDynamic item = classFile.GetInvokeDynamic(index);
-			if(item != null)
-			{
-				return item;
-			}
-		}
-		catch(InvalidCastException)
-		{
-		}
-		catch(IndexOutOfRangeException)
-		{
-		}
-		throw new VerifyError("Illegal constant pool index");
-	}
-
-	private ClassFile.ConstantPoolItemMI GetMethodref(int index)
+	internal ClassFile.ConstantPoolItemMI GetMethodref(int index)
 	{
 		try
 		{
@@ -4016,7 +3760,6 @@ sealed class MethodAnalyzer
 						Console.Write(" {0}", code[i].Arg1);
 						break;
 					case NormalizedByteCode.__ldc:
-					case NormalizedByteCode.__ldc_nothrow:
 					case NormalizedByteCode.__getfield:
 					case NormalizedByteCode.__getstatic:
 					case NormalizedByteCode.__putfield:
