@@ -1252,6 +1252,33 @@ sealed class MethodAnalyzer
 		}
 		AnalyzeTypeFlow();
 		VerifyPassTwo();
+		PatchLoadConstants();
+	}
+
+	private void PatchLoadConstants()
+	{
+		ClassFile.Method.Instruction[] code = method.Instructions;
+		for (int i = 0; i < code.Length; i++)
+		{
+			if (state[i] != null)
+			{
+				switch (code[i].NormalizedOpCode)
+				{
+					case NormalizedByteCode.__ldc:
+						switch (GetConstantPoolConstantType(code[i].Arg1))
+						{
+							case ClassFile.ConstantType.Double:
+							case ClassFile.ConstantType.Float:
+							case ClassFile.ConstantType.Integer:
+							case ClassFile.ConstantType.Long:
+							case ClassFile.ConstantType.String:
+								code[i].PatchOpCode(NormalizedByteCode.__ldc_nothrow);
+								break;
+						}
+						break;
+				}
+			}
+		}
 	}
 
 	internal CodeInfo GetCodeInfoAndErrors(UntangledExceptionTable exceptions, out List<string> errors)
@@ -1608,6 +1635,7 @@ sealed class MethodAnalyzer
 									s.PopObjectType(GetFieldref(instr.Arg1).GetClassType());
 								}
 								break;
+							case NormalizedByteCode.__ldc_nothrow:
 							case NormalizedByteCode.__ldc:
 							{
 								switch(GetConstantPoolConstantType(instr.Arg1))
@@ -2357,20 +2385,6 @@ sealed class MethodAnalyzer
 		if (ReferenceEquals(cpi.Name, StringConstants.CLINIT))
 		{
 			throw new VerifyError("Illegal call to internal method");
-		}
-		if (classFile.MajorVersion >= 51
-			&& cpi.Class == "java.lang.invoke.MethodHandle"
-			&& (cpi.Name == "invoke" || cpi.Name == "invokeExact"))
-		{
-			if (cpi.Name == "invoke")
-			{
-				method.Instructions[index].PatchOpCode(NormalizedByteCode.__methodhandle_invoke);
-			}
-			else
-			{
-				method.Instructions[index].PatchOpCode(NormalizedByteCode.__methodhandle_invokeexact);
-			}
-			return;
 		}
 		TypeWrapper[] args = cpi.GetArgTypes();
 		for (int j = args.Length - 1; j >= 0; j--)
@@ -3329,6 +3343,21 @@ sealed class MethodAnalyzer
 		{
 			thisType = null;
 		}
+		else if (invoke == NormalizedByteCode.__invokevirtual
+			&& classFile.MajorVersion >= 51
+			&& cpi.Class == "java.lang.invoke.MethodHandle"
+			&& (cpi.Name == "invoke" || cpi.Name == "invokeExact"))
+		{
+			if (cpi.Name == "invoke")
+			{
+				instr.PatchOpCode(NormalizedByteCode.__methodhandle_invoke);
+			}
+			else
+			{
+				instr.PatchOpCode(NormalizedByteCode.__methodhandle_invokeexact);
+			}
+			return;
+		}
 		else
 		{
 			TypeWrapper[] args = cpi.GetArgTypes();
@@ -3759,6 +3788,7 @@ sealed class MethodAnalyzer
 						Console.Write(" {0}", code[i].Arg1);
 						break;
 					case NormalizedByteCode.__ldc:
+					case NormalizedByteCode.__ldc_nothrow:
 					case NormalizedByteCode.__getfield:
 					case NormalizedByteCode.__getstatic:
 					case NormalizedByteCode.__putfield:

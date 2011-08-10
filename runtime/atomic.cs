@@ -46,7 +46,7 @@ static class AtomicReferenceFieldUpdaterEmitter
 			&& (flags[i - 1] & InstructionFlags.BranchTarget) == 0
 			&& (flags[i - 2] & InstructionFlags.BranchTarget) == 0
 			&& (flags[i - 3] & InstructionFlags.BranchTarget) == 0
-			&& code[i - 1].NormalizedOpCode == NormalizedByteCode.__ldc
+			&& code[i - 1].NormalizedOpCode == NormalizedByteCode.__ldc_nothrow
 			&& code[i - 2].NormalizedOpCode == NormalizedByteCode.__ldc
 			&& code[i - 3].NormalizedOpCode == NormalizedByteCode.__ldc)
 		{
@@ -154,13 +154,15 @@ static class AtomicReferenceFieldUpdaterEmitter
 	private static void EmitSet(string name, TypeBuilder tb, FieldInfo field)
 	{
 		MethodBuilder set = tb.DefineMethod(name, MethodAttributes.Public | MethodAttributes.Virtual, Types.Void, new Type[] { Types.Object, Types.Object });
-		ILGenerator ilgen = set.GetILGenerator();
+		CodeEmitter ilgen = CodeEmitter.Create(set);
 		ilgen.Emit(OpCodes.Ldarg_1);
 		ilgen.Emit(OpCodes.Castclass, field.DeclaringType);
 		ilgen.Emit(OpCodes.Ldarg_2);
 		ilgen.Emit(OpCodes.Castclass, field.FieldType);
 		ilgen.Emit(OpCodes.Volatile);
 		ilgen.Emit(OpCodes.Stfld, field);
+		ilgen.EmitMemoryBarrier();
 		ilgen.Emit(OpCodes.Ret);
+		ilgen.DoEmit();
 	}
 }
