@@ -24,6 +24,7 @@
 package java.lang;
 
 import java.util.Properties;
+import static ikvm.internal.Util.SafeGetEnvironmentVariable;
 
 final class VMSystemProperties
 {
@@ -32,19 +33,6 @@ final class VMSystemProperties
     public static final String SPEC_TITLE = "Java Platform API Specification";
     public static final String SPEC_VERSION = "1.7";
     public static final String SPEC_VENDOR = "Oracle Corporation";
-
-    private static String SafeGetEnvironmentVariable(String name)
-    {
-        try
-        {
-            if(false) throw new cli.System.Security.SecurityException();
-            return cli.System.Environment.GetEnvironmentVariable(name);
-        }
-        catch(cli.System.Security.SecurityException _)
-        {
-            return null;
-        }
-    }
 
     private static String getLibraryPath()
     {
@@ -164,6 +152,7 @@ final class VMSystemProperties
         switch(os.get_Platform().Value)
         {
             case cli.System.PlatformID.Win32NT:
+                osname = "Windows NT (unknown)";
                 switch(major)
                 {
                     case 3:
@@ -243,7 +232,7 @@ final class VMSystemProperties
         }
         if(osver == null)
         {
-            osver = cli.System.Environment.get_OSVersion().get_Version().ToString();
+            osver = major + "." + minor;
         }
         p.setProperty("os.name", osname);
         p.setProperty("os.version", osver);
