@@ -104,6 +104,15 @@ namespace IKVM.NativeCode.java.lang
 		{
 			return VirtualFileSystem.RootPath;
 		}
+
+		public static string getBootClassPath()
+		{
+#if FIRST_PASS
+			return null;
+#else
+			return VirtualFileSystem.GetAssemblyClassesPath(JVM.CoreAssembly);
+#endif
+		}
 	}
 }
 
@@ -253,15 +262,22 @@ namespace IKVM.NativeCode.ikvm.runtime
 			return null;
 #else
 			global::java.util.Vector v = new global::java.util.Vector();
-			IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
-			foreach (global::java.net.URL url in wrapper.GetResources(name))
+			if (assembly != null)
 			{
-				v.addElement(url);
+				IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
+				foreach (global::java.net.URL url in wrapper.GetResources(name))
+				{
+					v.addElement(url);
+				}
 			}
-			global::java.net.URL curl = GetClassResource(classLoader, assembly, name);
-			if (curl != null)
+			// we'll only generate a stub class if there isn't already a resource with this name
+			if (v.isEmpty())
 			{
-				v.addElement(curl);
+				global::java.net.URL curl = GetClassResource(classLoader, assembly, name);
+				if (curl != null)
+				{
+					v.addElement(curl);
+				}
 			}
 			return v.elements();
 #endif
@@ -470,6 +486,25 @@ namespace IKVM.NativeCode.ikvm.runtime
 			if(tw != null)
 			{
 				return tw.ClassObject;
+			}
+			return null;
+		}
+
+		public static jlClass getClassFromTypeHandle(RuntimeTypeHandle handle, int rank)
+		{
+			Type t = Type.GetTypeFromHandle(handle);
+			if(t.IsPrimitive || ClassLoaderWrapper.IsRemappedType(t) || t == typeof(void))
+			{
+				return DotNetTypeWrapper.GetWrapperFromDotNetType(t).MakeArrayType(rank).ClassObject;
+			}
+			if(!IsVisibleAsClass(t))
+			{
+				return null;
+			}
+			TypeWrapper tw = ClassLoaderWrapper.GetWrapperFromType(t);
+			if(tw != null)
+			{
+				return tw.MakeArrayType(rank).ClassObject;
 			}
 			return null;
 		}
