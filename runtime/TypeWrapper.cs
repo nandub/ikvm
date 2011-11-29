@@ -798,18 +798,10 @@ namespace IKVM.Internal
 			tb.SetCustomAttribute(customAttributeBuilder);
 		}
 
-		internal static void SetNameSig(MethodBase mb, string name, string sig)
+		internal static void SetNameSig(MethodBuilder mb, string name, string sig)
 		{
 			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
-			MethodBuilder method = mb as MethodBuilder;
-			if(method != null)
-			{
-				method.SetCustomAttribute(customAttributeBuilder);
-			}
-			else
-			{
-				((ConstructorBuilder)mb).SetCustomAttribute(customAttributeBuilder);
-			}
+			mb.SetCustomAttribute(customAttributeBuilder);
 		}
 
 		internal static byte[] FreezeDryType(Type type)
@@ -3964,7 +3956,7 @@ namespace IKVM.Internal
 
 		private void GetNameSigFromMethodBase(MethodBase method, out string name, out string sig, out TypeWrapper retType, out TypeWrapper[] paramTypes, ref MemberFlags flags)
 		{
-			retType = method is ConstructorInfo ? PrimitiveTypeWrapper.VOID : ClassLoaderWrapper.GetWrapperFromType(((MethodInfo)method).ReturnType);
+			retType = method is ConstructorInfo ? PrimitiveTypeWrapper.VOID : GetParameterTypeWrapper(((MethodInfo)method).ReturnParameter);
 			ParameterInfo[] parameters = method.GetParameters();
 			int len = parameters.Length;
 			if(len > 0
@@ -3977,7 +3969,7 @@ namespace IKVM.Internal
 			paramTypes = new TypeWrapper[len];
 			for(int i = 0; i < len; i++)
 			{
-				paramTypes[i] = ClassLoaderWrapper.GetWrapperFromType(parameters[i].ParameterType);
+				paramTypes[i] = GetParameterTypeWrapper(parameters[i]);
 			}
 			NameSigAttribute attr = AttributeHelper.GetNameSig(method);
 			if(attr != null)
@@ -4380,6 +4372,14 @@ namespace IKVM.Internal
 			Type[] modopt = field.GetOptionalCustomModifiers();
 			return modopt.Length == 0
 				? ClassLoaderWrapper.GetWrapperFromType(field.FieldType)
+				: TypeWrapperFromModOpt(modopt[0]);
+		}
+
+		private static TypeWrapper GetParameterTypeWrapper(ParameterInfo param)
+		{
+			Type[] modopt = param.GetOptionalCustomModifiers();
+			return modopt.Length == 0
+				? ClassLoaderWrapper.GetWrapperFromType(param.ParameterType)
 				: TypeWrapperFromModOpt(modopt[0]);
 		}
 
