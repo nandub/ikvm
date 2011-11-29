@@ -798,10 +798,18 @@ namespace IKVM.Internal
 			tb.SetCustomAttribute(customAttributeBuilder);
 		}
 
-		internal static void SetNameSig(MethodBuilder mb, string name, string sig)
+		internal static void SetNameSig(MethodBase mb, string name, string sig)
 		{
 			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
-			mb.SetCustomAttribute(customAttributeBuilder);
+			MethodBuilder method = mb as MethodBuilder;
+			if(method != null)
+			{
+				method.SetCustomAttribute(customAttributeBuilder);
+			}
+			else
+			{
+				((ConstructorBuilder)mb).SetCustomAttribute(customAttributeBuilder);
+			}
 		}
 
 		internal static byte[] FreezeDryType(Type type)
@@ -1346,33 +1354,37 @@ namespace IKVM.Internal
 	static class TypeNameUtil
 	{
 		// note that MangleNestedTypeName() assumes that there are less than 16 special characters
-		private const string specialCharactersString = "\\+,[]*&\u0000";
+		private static readonly char[] specialCharacters = { '\\', '+', ',', '[', ']', '*', '&', '\u0000' };
+		private static readonly string specialCharactersString = new String(specialCharacters);
 
-		internal static string ReplaceIllegalCharacters(string name)
+		internal static string EscapeName(string name)
 		{
-			// only the NUL character is illegal in CLR type names, so we replace it with a space
-			return name.Replace('\u0000', ' ');
-		}
-
-		internal static string Unescape(string name)
-		{
-			int pos = name.IndexOf('\\');
-			if (pos == -1)
+			// TODO the escaping of special characters is not required on .NET 2.0
+			// (but it doesn't really hurt that much either, the only overhead is the
+			// extra InnerClassAttribute to record the real name of the class)
+			// Note that even though .NET 2.0 automatically escapes the special characters,
+			// the name that gets passed in ResolveEventArgs.Name of the TypeResolve event
+			// contains the unescaped type name.
+			if (name.IndexOfAny(specialCharacters) >= 0)
 			{
-				return name;
-			}
-			System.Text.StringBuilder sb = new System.Text.StringBuilder(name.Length);
-			sb.Append(name, 0, pos);
-			for (int i = pos; i < name.Length; i++)
-			{
-				char c = name[i];
-				if (c == '\\')
+				System.Text.StringBuilder sb = new System.Text.StringBuilder();
+				foreach (char c in name)
 				{
-					c = name[++i];
+					if (specialCharactersString.IndexOf(c) >= 0)
+					{
+						if (c == 0)
+						{
+							// we can't escape the NUL character, so we replace it with a space.
+							sb.Append(' ');
+							continue;
+						}
+						sb.Append('\\');
+					}
+					sb.Append(c);
 				}
-				sb.Append(c);
+				name = sb.ToString();
 			}
-			return sb.ToString();
+			return name;
 		}
 
 		internal static string MangleNestedTypeName(string name)
@@ -2600,6 +2612,16 @@ namespace IKVM.Internal
 			get;
 		}
 
+		internal virtual TypeBuilder TypeAsBuilder
+		{
+			get
+			{
+				TypeBuilder typeBuilder = TypeAsTBD as TypeBuilder;
+				Debug.Assert(typeBuilder != null);
+				return typeBuilder;
+			}
+		}
+
 		internal Type TypeAsSignatureType
 		{
 			get
@@ -3594,10 +3616,10 @@ namespace IKVM.Internal
 				}
 				if(type.DeclaringType != null)
 				{
-					return GetName(type.DeclaringType) + "$" + TypeNameUtil.Unescape(type.Name);
+					return GetName(type.DeclaringType) + "$" + type.Name;
 				}
 			}
-			return TypeNameUtil.Unescape(type.FullName);
+			return type.FullName;
 		}
 
 		// TODO consider resolving the baseType lazily
@@ -3778,14 +3800,6 @@ namespace IKVM.Internal
 				List<TypeWrapper> wrappers = new List<TypeWrapper>();
 				for(int i = 0; i < nestedTypes.Length; i++)
 				{
-					if(nestedTypes[i].Name.EndsWith("Attribute", StringComparison.Ordinal)
-						&& nestedTypes[i].IsClass
-						&& nestedTypes[i].BaseType.FullName == "ikvm.internal.AnnotationAttributeBase")
-					{
-						// HACK it's the custom attribute we generated for a corresponding annotation, so we shouldn't surface it as an inner classes
-						// (we can't put a HideFromJavaAttribute on it, because we do want the class to be visible as a $Proxy)
-						continue;
-					}
 					if(!AttributeHelper.IsHideFromJava(nestedTypes[i]))
 					{
 						wrappers.Add(ClassLoaderWrapper.GetWrapperFromType(nestedTypes[i]));
