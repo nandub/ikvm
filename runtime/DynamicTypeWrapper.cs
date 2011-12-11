@@ -382,24 +382,6 @@ namespace IKVM.Internal
 			}
 		}
 
-#if STATIC_COMPILER
-		internal override Annotation Annotation
-		{
-			get
-			{
-				return impl.Annotation;
-			}
-		}
-
-		internal override Type EnumType
-		{
-			get
-			{
-				return impl.EnumType;
-			}
-		}
-#endif // STATIC_COMPILER
-
 		internal override void Finish()
 		{
 			// we don't need locking, because Finish is Thread safe
@@ -442,10 +424,6 @@ namespace IKVM.Internal
 			internal abstract TypeWrapper[] InnerClasses { get; }
 			internal abstract TypeWrapper DeclaringTypeWrapper { get; }
 			internal abstract Modifiers ReflectiveModifiers { get; }
-#if STATIC_COMPILER
-			internal abstract Annotation Annotation { get; }
-			internal abstract Type EnumType { get; }
-#endif
 			internal abstract DynamicImpl Finish();
 			internal abstract MethodBase LinkMethod(MethodWrapper mw);
 			internal abstract FieldInfo LinkField(FieldWrapper fw);
@@ -825,6 +803,7 @@ namespace IKVM.Internal
 								fieldBuilder.SetConstant(i);
 							}
 						}
+						((AotTypeWrapper)wrapper).SetEnumType(enumBuilder);
 					}
 					TypeWrapper[] interfaces = wrapper.Interfaces;
 					string[] implements = new string[interfaces.Length];
@@ -1154,17 +1133,21 @@ namespace IKVM.Internal
 				throw new InvalidOperationException();
 			}
 
-			private static bool CheckLoaderConstraints(MethodWrapper mw, MethodWrapper baseMethod)
+			private static void CheckLoaderConstraints(MethodWrapper mw, MethodWrapper baseMethod)
 			{
-				bool unloadableOverrideStub = false;
+#if !STATIC_COMPILER
+				if (JVM.FinishingForDebugSave)
+				{
+					// when we're finishing types to save a debug image (in dynamic mode) we don't care about loader constraints anymore
+					// (and we can't throw a LinkageError, because that would prevent the debug image from being saved)
+					return;
+				}
+#endif
 				if (mw.ReturnType != baseMethod.ReturnType)
 				{
-					if (baseMethod.ReturnType.IsUnloadable || JVM.FinishingForDebugSave)
+					if (mw.ReturnType.IsUnloadable || baseMethod.ReturnType.IsUnloadable)
 					{
-						if (!mw.ReturnType.IsUnloadable || (!baseMethod.ReturnType.IsUnloadable && JVM.FinishingForDebugSave))
-						{
-							unloadableOverrideStub = true;
-						}
+						// unloadable types can never cause a loader constraint violation
 					}
 					else
 					{
@@ -1180,12 +1163,9 @@ namespace IKVM.Internal
 				{
 					if (here[i] != there[i])
 					{
-						if (there[i].IsUnloadable || JVM.FinishingForDebugSave)
+						if (here[i].IsUnloadable || there[i].IsUnloadable)
 						{
-							if (!here[i].IsUnloadable || (!there[i].IsUnloadable && JVM.FinishingForDebugSave))
-							{
-								unloadableOverrideStub = true;
-							}
+							// unloadable types can never cause a loader constraint violation
 						}
 						else
 						{
@@ -1196,24 +1176,22 @@ namespace IKVM.Internal
 						}
 					}
 				}
-				return unloadableOverrideStub;
 			}
 
 			internal override MethodBase LinkMethod(MethodWrapper mw)
 			{
 				Debug.Assert(mw != null);
-				bool unloadableOverrideStub = false;
 				int index = GetMethodIndex(mw);
 				if (baseMethods[index] != null)
 				{
 					foreach (MethodWrapper baseMethod in baseMethods[index])
 					{
 						baseMethod.Link();
-						unloadableOverrideStub |= CheckLoaderConstraints(mw, baseMethod);
+						CheckLoaderConstraints(mw, baseMethod);
 					}
 				}
 				Debug.Assert(mw.GetMethod() == null);
-				MethodBase mb = GenerateMethod(index, unloadableOverrideStub);
+				MethodBase mb = GenerateMethod(index);
 				if ((mw.Modifiers & (Modifiers.Synchronized | Modifiers.Static)) == Modifiers.Synchronized)
 				{
 					// note that constructors cannot be synchronized in Java
@@ -1515,25 +1493,19 @@ namespace IKVM.Internal
 #endif //STATIC_COMPILER
 					}
 					FinishContext context = new FinishContext(classFile, wrapper, typeBuilder);
+					Type type = context.FinishImpl();
 #if STATIC_COMPILER
 					if (annotationBuilder != null)
 					{
 						CustomAttributeBuilder cab = new CustomAttributeBuilder(JVM.LoadType(typeof(AnnotationAttributeAttribute)).GetConstructor(new Type[] { Types.String }), new object[] { annotationBuilder.AttributeTypeName });
 						typeBuilder.SetCustomAttribute(cab);
+						annotationBuilder.Finish(this);
 					}
-					context.RegisterPostFinishProc(delegate
+					if (enumBuilder != null)
 					{
-						if (enumBuilder != null)
-						{
-							enumBuilder.CreateType();
-						}
-						if (annotationBuilder != null)
-						{
-							annotationBuilder.Finish(this);
-						}
-					});
+						enumBuilder.CreateType();
+					}
 #endif
-					Type type = context.FinishImpl();
 					MethodInfo finishedClinitMethod = clinitMethod;
 #if !STATIC_COMPILER
 					if (finishedClinitMethod != null)
@@ -1543,11 +1515,7 @@ namespace IKVM.Internal
 						finishedClinitMethod = type.GetMethod("__<clinit>", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
 					}
 #endif
-					finishedType = new FinishedTypeImpl(type, innerClassesTypeWrappers, declaringTypeWrapper, wrapper.ReflectiveModifiers, Metadata.Create(classFile), finishedClinitMethod, finalizeMethod
-#if STATIC_COMPILER
-, annotationBuilder, enumBuilder
-#endif
-);
+					finishedType = new FinishedTypeImpl(type, innerClassesTypeWrappers, declaringTypeWrapper, wrapper.ReflectiveModifiers, Metadata.Create(classFile), finishedClinitMethod, finalizeMethod);
 					return finishedType;
 				}
 #if STATIC_COMPILER
@@ -2634,7 +2602,7 @@ namespace IKVM.Internal
 				}
 			}
 
-			private MethodBase GenerateMethod(int index, bool unloadableOverrideStub)
+			private MethodBase GenerateMethod(int index)
 			{
 				methods[index].AssertLinked();
 				Profiler.Enter("JavaTypeImpl.GenerateMethod");
@@ -2649,16 +2617,21 @@ namespace IKVM.Internal
 							string name = GenerateUniqueMethodName(methods[index].Name, baseMethods[index][0]);
 							MethodBuilder mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, name, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Abstract | MethodAttributes.CheckAccessOnOverride);
 							AttributeHelper.HideFromReflection(mb);
+							bool overridestub = CheckRequireOverrideStub(methods[index], baseMethods[index][0]);
 #if STATIC_COMPILER
-							if (unloadableOverrideStub || name != methods[index].Name)
+							if (overridestub || name != methods[index].Name)
 							{
 								// instead of creating an override stub, we created the Miranda method with the proper signature and
 								// decorate it with a NameSigAttribute that contains the real signature
 								AttributeHelper.SetNameSig(mb, methods[index].Name, methods[index].Signature);
 							}
 #endif // STATIC_COMPILER
+							if (overridestub)
+							{
+								wrapper.GenerateOverrideStub(baseMethods[index][0], mb, methods[index]);
+							}
 							// if we changed the name or if the interface method name is remapped, we need to add an explicit methodoverride.
-							if (!baseMethods[index][0].IsDynamicOnly && name != baseMethods[index][0].RealName)
+							else if (!baseMethods[index][0].IsDynamicOnly && name != baseMethods[index][0].RealName)
 							{
 								typeBuilder.DefineMethodOverride(mb, (MethodInfo)baseMethods[index][0].GetMethod());
 							}
@@ -2693,7 +2666,7 @@ namespace IKVM.Internal
 					}
 					else
 					{
-						method = GenerateMethod(index, m, unloadableOverrideStub, ref setModifiers);
+						method = GenerateMethod(index, m, ref setModifiers);
 					}
 					string[] exceptions = m.ExceptionsAttribute;
 					methods[index].SetDeclaredExceptions(exceptions);
@@ -2754,7 +2727,7 @@ namespace IKVM.Internal
 				return cb;
 			}
 
-			private MethodBase GenerateMethod(int index, ClassFile.Method m, bool unloadableOverrideStub, ref bool setModifiers)
+			private MethodBase GenerateMethod(int index, ClassFile.Method m, ref bool setModifiers)
 			{
 				bool setNameSig = methods[index].ReturnType.IsErasedOrBoxedPrimitiveOrRemapped;
 				foreach (TypeWrapper tw in methods[index].GetParameters())
@@ -2941,26 +2914,24 @@ namespace IKVM.Internal
 							setNameSig = true;
 						}
 					}
-					bool newslot = baseMethods[index] != null && (setNameSig || methods[index].IsExplicitOverride || baseMethods[index][0].RealName != name) && !needFinalize;
-					if (unloadableOverrideStub || newslot)
+					bool newslot = baseMethods[index] != null
+						&& (setNameSig || methods[index].IsExplicitOverride || baseMethods[index][0].RealName != name || CheckRequireOverrideStub(methods[index], baseMethods[index][0]))
+						&& !needFinalize;
+					if (newslot)
 					{
 						attribs |= MethodAttributes.NewSlot;
 					}
 					mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, name, attribs);
-					if (unloadableOverrideStub)
-					{
-						foreach (MethodWrapper baseMethod in baseMethods[index])
-						{
-							// TODO if there are multiple base methods, we're creating an unloadable override stub for all of them, but in theory it's possible that not all of them need it
-							GenerateUnloadableOverrideStub(wrapper, typeBuilder, baseMethod, mb, methods[index].ReturnTypeForDefineMethod, methods[index].GetParametersForDefineMethod());
-						}
-					}
-					else if (baseMethods[index] != null && !needFinalize)
+					if (baseMethods[index] != null && !needFinalize)
 					{
 						bool subsequent = false;
 						foreach (MethodWrapper baseMethod in baseMethods[index])
 						{
-							if (subsequent || setNameSig || methods[index].IsExplicitOverride || baseMethod.RealName != name)
+							if (CheckRequireOverrideStub(methods[index], baseMethod))
+							{
+								wrapper.GenerateOverrideStub(baseMethod, mb, methods[index]);
+							}
+							else if (subsequent || setNameSig || methods[index].IsExplicitOverride || baseMethod.RealName != name)
 							{
 								typeBuilder.DefineMethodOverride(mb, (MethodInfo)baseMethod.GetMethod());
 							}
@@ -3072,35 +3043,6 @@ namespace IKVM.Internal
 			}
 #endif // STATIC_COMPILER
 
-			internal static void GenerateUnloadableOverrideStub(DynamicTypeWrapper wrapper, TypeBuilder typeBuilder, MethodWrapper baseMethod, MethodInfo target, Type targetRet, Type[] targetArgs)
-			{
-				Debug.Assert(!baseMethod.HasCallerID);
-
-				Type stubret = baseMethod.ReturnTypeForDefineMethod;
-				Type[] stubargs = baseMethod.GetParametersForDefineMethod();
-				string name = wrapper.GenerateUniqueMethodName(baseMethod.RealName + "/unloadablestub", baseMethod);
-				MethodBuilder overrideStub = typeBuilder.DefineMethod(name, MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Final, stubret, stubargs);
-				AttributeHelper.HideFromJava(overrideStub);
-				typeBuilder.DefineMethodOverride(overrideStub, (MethodInfo)baseMethod.GetMethod());
-				CodeEmitter ilgen = CodeEmitter.Create(overrideStub);
-				ilgen.Emit(OpCodes.Ldarg_0);
-				for (int i = 0; i < targetArgs.Length; i++)
-				{
-					ilgen.Emit(OpCodes.Ldarg_S, (byte)(i + 1));
-					if (targetArgs[i] != stubargs[i])
-					{
-						ilgen.Emit(OpCodes.Castclass, targetArgs[i]);
-					}
-				}
-				ilgen.Emit(OpCodes.Callvirt, target);
-				if (targetRet != stubret)
-				{
-					ilgen.Emit(OpCodes.Castclass, stubret);
-				}
-				ilgen.Emit(OpCodes.Ret);
-				ilgen.DoEmit();
-			}
-
 			internal override Type Type
 			{
 				get
@@ -3167,24 +3109,6 @@ namespace IKVM.Internal
 			{
 				return finalizeMethod;
 			}
-
-#if STATIC_COMPILER
-			internal override Annotation Annotation
-			{
-				get
-				{
-					return annotationBuilder;
-				}
-			}
-
-			internal override Type EnumType
-			{
-				get
-				{
-					return enumBuilder;
-				}
-			}
-#endif // STATIC_COMPILER
 		}
 
 		private sealed class Metadata
@@ -3407,17 +3331,8 @@ namespace IKVM.Internal
 			private MethodInfo clinitMethod;
 			private MethodInfo finalizeMethod;
 			private Metadata metadata;
-#if STATIC_COMPILER
-			private Annotation annotationBuilder;
-			private TypeBuilder enumBuilder;
-#endif
 
-			internal FinishedTypeImpl(Type type, TypeWrapper[] innerclasses, TypeWrapper declaringTypeWrapper, Modifiers reflectiveModifiers, Metadata metadata, MethodInfo clinitMethod, MethodInfo finalizeMethod
-#if STATIC_COMPILER
-, Annotation annotationBuilder
-				, TypeBuilder enumBuilder
-#endif
-)
+			internal FinishedTypeImpl(Type type, TypeWrapper[] innerclasses, TypeWrapper declaringTypeWrapper, Modifiers reflectiveModifiers, Metadata metadata, MethodInfo clinitMethod, MethodInfo finalizeMethod)
 			{
 				this.type = type;
 				this.innerclasses = innerclasses;
@@ -3426,10 +3341,6 @@ namespace IKVM.Internal
 				this.clinitMethod = clinitMethod;
 				this.finalizeMethod = finalizeMethod;
 				this.metadata = metadata;
-#if STATIC_COMPILER
-				this.annotationBuilder = annotationBuilder;
-				this.enumBuilder = enumBuilder;
-#endif
 			}
 
 			internal override TypeWrapper[] InnerClasses
@@ -3542,24 +3453,6 @@ namespace IKVM.Internal
 			{
 				return finalizeMethod;
 			}
-
-#if STATIC_COMPILER
-			internal override Annotation Annotation
-			{
-				get
-				{
-					return annotationBuilder;
-				}
-			}
-
-			internal override Type EnumType
-			{
-				get
-				{
-					return enumBuilder;
-				}
-			}
-#endif // STATIC_COMPILER
 		}
 
 		internal sealed class FinishContext
@@ -3567,10 +3460,10 @@ namespace IKVM.Internal
 			private readonly ClassFile classFile;
 			private readonly DynamicTypeWrapper wrapper;
 			private readonly TypeBuilder typeBuilder;
-			private TypeBuilder typeCallerID;
+			private List<TypeBuilder> nestedTypeBuilders;
 			private MethodInfo callerIDMethod;
-			private List<System.Threading.ThreadStart> postFinishProcs;
 			private List<Item> items;
+			private Dictionary<FieldWrapper, ConstructorBuilder> arfuMap;
 
 			private struct Item
 			{
@@ -3634,13 +3527,13 @@ namespace IKVM.Internal
 				ilgen.DoEmit();
 			}
 
-			internal void RegisterPostFinishProc(System.Threading.ThreadStart proc)
+			private void RegisterNestedTypeBuilder(TypeBuilder tb)
 			{
-				if (postFinishProcs == null)
+				if (nestedTypeBuilders == null)
 				{
-					postFinishProcs = new List<System.Threading.ThreadStart>();
+					nestedTypeBuilders = new List<TypeBuilder>();
 				}
-				postFinishProcs.Add(proc);
+				nestedTypeBuilders.Add(tb);
 			}
 
 			internal Type FinishImpl()
@@ -4199,15 +4092,13 @@ namespace IKVM.Internal
 				try
 				{
 					type = typeBuilder.CreateType();
-					if (typeCallerID != null)
+					if (nestedTypeBuilders != null)
 					{
-						typeCallerID.CreateType();
-					}
-					if (postFinishProcs != null)
-					{
-						foreach (System.Threading.ThreadStart proc in postFinishProcs)
+						ClassLoaderWrapper.LoadClassCritical("ikvm.internal.IntrinsicAtomicReferenceFieldUpdater").Finish();
+						ClassLoaderWrapper.LoadClassCritical("ikvm.internal.IntrinsicThreadLocal").Finish();
+						foreach (TypeBuilder tb in nestedTypeBuilders)
 						{
-							proc();
+							tb.CreateType();
 						}
 					}
 #if STATIC_COMPILER
@@ -4643,7 +4534,7 @@ namespace IKVM.Internal
 					}
 					else if (CheckRequireOverrideStub(mce, ifmethod))
 					{
-						JavaTypeImpl.GenerateUnloadableOverrideStub(wrapper, typeBuilder, ifmethod, (MethodInfo)mce.GetMethod(), mce.ReturnTypeForDefineMethod, mce.GetParametersForDefineMethod());
+						wrapper.GenerateOverrideStub(ifmethod, (MethodInfo)mce.GetMethod(), mce);
 					}
 					else if (baseClassInterface && mce.DeclaringType == wrapper)
 					{
@@ -5121,25 +5012,6 @@ namespace IKVM.Internal
 			}
 #endif // STATIC_COMPILER
 
-			private static bool CheckRequireOverrideStub(MethodWrapper mw1, MethodWrapper mw2)
-			{
-				// TODO this is too late to generate LinkageErrors so we need to figure this out earlier
-				if (mw1.ReturnType != mw2.ReturnType && !(mw1.ReturnType.IsUnloadable && mw2.ReturnType.IsUnloadable))
-				{
-					return true;
-				}
-				TypeWrapper[] args1 = mw1.GetParameters();
-				TypeWrapper[] args2 = mw2.GetParameters();
-				for (int i = 0; i < args1.Length; i++)
-				{
-					if (args1[i] != args2[i] && !(args1[i].IsUnloadable && args2[i].IsUnloadable))
-					{
-						return true;
-					}
-				}
-				return false;
-			}
-
 			private void ImplementInterfaces(TypeWrapper[] interfaces, List<TypeWrapper> interfaceList)
 			{
 				foreach (TypeWrapper iface in interfaces)
@@ -5316,7 +5188,7 @@ namespace IKVM.Internal
 					else
 #endif
 					{
-						typeCallerID = EmitCreateCallerID(typeBuilder, ilGenerator);
+						RegisterNestedTypeBuilder(EmitCreateCallerID(typeBuilder, ilGenerator));
 					}
 					ilGenerator.Emit(OpCodes.Stsfld, callerIDField);
 				}
@@ -5394,6 +5266,110 @@ namespace IKVM.Internal
 					}
 				}
 			}
+
+			internal ConstructorBuilder DefineThreadLocalType()
+			{
+				TypeWrapper threadLocal = ClassLoaderWrapper.LoadClassCritical("ikvm.internal.IntrinsicThreadLocal");
+				int id = nestedTypeBuilders == null ? 0 : nestedTypeBuilders.Count;
+				TypeBuilder tb = typeBuilder.DefineNestedType("__<tls>_" + id, TypeAttributes.NestedPrivate | TypeAttributes.Sealed, threadLocal.TypeAsBaseType);
+				FieldBuilder fb = tb.DefineField("field", Types.Object, FieldAttributes.Private | FieldAttributes.Static);
+				fb.SetCustomAttribute(new CustomAttributeBuilder(JVM.Import(typeof(ThreadStaticAttribute)).GetConstructor(Type.EmptyTypes), new object[0]));
+				MethodBuilder mbGet = tb.DefineMethod("get", MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Final, Types.Object, Type.EmptyTypes);
+				ILGenerator ilgen = mbGet.GetILGenerator();
+				ilgen.Emit(OpCodes.Ldsfld, fb);
+				ilgen.Emit(OpCodes.Ret);
+				MethodBuilder mbSet = tb.DefineMethod("set", MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Final, null, new Type[] { Types.Object });
+				ilgen = mbSet.GetILGenerator();
+				ilgen.Emit(OpCodes.Ldarg_1);
+				ilgen.Emit(OpCodes.Stsfld, fb);
+				ilgen.Emit(OpCodes.Ret);
+				ConstructorBuilder cb = tb.DefineConstructor(MethodAttributes.Assembly, CallingConventions.Standard, Type.EmptyTypes);
+				CodeEmitter ctorilgen = CodeEmitter.Create(cb);
+				ctorilgen.Emit(OpCodes.Ldarg_0);
+				MethodWrapper basector = threadLocal.GetMethodWrapper("<init>", "()V", false);
+				basector.Link();
+				basector.EmitCall(ctorilgen);
+				ctorilgen.Emit(OpCodes.Ret);
+				ctorilgen.DoEmit();
+				RegisterNestedTypeBuilder(tb);
+				return cb;
+			}
+
+			internal ConstructorBuilder GetAtomicReferenceFieldUpdater(FieldWrapper field)
+			{
+				if (arfuMap == null)
+				{
+					arfuMap = new Dictionary<FieldWrapper, ConstructorBuilder>();
+				}
+				ConstructorBuilder cb;
+				if (!arfuMap.TryGetValue(field, out cb))
+				{
+					TypeWrapper arfuTypeWrapper = ClassLoaderWrapper.LoadClassCritical("ikvm.internal.IntrinsicAtomicReferenceFieldUpdater");
+					TypeBuilder tb = typeBuilder.DefineNestedType("__<ARFU>_" + arfuMap.Count, TypeAttributes.NestedPrivate | TypeAttributes.Sealed, arfuTypeWrapper.TypeAsBaseType);
+					AtomicReferenceFieldUpdaterEmitter.EmitImpl(tb, field.GetField());
+					cb = tb.DefineConstructor(MethodAttributes.Assembly, CallingConventions.Standard, Type.EmptyTypes);
+					arfuMap.Add(field, cb);
+					CodeEmitter ctorilgen = CodeEmitter.Create(cb);
+					ctorilgen.Emit(OpCodes.Ldarg_0);
+					MethodWrapper basector = arfuTypeWrapper.GetMethodWrapper("<init>", "()V", false);
+					basector.Link();
+					basector.EmitCall(ctorilgen);
+					ctorilgen.Emit(OpCodes.Ret);
+					ctorilgen.DoEmit();
+					RegisterNestedTypeBuilder(tb);
+				}
+				return cb;
+			}
+		}
+
+		private static bool CheckRequireOverrideStub(MethodWrapper mw1, MethodWrapper mw2)
+		{
+			// TODO this is too late to generate LinkageErrors so we need to figure this out earlier
+			if (mw1.ReturnType != mw2.ReturnType && !(mw1.ReturnType.IsUnloadable && mw2.ReturnType.IsUnloadable))
+			{
+				return true;
+			}
+			TypeWrapper[] args1 = mw1.GetParameters();
+			TypeWrapper[] args2 = mw2.GetParameters();
+			for (int i = 0; i < args1.Length; i++)
+			{
+				if (args1[i] != args2[i] && !(args1[i].IsUnloadable && args2[i].IsUnloadable))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private void GenerateOverrideStub(MethodWrapper baseMethod, MethodInfo target, MethodWrapper targetMethod)
+		{
+			Debug.Assert(!baseMethod.HasCallerID);
+			TypeBuilder typeBuilder = this.TypeAsBuilder;
+			Type stubret = baseMethod.ReturnTypeForDefineMethod;
+			Type[] stubargs = baseMethod.GetParametersForDefineMethod();
+			Type targetRet = targetMethod.ReturnTypeForDefineMethod;
+			Type[] targetArgs = targetMethod.GetParametersForDefineMethod();
+			string name = GenerateUniqueMethodName(baseMethod.RealName + "/unloadablestub", baseMethod);
+			MethodBuilder overrideStub = typeBuilder.DefineMethod(name, MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.NewSlot | MethodAttributes.Final, stubret, stubargs);
+			AttributeHelper.HideFromJava(overrideStub);
+			typeBuilder.DefineMethodOverride(overrideStub, (MethodInfo)baseMethod.GetMethod());
+			CodeEmitter ilgen = CodeEmitter.Create(overrideStub);
+			ilgen.Emit(OpCodes.Ldarg_0);
+			for (int i = 0; i < targetArgs.Length; i++)
+			{
+				ilgen.Emit(OpCodes.Ldarg_S, (byte)(i + 1));
+				if (targetArgs[i] != stubargs[i])
+				{
+					ilgen.Emit(OpCodes.Castclass, targetArgs[i]);
+				}
+			}
+			ilgen.Emit(OpCodes.Callvirt, target);
+			if (targetRet != stubret)
+			{
+				ilgen.Emit(OpCodes.Castclass, stubret);
+			}
+			ilgen.Emit(OpCodes.Ret);
+			ilgen.DoEmit();
 		}
 
 		protected static void GetParameterNamesFromLVT(ClassFile.Method m, string[] parameterNames)
