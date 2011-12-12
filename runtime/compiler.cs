@@ -2983,12 +2983,11 @@ sealed class Compiler
 		}
 	}
 
-	private sealed class InvokeDynamicBuilder
+	private static class InvokeDynamicBuilder
 	{
 		private static readonly Type typeofOpenIndyCallSite;
 		private static readonly Type typeofCallSite;
 		private static readonly MethodInfo methodLookup;
-		private int count;
 
 		static InvokeDynamicBuilder()
 		{
@@ -3007,7 +3006,7 @@ sealed class Compiler
 			methodLookup = typeofMethodHandles.GetMethod("lookup", new Type[] { CoreClasses.ikvm.@internal.CallerID.Wrapper.TypeAsSignatureType });
 		}
 
-		internal void Emit(Compiler compiler, ClassFile.ConstantPoolItemInvokeDynamic cpi, Type delegateType)
+		internal static void Emit(Compiler compiler, ClassFile.ConstantPoolItemInvokeDynamic cpi, Type delegateType)
 		{
 			Type typeofIndyCallSite = typeofOpenIndyCallSite.MakeGenericType(delegateType);
 			MethodInfo methodCreateBootStrap;
@@ -3022,7 +3021,7 @@ sealed class Compiler
 				methodCreateBootStrap = typeofIndyCallSite.GetMethod("CreateBootstrap");
 				methodGetTarget = typeofIndyCallSite.GetMethod("GetTarget");
 			}
-			TypeBuilder tb = compiler.clazz.TypeAsBuilder.DefineNestedType("__<>IndyCS" + (count++), TypeAttributes.NestedPrivate | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit);
+			TypeBuilder tb = compiler.context.DefineIndyCallSiteType();
 			FieldBuilder fb = tb.DefineField("value", typeofIndyCallSite, FieldAttributes.Static | FieldAttributes.Assembly);
 			ConstructorBuilder cb = tb.DefineConstructor(MethodAttributes.Static, CallingConventions.Standard, Type.EmptyTypes);
 			CodeEmitter ilgen = CodeEmitter.Create(cb);
@@ -3033,7 +3032,6 @@ sealed class Compiler
 			ilgen.Emit(OpCodes.Stsfld, fb);
 			ilgen.Emit(OpCodes.Ret);
 			ilgen.DoEmit();
-			tb.CreateType();
 
 			compiler.ilGenerator.Emit(OpCodes.Ldsfld, fb);
 			compiler.ilGenerator.Emit(OpCodes.Call, methodGetTarget);
@@ -3240,7 +3238,7 @@ sealed class Compiler
 			ilgen.Emit(OpCodes.Stloc, temps[i]);
 		}
 		Type delegateType = MethodHandleUtil.CreateDelegateType(args, cpi.GetRetType());
-		context.GetValue<InvokeDynamicBuilder>(0).Emit(this, cpi, delegateType);
+		InvokeDynamicBuilder.Emit(this, cpi, delegateType);
 		for (int i = 0; i < args.Length; i++)
 		{
 			ilgen.Emit(OpCodes.Ldloc, temps[i]);
@@ -3263,7 +3261,7 @@ sealed class Compiler
 
 		private static FieldBuilder CreateField(Compiler compiler, int index)
 		{
-			TypeBuilder tb = compiler.clazz.TypeAsBuilder.DefineNestedType("__<>MHC" + index, TypeAttributes.NestedPrivate | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.BeforeFieldInit);
+			TypeBuilder tb = compiler.context.DefineMethodHandleConstantType(index);
 			FieldBuilder field = tb.DefineField("value", CoreClasses.java.lang.invoke.MethodHandle.Wrapper.TypeAsSignatureType, FieldAttributes.Assembly | FieldAttributes.Static | FieldAttributes.InitOnly);
 			ConstructorBuilder cb = tb.DefineConstructor(MethodAttributes.Static, CallingConventions.Standard, Type.EmptyTypes);
 			ILGenerator ilgen = cb.GetILGenerator();
@@ -3328,7 +3326,6 @@ sealed class Compiler
 			ilgen.Emit(OpCodes.Call, ByteCodeHelperMethods.MethodHandleFromDelegate);
 			ilgen.Emit(OpCodes.Stsfld, field);
 			ilgen.Emit(OpCodes.Ret);
-			tb.CreateType();
 			return field;
 		}
 
@@ -3344,7 +3341,7 @@ sealed class Compiler
 				ret = args[args.Length - 1];
 				Array.Resize(ref args, args.Length - 1);
 			}
-			MethodBuilder mb = compiler.clazz.TypeAsBuilder.DefineMethod("__<>MHC", MethodAttributes.Static | MethodAttributes.PrivateScope, ret, args);
+			MethodBuilder mb = compiler.context.DefineMethodHandleDispatchStub(ret, args);
 			CodeEmitter ilgen = CodeEmitter.Create(mb);
 			if (args.Length > 0 && MethodHandleUtil.IsPackedArgsContainer(args[args.Length - 1]))
 			{
@@ -3452,7 +3449,7 @@ sealed class Compiler
 		if(!invokespecialstubcache.TryGetValue(key, out mi))
 		{
 			DefineMethodHelper dmh = method.GetDefineMethodHelper();
-			MethodBuilder stub = dmh.DefineMethod(clazz, "__<>", MethodAttributes.PrivateScope);
+			MethodBuilder stub = context.DefineInvokeSpecialStub(dmh);
 			CodeEmitter ilgen = CodeEmitter.Create(stub);
 			ilgen.Emit(OpCodes.Ldarg_0);
 			for(int i = 1; i <= dmh.ParameterCount; i++)
@@ -3763,7 +3760,7 @@ sealed class Compiler
 #else
 				typeofInvokeCache = typeof(IKVM.Runtime.InvokeCache<>);
 #endif
-				FieldBuilder fb = wrapper.TypeAsBuilder.DefineField("__<>invokeCache", typeofInvokeCache.MakeGenericType(delegateType), FieldAttributes.Static | FieldAttributes.PrivateScope);
+				FieldBuilder fb = context.DefineMethodHandleInvokeCacheField(typeofInvokeCache.MakeGenericType(delegateType));
 				ilgen.Emit(OpCodes.Ldloc, temps[0]);
 				ilgen.Emit(OpCodes.Ldsflda, fb);
 				ilgen.Emit(OpCodes.Call, mi);

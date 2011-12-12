@@ -914,10 +914,10 @@ namespace IKVM.Internal
 				{
 				}
 
-				protected override void DoLinkMethod()
+				internal void DoLink(TypeBuilder typeBuilder)
 				{
 					MethodAttributes attribs = MethodAttributes.HideBySig | MethodAttributes.Public;
-					constructor = this.DeclaringType.TypeAsBuilder.DefineConstructor(attribs, CallingConventions.Standard, new Type[] { Types.Object, Types.IntPtr }, null, null);
+					constructor = typeBuilder.DefineConstructor(attribs, CallingConventions.Standard, new Type[] { Types.Object, Types.IntPtr }, null, null);
 					constructor.SetImplementationFlags(MethodImplAttributes.Runtime);
 					MethodWrapper mw = GetParameters()[0].GetMethods()[0];
 					mw.Link();
@@ -1176,29 +1176,6 @@ namespace IKVM.Internal
 						}
 					}
 				}
-			}
-
-			internal override MethodBase LinkMethod(MethodWrapper mw)
-			{
-				Debug.Assert(mw != null);
-				int index = GetMethodIndex(mw);
-				if (baseMethods[index] != null)
-				{
-					foreach (MethodWrapper baseMethod in baseMethods[index])
-					{
-						baseMethod.Link();
-						CheckLoaderConstraints(mw, baseMethod);
-					}
-				}
-				Debug.Assert(mw.GetMethod() == null);
-				MethodBase mb = GenerateMethod(index);
-				if ((mw.Modifiers & (Modifiers.Synchronized | Modifiers.Static)) == Modifiers.Synchronized)
-				{
-					// note that constructors cannot be synchronized in Java
-					MethodBuilder mbld = (MethodBuilder)mb;
-					mbld.SetImplementationFlags(mbld.GetMethodImplementationFlags() | MethodImplAttributes.Synchronized);
-				}
-				return mb;
 			}
 
 			private int GetFieldIndex(FieldWrapper fw)
@@ -1925,7 +1902,7 @@ namespace IKVM.Internal
 						// skip <clinit>
 						if (!o.methods[i].IsStatic)
 						{
-							MethodBuilder mb = o.methods[i].GetDefineMethodHelper().DefineMethod(o.wrapper.GetClassLoader().GetTypeWrapperFactory(), attributeTypeBuilder, o.methods[i].Name, MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.Final | MethodAttributes.NewSlot);
+							MethodBuilder mb = o.methods[i].GetDefineMethodHelper().DefineMethod(o.wrapper, attributeTypeBuilder, o.methods[i].Name, MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.Final | MethodAttributes.NewSlot);
 							attributeTypeBuilder.DefineMethodOverride(mb, (MethodInfo)o.methods[i].GetMethod());
 							ilgen = CodeEmitter.Create(mb);
 							ilgen.Emit(OpCodes.Ldarg_0);
@@ -2602,8 +2579,24 @@ namespace IKVM.Internal
 				}
 			}
 
-			private MethodBase GenerateMethod(int index)
+			internal override MethodBase LinkMethod(MethodWrapper mw)
 			{
+				if (mw is DelegateConstructorMethodWrapper)
+				{
+					((DelegateConstructorMethodWrapper)mw).DoLink(typeBuilder);
+					return null;
+				}
+				Debug.Assert(mw != null);
+				int index = GetMethodIndex(mw);
+				if (baseMethods[index] != null)
+				{
+					foreach (MethodWrapper baseMethod in baseMethods[index])
+					{
+						baseMethod.Link();
+						CheckLoaderConstraints(mw, baseMethod);
+					}
+				}
+				Debug.Assert(mw.GetMethod() == null);
 				methods[index].AssertLinked();
 				Profiler.Enter("JavaTypeImpl.GenerateMethod");
 				try
@@ -2615,7 +2608,7 @@ namespace IKVM.Internal
 							// We're a Miranda method
 							Debug.Assert(baseMethods[index].Length == 1 && baseMethods[index][0].DeclaringType.IsInterface);
 							string name = GenerateUniqueMethodName(methods[index].Name, baseMethods[index][0]);
-							MethodBuilder mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, name, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Abstract | MethodAttributes.CheckAccessOnOverride);
+							MethodBuilder mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, typeBuilder, name, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Abstract | MethodAttributes.CheckAccessOnOverride);
 							AttributeHelper.HideFromReflection(mb);
 							bool overridestub = CheckRequireOverrideStub(methods[index], baseMethods[index][0]);
 #if STATIC_COMPILER
@@ -2628,7 +2621,7 @@ namespace IKVM.Internal
 #endif // STATIC_COMPILER
 							if (overridestub)
 							{
-								wrapper.GenerateOverrideStub(baseMethods[index][0], mb, methods[index]);
+								wrapper.GenerateOverrideStub(typeBuilder, baseMethods[index][0], mb, methods[index]);
 							}
 							// if we changed the name or if the interface method name is remapped, we need to add an explicit methodoverride.
 							else if (!baseMethods[index][0].IsDynamicOnly && name != baseMethods[index][0].RealName)
@@ -2722,7 +2715,7 @@ namespace IKVM.Internal
 
 			private MethodBase GenerateConstructor(MethodWrapper mw)
 			{
-				ConstructorBuilder cb = mw.GetDefineMethodHelper().DefineConstructor(wrapper, GetMethodAccess(mw) | MethodAttributes.HideBySig);
+				ConstructorBuilder cb = mw.GetDefineMethodHelper().DefineConstructor(wrapper, typeBuilder, GetMethodAccess(mw) | MethodAttributes.HideBySig);
 				cb.SetImplementationFlags(MethodImplAttributes.NoInlining);
 				return cb;
 			}
@@ -2921,7 +2914,7 @@ namespace IKVM.Internal
 					{
 						attribs |= MethodAttributes.NewSlot;
 					}
-					mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, name, attribs);
+					mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, typeBuilder, name, attribs);
 					if (baseMethods[index] != null && !needFinalize)
 					{
 						bool subsequent = false;
@@ -2929,7 +2922,7 @@ namespace IKVM.Internal
 						{
 							if (CheckRequireOverrideStub(methods[index], baseMethod))
 							{
-								wrapper.GenerateOverrideStub(baseMethod, mb, methods[index]);
+								wrapper.GenerateOverrideStub(typeBuilder, baseMethod, mb, methods[index]);
 							}
 							else if (subsequent || setNameSig || methods[index].IsExplicitOverride || baseMethod.RealName != name)
 							{
@@ -2992,6 +2985,11 @@ namespace IKVM.Internal
 						mb.SetCustomAttribute(cab);
 					}
 #endif // STATIC_COMPILER
+				}
+
+				if ((methods[index].Modifiers & (Modifiers.Synchronized | Modifiers.Static)) == Modifiers.Synchronized)
+				{
+					mb.SetImplementationFlags(mb.GetMethodImplementationFlags() | MethodImplAttributes.Synchronized);
 				}
 
 #if STATIC_COMPILER
@@ -3597,7 +3595,7 @@ namespace IKVM.Internal
 										name = "__<>" + name + "/" + mi.DeclaringType.FullName;
 										attr = MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.NewSlot;
 									}
-									MethodBuilder mb = mw.GetDefineMethodHelper().DefineMethod(wrapper, name, attr);
+									MethodBuilder mb = mw.GetDefineMethodHelper().DefineMethod(wrapper, typeBuilder, name, attr);
 									if (needRename)
 									{
 										typeBuilder.DefineMethodOverride(mb, mi);
@@ -3902,7 +3900,7 @@ namespace IKVM.Internal
 					{
 						AddUnsupportedAbstractMethods();
 					}
-					wrapper.automagicSerializationCtor = Serialization.AddAutomagicSerialization(wrapper);
+					wrapper.automagicSerializationCtor = Serialization.AddAutomagicSerialization(wrapper, typeBuilder);
 				}
 
 #if STATIC_COMPILER
@@ -4534,7 +4532,7 @@ namespace IKVM.Internal
 					}
 					else if (CheckRequireOverrideStub(mce, ifmethod))
 					{
-						wrapper.GenerateOverrideStub(ifmethod, (MethodInfo)mce.GetMethod(), mce);
+						wrapper.GenerateOverrideStub(typeBuilder, ifmethod, (MethodInfo)mce.GetMethod(), mce);
 					}
 					else if (baseClassInterface && mce.DeclaringType == wrapper)
 					{
@@ -4560,7 +4558,7 @@ namespace IKVM.Internal
 
 			private MethodBuilder DefineInterfaceStubMethod(string name, MethodWrapper mw)
 			{
-				return mw.GetDefineMethodHelper().DefineMethod(wrapper, name, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.Final);
+				return mw.GetDefineMethodHelper().DefineMethod(wrapper, typeBuilder, name, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.Final);
 			}
 
 			private static class BakedTypeCleanupHack
@@ -5320,6 +5318,36 @@ namespace IKVM.Internal
 				}
 				return cb;
 			}
+
+			internal TypeBuilder DefineIndyCallSiteType()
+			{
+				int id = nestedTypeBuilders == null ? 0 : nestedTypeBuilders.Count;
+				TypeBuilder tb = typeBuilder.DefineNestedType("__<>IndyCS" + id, TypeAttributes.NestedPrivate | TypeAttributes.Abstract | TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit);
+				RegisterNestedTypeBuilder(tb);
+				return tb;
+			}
+
+			internal TypeBuilder DefineMethodHandleConstantType(int index)
+			{
+				TypeBuilder tb = typeBuilder.DefineNestedType("__<>MHC" + index, TypeAttributes.NestedPrivate | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.BeforeFieldInit); ;
+				RegisterNestedTypeBuilder(tb);
+				return tb;
+			}
+
+			internal MethodBuilder DefineMethodHandleDispatchStub(Type returnType, Type[] parameterTypes)
+			{
+				return typeBuilder.DefineMethod("__<>MHC", MethodAttributes.Static | MethodAttributes.PrivateScope, returnType, parameterTypes);
+			}
+
+			internal FieldBuilder DefineMethodHandleInvokeCacheField(Type fieldType)
+			{
+				return typeBuilder.DefineField("__<>invokeCache", fieldType, FieldAttributes.Static | FieldAttributes.PrivateScope);
+			}
+
+			internal MethodBuilder DefineInvokeSpecialStub(DefineMethodHelper sig)
+			{
+				return sig.DefineMethod(wrapper, typeBuilder, "__<>", MethodAttributes.PrivateScope);
+			}
 		}
 
 		private static bool CheckRequireOverrideStub(MethodWrapper mw1, MethodWrapper mw2)
@@ -5341,10 +5369,9 @@ namespace IKVM.Internal
 			return false;
 		}
 
-		private void GenerateOverrideStub(MethodWrapper baseMethod, MethodInfo target, MethodWrapper targetMethod)
+		private void GenerateOverrideStub(TypeBuilder typeBuilder, MethodWrapper baseMethod, MethodInfo target, MethodWrapper targetMethod)
 		{
 			Debug.Assert(!baseMethod.HasCallerID);
-			TypeBuilder typeBuilder = this.TypeAsBuilder;
 			Type stubret = baseMethod.ReturnTypeForDefineMethod;
 			Type[] stubargs = baseMethod.GetParametersForDefineMethod();
 			Type targetRet = targetMethod.ReturnTypeForDefineMethod;
@@ -5883,9 +5910,9 @@ namespace IKVM.Internal
 			get { return parameterTypes.Length; }
 		}
 
-		internal MethodBuilder DefineMethod(DynamicTypeWrapper tw, string name, MethodAttributes attribs)
+		internal MethodBuilder DefineMethod(DynamicTypeWrapper context, TypeBuilder tb, string name, MethodAttributes attribs)
 		{
-			return DefineMethod(tw.GetClassLoader().GetTypeWrapperFactory(), tw.TypeAsBuilder, name, attribs);
+			return DefineMethod(context.GetClassLoader().GetTypeWrapperFactory(), tb, name, attribs);
 		}
 
 		internal MethodBuilder DefineMethod(TypeWrapperFactory context, TypeBuilder tb, string name, MethodAttributes attribs)
@@ -5893,9 +5920,9 @@ namespace IKVM.Internal
 			return tb.DefineMethod(name, attribs, mw.ReturnTypeForDefineMethod, parameterTypes);
 		}
 
-		internal ConstructorBuilder DefineConstructor(DynamicTypeWrapper tw, MethodAttributes attribs)
+		internal ConstructorBuilder DefineConstructor(DynamicTypeWrapper context, TypeBuilder tb, MethodAttributes attribs)
 		{
-			return DefineConstructor(tw.GetClassLoader().GetTypeWrapperFactory(), tw.TypeAsBuilder, attribs);
+			return DefineConstructor(context.GetClassLoader().GetTypeWrapperFactory(), tb, attribs);
 		}
 
 		internal ConstructorBuilder DefineConstructor(TypeWrapperFactory context, TypeBuilder tb, MethodAttributes attribs)
