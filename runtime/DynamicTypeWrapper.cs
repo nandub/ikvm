@@ -27,9 +27,11 @@ using System.Collections.Generic;
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
+using DynamicOrAotTypeWrapper = IKVM.Internal.AotTypeWrapper;
 #else
 using System.Reflection;
 using System.Reflection.Emit;
+using DynamicOrAotTypeWrapper = IKVM.Internal.DynamicTypeWrapper;
 #endif
 using System.Diagnostics;
 using System.Security;
@@ -443,7 +445,7 @@ namespace IKVM.Internal
 		private sealed class JavaTypeImpl : DynamicImpl
 		{
 			private readonly ClassFile classFile;
-			private readonly DynamicTypeWrapper wrapper;
+			private readonly DynamicOrAotTypeWrapper wrapper;
 			private TypeBuilder typeBuilder;
 			private MethodWrapper[] methods;
 			private MethodWrapper[][] baseMethods;
@@ -463,7 +465,7 @@ namespace IKVM.Internal
 			{
 				Tracer.Info(Tracer.Compiler, "constructing JavaTypeImpl for " + f.Name);
 				this.classFile = f;
-				this.wrapper = wrapper;
+				this.wrapper = (DynamicOrAotTypeWrapper)wrapper;
 			}
 
 			internal void CreateStep1(out bool hasclinit)
@@ -568,7 +570,7 @@ namespace IKVM.Internal
 					}
 				}
 #if STATIC_COMPILER
-				((AotTypeWrapper)wrapper).AddMapXmlFields(ref fields);
+				wrapper.AddMapXmlFields(ref fields);
 #endif
 				wrapper.SetFields(fields);
 			}
@@ -623,9 +625,10 @@ namespace IKVM.Internal
 								// baking the outer type before the inner type) and that the inner and outer
 								// class live in the same class loader (when doing a multi target compilation,
 								// it is possible to split the two classes acros assemblies)
-								if (outerClassWrapper.impl is JavaTypeImpl && outerClassWrapper.GetClassLoader() == wrapper.GetClassLoader())
+								JavaTypeImpl oimpl = outerClassWrapper.impl as JavaTypeImpl;
+								if (oimpl != null && outerClassWrapper.GetClassLoader() == wrapper.GetClassLoader())
 								{
-									ClassFile outerClassFile = ((JavaTypeImpl)outerClassWrapper.impl).classFile;
+									ClassFile outerClassFile = oimpl.classFile;
 									ClassFile.InnerClass[] outerInnerClasses = outerClassFile.InnerClasses;
 									if (outerInnerClasses == null)
 									{
@@ -657,7 +660,7 @@ namespace IKVM.Internal
 								}
 								if (outerClassWrapper != null)
 								{
-									outer = outerClassWrapper.TypeAsBuilder;
+									outer = oimpl.typeBuilder;
 								}
 								else
 								{
@@ -775,18 +778,18 @@ namespace IKVM.Internal
 					if (typeBuilder.FullName != wrapper.Name
 						&& wrapper.Name.Replace('$', '+') != typeBuilder.FullName)
 					{
-						((CompilerClassLoader)wrapper.GetClassLoader()).AddNameMapping(wrapper.Name, typeBuilder.FullName);
+						wrapper.classLoader.AddNameMapping(wrapper.Name, typeBuilder.FullName);
 					}
 					if (f.IsAnnotation && Annotation.HasRetentionPolicyRuntime(f.Annotations))
 					{
-						annotationBuilder = new AnnotationBuilder(this);
-						((AotTypeWrapper)wrapper).SetAnnotation(annotationBuilder);
+						annotationBuilder = new AnnotationBuilder(this, outer);
+						wrapper.SetAnnotation(annotationBuilder);
 					}
 					// For Java 5 Enum types, we generate a nested .NET enum.
 					// This is primarily to support annotations that take enum parameters.
 					if (f.IsEnum && f.IsPublic)
 					{
-						CompilerClassLoader ccl = (CompilerClassLoader)wrapper.GetClassLoader();
+						CompilerClassLoader ccl = wrapper.classLoader;
 						string name = "__Enum";
 						while (!ccl.ReserveName(f.Name + "$" + name))
 						{
@@ -803,7 +806,7 @@ namespace IKVM.Internal
 								fieldBuilder.SetConstant(i);
 							}
 						}
-						((AotTypeWrapper)wrapper).SetEnumType(enumBuilder);
+						wrapper.SetEnumType(enumBuilder);
 					}
 					TypeWrapper[] interfaces = wrapper.Interfaces;
 					string[] implements = new string[interfaces.Length];
@@ -1577,13 +1580,15 @@ namespace IKVM.Internal
 			sealed class AnnotationBuilder : Annotation
 			{
 				private JavaTypeImpl impl;
+				private TypeBuilder outer;
 				private TypeBuilder annotationTypeBuilder;
 				private TypeBuilder attributeTypeBuilder;
 				private ConstructorBuilder defineConstructor;
 
-				internal AnnotationBuilder(JavaTypeImpl o)
+				internal AnnotationBuilder(JavaTypeImpl o, TypeBuilder outer)
 				{
 					this.impl = o;
+					this.outer = outer;
 				}
 
 				internal void Link()
@@ -1617,7 +1622,7 @@ namespace IKVM.Internal
 					TypeWrapper annotationAttributeBaseType = ClassLoaderWrapper.LoadClassCritical("ikvm.internal.AnnotationAttributeBase");
 
 					// make sure we don't clash with another class name
-					CompilerClassLoader ccl = (CompilerClassLoader)o.wrapper.GetClassLoader();
+					CompilerClassLoader ccl = o.wrapper.classLoader;
 					string name = o.classFile.Name;
 					while (!ccl.ReserveName(name + "Attribute"))
 					{
@@ -1636,7 +1641,7 @@ namespace IKVM.Internal
 						{
 							typeAttributes |= TypeAttributes.NestedAssembly;
 						}
-						attributeTypeBuilder = o.outerClassWrapper.TypeAsBuilder.DefineNestedType(GetInnerClassName(o.outerClassWrapper.Name, name) + "Attribute", typeAttributes, annotationAttributeBaseType.TypeAsBaseType);
+						attributeTypeBuilder = outer.DefineNestedType(GetInnerClassName(o.outerClassWrapper.Name, name) + "Attribute", typeAttributes, annotationAttributeBaseType.TypeAsBaseType);
 					}
 					else
 					{
@@ -3469,7 +3474,7 @@ namespace IKVM.Internal
 		internal sealed class FinishContext
 		{
 			private readonly ClassFile classFile;
-			private readonly DynamicTypeWrapper wrapper;
+			private readonly DynamicOrAotTypeWrapper wrapper;
 			private readonly TypeBuilder typeBuilder;
 			private List<TypeBuilder> nestedTypeBuilders;
 			private MethodInfo callerIDMethod;
@@ -3482,7 +3487,7 @@ namespace IKVM.Internal
 				internal object value;
 			}
 
-			internal FinishContext(ClassFile classFile, DynamicTypeWrapper wrapper, TypeBuilder typeBuilder)
+			internal FinishContext(ClassFile classFile, DynamicOrAotTypeWrapper wrapper, TypeBuilder typeBuilder)
 			{
 				this.classFile = classFile;
 				this.wrapper = wrapper;
@@ -3922,7 +3927,7 @@ namespace IKVM.Internal
 				TypeBuilder tbFields = null;
 				if (classFile.IsInterface && classFile.IsPublic && !wrapper.IsGhost && classFile.Fields.Length > 0)
 				{
-					CompilerClassLoader ccl = (CompilerClassLoader)wrapper.GetClassLoader();
+					CompilerClassLoader ccl = wrapper.classLoader;
 					string name = "__Fields";
 					while (!ccl.ReserveName(classFile.Name + "$" + name))
 					{
@@ -3990,7 +3995,7 @@ namespace IKVM.Internal
 						GetParameterNamesFromLVT(m, parameterNames);
 						GetParameterNamesFromSig(m.Signature, parameterNames);
 #if STATIC_COMPILER
-						((AotTypeWrapper)wrapper).GetParameterNamesFromXml(m.Name, m.Signature, parameterNames);
+						wrapper.GetParameterNamesFromXml(m.Name, m.Signature, parameterNames);
 #endif
 						parameterBuilders = GetParameterBuilders(mb, parameterNames.Length, parameterNames);
 					}
@@ -4006,7 +4011,7 @@ namespace IKVM.Internal
 							AttributeHelper.SetParamArrayAttribute(parameterBuilders[parameterBuilders.Length - 1]);
 						}
 					}
-					((AotTypeWrapper)wrapper).AddXmlMapParameterAttributes(mb, classFile.Name, m.Name, m.Signature, ref parameterBuilders);
+					wrapper.AddXmlMapParameterAttributes(mb, classFile.Name, m.Name, m.Signature, ref parameterBuilders);
 #endif
 					ConstructorBuilder cb = mb as ConstructorBuilder;
 					MethodBuilder mBuilder = mb as MethodBuilder;
@@ -4054,7 +4059,7 @@ namespace IKVM.Internal
 						AttributeHelper.SetEditorBrowsableNever((MethodBuilder)mb);
 						EmitCallerIDStub(methods[i], parameterNames);
 					}
-					if (m.DllExportName != null && ((CompilerClassLoader)wrapper.GetClassLoader()).TryEnableUnmanagedExports())
+					if (m.DllExportName != null && wrapper.classLoader.TryEnableUnmanagedExports())
 					{
 						mBuilder.__AddUnmanagedExport(m.DllExportName, m.DllExportOrdinal);
 					}
