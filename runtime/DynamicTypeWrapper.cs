@@ -27,9 +27,11 @@ using System.Collections.Generic;
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
+using DynamicOrAotTypeWrapper = IKVM.Internal.AotTypeWrapper;
 #else
 using System.Reflection;
 using System.Reflection.Emit;
+using DynamicOrAotTypeWrapper = IKVM.Internal.DynamicTypeWrapper;
 #endif
 using System.Diagnostics;
 using System.Security;
@@ -400,14 +402,14 @@ namespace IKVM.Internal
 			return ((JavaTypeImpl)impl).GenerateUniqueMethodName(basename, returnType, parameterTypes);
 		}
 
-		internal void CreateStep1(out bool hasclinit)
+		internal void CreateStep1()
 		{
-			((JavaTypeImpl)impl).CreateStep1(out hasclinit);
+			((JavaTypeImpl)impl).CreateStep1();
 		}
 
-		internal void CreateStep2NoFail(bool hasclinit, string mangledTypeName)
+		internal string CreateStep2NoFail()
 		{
-			((JavaTypeImpl)impl).CreateStep2NoFail(hasclinit, mangledTypeName);
+			return ((JavaTypeImpl)impl).CreateStep2NoFail();
 		}
 
 		private bool IsSerializable
@@ -443,7 +445,7 @@ namespace IKVM.Internal
 		private sealed class JavaTypeImpl : DynamicImpl
 		{
 			private readonly ClassFile classFile;
-			private readonly DynamicTypeWrapper wrapper;
+			private readonly DynamicOrAotTypeWrapper wrapper;
 			private TypeBuilder typeBuilder;
 			private MethodWrapper[] methods;
 			private MethodWrapper[][] baseMethods;
@@ -463,13 +465,13 @@ namespace IKVM.Internal
 			{
 				Tracer.Info(Tracer.Compiler, "constructing JavaTypeImpl for " + f.Name);
 				this.classFile = f;
-				this.wrapper = wrapper;
+				this.wrapper = (DynamicOrAotTypeWrapper)wrapper;
 			}
 
-			internal void CreateStep1(out bool hasclinit)
+			internal void CreateStep1()
 			{
 				// process all methods
-				hasclinit = wrapper.BaseTypeWrapper == null ? false : wrapper.BaseTypeWrapper.HasStaticInitializer;
+				bool hasclinit = wrapper.BaseTypeWrapper == null ? false : wrapper.BaseTypeWrapper.HasStaticInitializer;
 				methods = new MethodWrapper[classFile.Methods.Length];
 				baseMethods = new MethodWrapper[classFile.Methods.Length][];
 				for (int i = 0; i < methods.Length; i++)
@@ -568,14 +570,16 @@ namespace IKVM.Internal
 					}
 				}
 #if STATIC_COMPILER
-				((AotTypeWrapper)wrapper).AddMapXmlFields(ref fields);
+				wrapper.AddMapXmlFields(ref fields);
 #endif
 				wrapper.SetFields(fields);
 			}
 
-			internal void CreateStep2NoFail(bool hasclinit, string mangledTypeName)
+			internal string CreateStep2NoFail()
 			{
 				// this method is not allowed to throw exceptions (if it does, the runtime will abort)
+				bool hasclinit = wrapper.HasStaticInitializer;
+				string mangledTypeName = wrapper.classLoader.GetTypeWrapperFactory().AllocMangledName(classFile.Name);
 				ClassFile f = classFile;
 				try
 				{
@@ -776,18 +780,18 @@ namespace IKVM.Internal
 					if (typeBuilder.FullName != wrapper.Name
 						&& wrapper.Name.Replace('$', '+') != typeBuilder.FullName)
 					{
-						((CompilerClassLoader)wrapper.GetClassLoader()).AddNameMapping(wrapper.Name, typeBuilder.FullName);
+						wrapper.classLoader.AddNameMapping(wrapper.Name, typeBuilder.FullName);
 					}
 					if (f.IsAnnotation && Annotation.HasRetentionPolicyRuntime(f.Annotations))
 					{
 						annotationBuilder = new AnnotationBuilder(this, outer);
-						((AotTypeWrapper)wrapper).SetAnnotation(annotationBuilder);
+						wrapper.SetAnnotation(annotationBuilder);
 					}
 					// For Java 5 Enum types, we generate a nested .NET enum.
 					// This is primarily to support annotations that take enum parameters.
 					if (f.IsEnum && f.IsPublic)
 					{
-						CompilerClassLoader ccl = (CompilerClassLoader)wrapper.GetClassLoader();
+						CompilerClassLoader ccl = wrapper.classLoader;
 						string name = "__Enum";
 						while (!ccl.ReserveName(f.Name + "$" + name))
 						{
@@ -804,7 +808,7 @@ namespace IKVM.Internal
 								fieldBuilder.SetConstant(i);
 							}
 						}
-						((AotTypeWrapper)wrapper).SetEnumType(enumBuilder);
+						wrapper.SetEnumType(enumBuilder);
 					}
 					TypeWrapper[] interfaces = wrapper.Interfaces;
 					string[] implements = new string[interfaces.Length];
@@ -903,6 +907,7 @@ namespace IKVM.Internal
 				{
 					JVM.CriticalFailure("Exception during JavaTypeImpl.CreateStep2NoFail", x);
 				}
+				return mangledTypeName;
 			}
 
 			private sealed class DelegateConstructorMethodWrapper : MethodWrapper
@@ -1620,7 +1625,7 @@ namespace IKVM.Internal
 					TypeWrapper annotationAttributeBaseType = ClassLoaderWrapper.LoadClassCritical("ikvm.internal.AnnotationAttributeBase");
 
 					// make sure we don't clash with another class name
-					CompilerClassLoader ccl = (CompilerClassLoader)o.wrapper.GetClassLoader();
+					CompilerClassLoader ccl = o.wrapper.classLoader;
 					string name = o.classFile.Name;
 					while (!ccl.ReserveName(name + "Attribute"))
 					{
@@ -3472,7 +3477,7 @@ namespace IKVM.Internal
 		internal sealed class FinishContext
 		{
 			private readonly ClassFile classFile;
-			private readonly DynamicTypeWrapper wrapper;
+			private readonly DynamicOrAotTypeWrapper wrapper;
 			private readonly TypeBuilder typeBuilder;
 			private List<TypeBuilder> nestedTypeBuilders;
 			private MethodInfo callerIDMethod;
@@ -3485,7 +3490,7 @@ namespace IKVM.Internal
 				internal object value;
 			}
 
-			internal FinishContext(ClassFile classFile, DynamicTypeWrapper wrapper, TypeBuilder typeBuilder)
+			internal FinishContext(ClassFile classFile, DynamicOrAotTypeWrapper wrapper, TypeBuilder typeBuilder)
 			{
 				this.classFile = classFile;
 				this.wrapper = wrapper;
@@ -3925,7 +3930,7 @@ namespace IKVM.Internal
 				TypeBuilder tbFields = null;
 				if (classFile.IsInterface && classFile.IsPublic && !wrapper.IsGhost && classFile.Fields.Length > 0)
 				{
-					CompilerClassLoader ccl = (CompilerClassLoader)wrapper.GetClassLoader();
+					CompilerClassLoader ccl = wrapper.classLoader;
 					string name = "__Fields";
 					while (!ccl.ReserveName(classFile.Name + "$" + name))
 					{
@@ -3993,7 +3998,7 @@ namespace IKVM.Internal
 						GetParameterNamesFromLVT(m, parameterNames);
 						GetParameterNamesFromSig(m.Signature, parameterNames);
 #if STATIC_COMPILER
-						((AotTypeWrapper)wrapper).GetParameterNamesFromXml(m.Name, m.Signature, parameterNames);
+						wrapper.GetParameterNamesFromXml(m.Name, m.Signature, parameterNames);
 #endif
 						parameterBuilders = GetParameterBuilders(mb, parameterNames.Length, parameterNames);
 					}
@@ -4009,7 +4014,7 @@ namespace IKVM.Internal
 							AttributeHelper.SetParamArrayAttribute(parameterBuilders[parameterBuilders.Length - 1]);
 						}
 					}
-					((AotTypeWrapper)wrapper).AddXmlMapParameterAttributes(mb, classFile.Name, m.Name, m.Signature, ref parameterBuilders);
+					wrapper.AddXmlMapParameterAttributes(mb, classFile.Name, m.Name, m.Signature, ref parameterBuilders);
 #endif
 					ConstructorBuilder cb = mb as ConstructorBuilder;
 					MethodBuilder mBuilder = mb as MethodBuilder;
@@ -4057,7 +4062,7 @@ namespace IKVM.Internal
 						AttributeHelper.SetEditorBrowsableNever((MethodBuilder)mb);
 						EmitCallerIDStub(methods[i], parameterNames);
 					}
-					if (m.DllExportName != null && ((CompilerClassLoader)wrapper.GetClassLoader()).TryEnableUnmanagedExports())
+					if (m.DllExportName != null && wrapper.classLoader.TryEnableUnmanagedExports())
 					{
 						mBuilder.__AddUnmanagedExport(m.DllExportName, m.DllExportOrdinal);
 					}
