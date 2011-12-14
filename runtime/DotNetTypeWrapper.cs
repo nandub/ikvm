@@ -56,6 +56,7 @@ namespace IKVM.Internal
 		private TypeWrapper[] innerClasses;
 		private TypeWrapper outerClass;
 		private TypeWrapper[] interfaces;
+		private volatile bool finished;
 
 		private static Modifiers GetModifiers(Type type)
 		{
@@ -2158,8 +2159,6 @@ namespace IKVM.Internal
 				// methods, which don't really exist).
 				if (ClassLoaderWrapper.IsRemappedType(type) && !type.IsSealed && !type.IsInterface)
 				{
-					// Finish the type, to make sure the methods are populated
-					this.BaseTypeWrapper.Finish();
 					TypeWrapper baseTypeWrapper = this.BaseTypeWrapper;
 					while (baseTypeWrapper != null)
 					{
@@ -2242,9 +2241,13 @@ namespace IKVM.Internal
 			private MethodWrapper m;
 
 			internal BaseFinalMethodWrapper(DotNetTypeWrapper tw, MethodWrapper m)
-				: base(tw, m.Name, m.Signature, m.GetMethod(), m.ReturnType, m.GetParameters(), (m.Modifiers & ~Modifiers.Abstract) | Modifiers.Final, MemberFlags.None)
+				: base(tw, m.Name, m.Signature, null, null, null, (m.Modifiers & ~Modifiers.Abstract) | Modifiers.Final, MemberFlags.None)
 			{
 				this.m = m;
+			}
+
+			protected override void DoLinkMethod()
+			{
 			}
 
 #if !STUB_GENERATOR
@@ -2638,6 +2641,11 @@ namespace IKVM.Internal
 
 		internal override void Finish()
 		{
+			// we don't need locking, because Finish and Link are idempotent
+			if (finished)
+			{
+				return;
+			}
 			if (BaseTypeWrapper != null)
 			{
 				BaseTypeWrapper.Finish();
@@ -2646,6 +2654,15 @@ namespace IKVM.Internal
 			{
 				tw.Finish();
 			}
+			foreach (MethodWrapper mw in GetMethods())
+			{
+				mw.Link();
+			}
+			foreach (FieldWrapper fw in GetFields())
+			{
+				fw.Link();
+			}
+			finished = true;
 		}
 
 #if !STATIC_COMPILER && !STUB_GENERATOR
@@ -2693,7 +2710,7 @@ namespace IKVM.Internal
 
 		internal override bool IsFastClassLiteralSafe
 		{
-			get { return true; }
+			get { return type != Types.Void && !type.IsPrimitive && !IsRemapped; }
 		}
 	}
 }
