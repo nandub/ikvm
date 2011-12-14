@@ -152,16 +152,7 @@ namespace IKVM.Internal
 			string mangledTypeName;
 			lock(dynamicTypes)
 			{
-				// the CLR maximum type name length is 1023 characters,
-				// but we need to leave some room for the suffix that we
-				// may need to append to make the name unique
-				const int MaxLength = 1000;
-				string name = tw.Name;
-				if (name.Length > MaxLength)
-				{
-					name = name.Substring(0, MaxLength) + "/truncated";
-				}
-				mangledTypeName = TypeNameUtil.ReplaceIllegalCharacters(name);
+				mangledTypeName = TypeNameUtil.EscapeName(tw.Name);
 				// FXBUG the CLR (both 1.1 and 2.0) doesn't like type names that end with a single period,
 				// it loses the trailing period in the name that gets passed in the TypeResolve event.
 				if(dynamicTypes.ContainsKey(mangledTypeName) || mangledTypeName.EndsWith("."))
