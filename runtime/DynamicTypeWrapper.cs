@@ -288,7 +288,12 @@ namespace IKVM.Internal
 			{
 				throw new VerifyError("Delegate may not declare any fields");
 			}
-			TypeWrapper iface = classLoader.LoadClassByDottedNameFast(f.Name + DotNetTypeWrapper.DelegateInterfaceSuffix);
+			TypeWrapper iface;
+#if STATIC_COMPILER
+			iface = classLoader.LoadCircularDependencyHack(this, f.Name + DotNetTypeWrapper.DelegateInterfaceSuffix);
+#else
+			iface = classLoader.LoadClassByDottedNameFast(f.Name + DotNetTypeWrapper.DelegateInterfaceSuffix);
+#endif
 			DelegateInnerClassCheck(iface != null);
 			DelegateInnerClassCheck(iface.IsInterface);
 			DelegateInnerClassCheck(iface.IsPublic);
@@ -402,9 +407,9 @@ namespace IKVM.Internal
 			((JavaTypeImpl)impl).CreateStep1();
 		}
 
-		internal void CreateStep2()
+		internal string CreateStep2NoFail()
 		{
-			((JavaTypeImpl)impl).CreateStep2();
+			return ((JavaTypeImpl)impl).CreateStep2NoFail();
 		}
 
 		private bool IsSerializable
@@ -570,21 +575,11 @@ namespace IKVM.Internal
 				wrapper.SetFields(fields);
 			}
 
-			internal void CreateStep2()
+			internal string CreateStep2NoFail()
 			{
-#if STATIC_COMPILER
-				if (typeBuilder != null)
-				{
-					// in the static compiler we need to create the TypeBuilder from outer to inner
-					// and to avoid having to sort the classes this way, we instead call CreateStep2
-					// on demand for outer wrappers and this necessitates us to keep track of
-					// whether we've already been called
-					return;
-				}
-#endif
 				// this method is not allowed to throw exceptions (if it does, the runtime will abort)
 				bool hasclinit = wrapper.HasStaticInitializer;
-				string mangledTypeName = wrapper.classLoader.GetTypeWrapperFactory().AllocMangledName(wrapper);
+				string mangledTypeName = wrapper.classLoader.GetTypeWrapperFactory().AllocMangledName(classFile.Name);
 				ClassFile f = classFile;
 				try
 				{
@@ -620,7 +615,7 @@ namespace IKVM.Internal
 						{
 							try
 							{
-								outerClassWrapper = wrapper.classLoader.LoadClassByDottedNameFast(outerClassName) as DynamicTypeWrapper;
+								outerClassWrapper = wrapper.GetClassLoader().LoadCircularDependencyHack(wrapper, outerClassName) as DynamicTypeWrapper;
 							}
 							catch (RetargetableJavaException x)
 							{
@@ -667,7 +662,6 @@ namespace IKVM.Internal
 								}
 								if (outerClassWrapper != null)
 								{
-									outerClassWrapper.CreateStep2();
 									outer = oimpl.typeBuilder;
 								}
 								else
@@ -761,12 +755,12 @@ namespace IKVM.Internal
 						{
 							// LAMESPEC the CLI spec says interfaces cannot contain nested types (Part.II, 9.6), but that rule isn't enforced
 							// (and broken by J# as well), so we'll just ignore it too.
-							typeBuilder = outer.DefineNestedType(GetInnerClassName(outerClassWrapper.Name, f.Name), typeAttribs);
+							typeBuilder = outer.DefineNestedType(GetInnerClassName(outerClassWrapper.Name, f.Name), typeAttribs, wrapper.GetBaseTypeForDefineType());
 						}
 						else
 #endif // STATIC_COMPILER
 						{
-							typeBuilder = wrapper.classLoader.GetTypeWrapperFactory().ModuleBuilder.DefineType(mangledTypeName, typeAttribs);
+							typeBuilder = wrapper.classLoader.GetTypeWrapperFactory().ModuleBuilder.DefineType(mangledTypeName, typeAttribs, wrapper.GetBaseTypeForDefineType());
 						}
 					}
 #if STATIC_COMPILER
@@ -911,8 +905,9 @@ namespace IKVM.Internal
 				}
 				catch (Exception x)
 				{
-					JVM.CriticalFailure("Exception during JavaTypeImpl.CreateStep2", x);
+					JVM.CriticalFailure("Exception during JavaTypeImpl.CreateStep2NoFail", x);
 				}
+				return mangledTypeName;
 			}
 
 			private sealed class DelegateConstructorMethodWrapper : MethodWrapper
@@ -1128,7 +1123,7 @@ namespace IKVM.Internal
 			private static string GetInnerClassName(string outer, string inner)
 			{
 				Debug.Assert(CheckInnerOuterNames(inner, outer));
-				return TypeNameUtil.ReplaceIllegalCharacters(inner.Substring(outer.Length + 1));
+				return TypeNameUtil.EscapeName(inner.Substring(outer.Length + 1));
 			}
 #endif // STATIC_COMPILER
 
@@ -1372,6 +1367,12 @@ namespace IKVM.Internal
 				{
 					wrapper.BaseTypeWrapper.Finish();
 				}
+#if STATIC_COMPILER
+				if (outerClassWrapper != null)
+				{
+					outerClassWrapper.Finish();
+				}
+#endif // STATIC_COMPILER
 				// NOTE there is a bug in the CLR (.NET 1.0 & 1.1 [1.2 is not yet available]) that
 				// causes the AppDomain.TypeResolve event to receive the incorrect type name for nested types.
 				// The Name in the ResolveEventArgs contains only the nested type name, not the full type name,
@@ -3567,14 +3568,6 @@ namespace IKVM.Internal
 #if STATIC_COMPILER
 				wrapper.FinishGhost(typeBuilder, methods);
 #endif // STATIC_COMPILER
-
-				if (!classFile.IsInterface)
-				{
-					// set the base type (this needs to be done before we emit any methods, because in the static compiler
-					// GetBaseTypeForDefineType() has the side effect of inserting the __WorkaroundBaseClass__ when necessary)
-					typeBuilder.SetParent(wrapper.GetBaseTypeForDefineType());
-				}
-
 				// if we're not abstract make sure we don't inherit any abstract methods
 				if (!wrapper.IsAbstract)
 				{

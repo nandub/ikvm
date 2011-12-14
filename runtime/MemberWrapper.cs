@@ -1103,7 +1103,7 @@ namespace IKVM.Internal
 			if(DeclaringType.IsNonPrimitiveValueType)
 			{
 				// callvirt isn't allowed on a value type
-				// (we don't need to check for a null reference, because we're always dealing with an unboxed value)
+				// TODO we need to check for a null reference
 				CallImpl(ilgen);
 			}
 			else
