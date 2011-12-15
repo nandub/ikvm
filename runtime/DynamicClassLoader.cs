@@ -152,7 +152,16 @@ namespace IKVM.Internal
 			string mangledTypeName;
 			lock(dynamicTypes)
 			{
-				mangledTypeName = TypeNameUtil.EscapeName(tw.Name);
+				// the CLR maximum type name length is 1023 characters,
+				// but we need to leave some room for the suffix that we
+				// may need to append to make the name unique
+				const int MaxLength = 1000;
+				string name = tw.Name;
+				if (name.Length > MaxLength)
+				{
+					name = name.Substring(0, MaxLength) + "/truncated";
+				}
+				mangledTypeName = TypeNameUtil.ReplaceIllegalCharacters(name);
 				// FXBUG the CLR (both 1.1 and 2.0) doesn't like type names that end with a single period,
 				// it loses the trailing period in the name that gets passed in the TypeResolve event.
 				if(dynamicTypes.ContainsKey(mangledTypeName) || mangledTypeName.EndsWith("."))
@@ -176,18 +185,19 @@ namespace IKVM.Internal
 
 		internal sealed override TypeWrapper DefineClassImpl(Dictionary<string, TypeWrapper> types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain)
 		{
-			DynamicTypeWrapper type;
 #if STATIC_COMPILER
-			type = new AotTypeWrapper(f, (CompilerClassLoader)classLoader);
+			AotTypeWrapper type = new AotTypeWrapper(f, (CompilerClassLoader)classLoader);
+			type.CreateStep1();
+			types[f.Name] = type;
+			return type;
 #else
 			// this step can throw a retargettable exception, if the class is incorrect
-			type = new DynamicTypeWrapper(f, classLoader);
-#endif
+			DynamicTypeWrapper type = new DynamicTypeWrapper(f, classLoader);
 			// This step actually creates the TypeBuilder. It is not allowed to throw any exceptions,
 			// if an exception does occur, it is due to a programming error in the IKVM or CLR runtime
 			// and will cause a CriticalFailure and exit the process.
 			type.CreateStep1();
-			type.CreateStep2NoFail();
+			type.CreateStep2();
 			lock(types)
 			{
 				// in very extreme conditions another thread may have beaten us to it
@@ -199,7 +209,7 @@ namespace IKVM.Internal
 				if(race == null)
 				{
 					types[f.Name] = type;
-#if !STATIC_COMPILER && !FIRST_PASS
+#if !FIRST_PASS
 					java.lang.Class clazz = new java.lang.Class(null);
 #if __MonoCS__
 					TypeWrapper.SetTypeWrapperHack(clazz, type);
@@ -216,6 +226,7 @@ namespace IKVM.Internal
 				}
 			}
 			return type;
+#endif // STATIC_COMPILER
 		}
 
 #if STATIC_COMPILER
