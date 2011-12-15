@@ -510,6 +510,7 @@ namespace IKVM.Internal
 			object method = reflectionMethod;
 			if (method == null)
 			{
+				Link();
 				ClassLoaderWrapper loader = this.DeclaringType.GetClassLoader();
 				TypeWrapper[] argTypes = GetParameters();
 				java.lang.Class[] parameterTypes = new java.lang.Class[argTypes.Length];
@@ -1102,7 +1103,7 @@ namespace IKVM.Internal
 			if(DeclaringType.IsNonPrimitiveValueType)
 			{
 				// callvirt isn't allowed on a value type
-				// TODO we need to check for a null reference
+				// (we don't need to check for a null reference, because we're always dealing with an unboxed value)
 				CallImpl(ilgen);
 			}
 			else
@@ -1331,6 +1332,7 @@ namespace IKVM.Internal
 			java.lang.reflect.Field field = reflectionField;
 			if (field == null)
 			{
+				Link();
 				field = new java.lang.reflect.Field(
 					this.DeclaringType.ClassObject,
 					this.Name,
