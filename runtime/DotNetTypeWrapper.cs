@@ -53,9 +53,11 @@ namespace IKVM.Internal
 		internal const string GenericAttributeAnnotationMultipleTypeName = "ikvm.internal.AttributeAnnotationMultiple`1";
 		private static readonly Dictionary<Type, TypeWrapper> types = new Dictionary<Type, TypeWrapper>();
 		private readonly Type type;
+		private TypeWrapper baseTypeWrapper;
 		private TypeWrapper[] innerClasses;
 		private TypeWrapper outerClass;
 		private TypeWrapper[] interfaces;
+		private volatile bool finished;
 
 		private static Modifiers GetModifiers(Type type)
 		{
@@ -301,9 +303,14 @@ namespace IKVM.Internal
 			}
 
 			internal OpenGenericTypeWrapper(Type type, string name)
-				: base(GetModifiers(type), name, type.IsInterface ? null : CoreClasses.java.lang.Object.Wrapper)
+				: base(GetModifiers(type), name)
 			{
 				this.type = type;
+			}
+
+			internal override TypeWrapper BaseTypeWrapper
+			{
+				get { return type.IsInterface ? null : CoreClasses.java.lang.Object.Wrapper; }
 			}
 
 			internal override TypeWrapper DeclaringTypeWrapper
@@ -344,9 +351,17 @@ namespace IKVM.Internal
 
 		internal abstract class FakeTypeWrapper : TypeWrapper
 		{
+			private readonly TypeWrapper baseWrapper;
+
 			protected FakeTypeWrapper(Modifiers modifiers, string name, TypeWrapper baseWrapper)
-				: base(modifiers, name, baseWrapper)
+				: base(modifiers, name)
 			{
+				this.baseWrapper = baseWrapper;
+			}
+
+			internal override TypeWrapper BaseTypeWrapper
+			{
+				get { return baseWrapper; }
 			}
 
 			internal sealed override bool IsFakeNestedType
@@ -1706,7 +1721,7 @@ namespace IKVM.Internal
 		}
 
 		private DotNetTypeWrapper(Type type, string name)
-			: base(GetModifiers(type), name, GetBaseTypeWrapper(type))
+			: base(GetModifiers(type), name)
 		{
 			Debug.Assert(!(type.IsByRef), type.FullName);
 			Debug.Assert(!(type.IsPointer), type.FullName);
@@ -1715,6 +1730,11 @@ namespace IKVM.Internal
 			Debug.Assert(!(AttributeHelper.IsJavaModule(type.Module)));
 
 			this.type = type;
+		}
+
+		internal override TypeWrapper BaseTypeWrapper
+		{
+			get { return baseTypeWrapper ?? (baseTypeWrapper = GetBaseTypeWrapper(type)); }
 		}
 
 		internal override ClassLoaderWrapper GetClassLoader()
@@ -2640,6 +2660,11 @@ namespace IKVM.Internal
 
 		internal override void Finish()
 		{
+			// we don't need locking, because Finish and Link are idempotent
+			if (finished)
+			{
+				return;
+			}
 			if (BaseTypeWrapper != null)
 			{
 				BaseTypeWrapper.Finish();
@@ -2648,6 +2673,15 @@ namespace IKVM.Internal
 			{
 				tw.Finish();
 			}
+			foreach (MethodWrapper mw in GetMethods())
+			{
+				mw.Link();
+			}
+			foreach (FieldWrapper fw in GetFields())
+			{
+				fw.Link();
+			}
+			finished = true;
 		}
 
 #if !STATIC_COMPILER && !STUB_GENERATOR

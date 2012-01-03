@@ -798,18 +798,10 @@ namespace IKVM.Internal
 			tb.SetCustomAttribute(customAttributeBuilder);
 		}
 
-		internal static void SetNameSig(MethodBase mb, string name, string sig)
+		internal static void SetNameSig(MethodBuilder mb, string name, string sig)
 		{
 			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
-			MethodBuilder method = mb as MethodBuilder;
-			if(method != null)
-			{
-				method.SetCustomAttribute(customAttributeBuilder);
-			}
-			else
-			{
-				((ConstructorBuilder)mb).SetCustomAttribute(customAttributeBuilder);
-			}
+			mb.SetCustomAttribute(customAttributeBuilder);
 		}
 
 		internal static byte[] FreezeDryType(Type type)
@@ -1354,37 +1346,33 @@ namespace IKVM.Internal
 	static class TypeNameUtil
 	{
 		// note that MangleNestedTypeName() assumes that there are less than 16 special characters
-		private static readonly char[] specialCharacters = { '\\', '+', ',', '[', ']', '*', '&', '\u0000' };
-		private static readonly string specialCharactersString = new String(specialCharacters);
+		private const string specialCharactersString = "\\+,[]*&\u0000";
 
-		internal static string EscapeName(string name)
+		internal static string ReplaceIllegalCharacters(string name)
 		{
-			// TODO the escaping of special characters is not required on .NET 2.0
-			// (but it doesn't really hurt that much either, the only overhead is the
-			// extra InnerClassAttribute to record the real name of the class)
-			// Note that even though .NET 2.0 automatically escapes the special characters,
-			// the name that gets passed in ResolveEventArgs.Name of the TypeResolve event
-			// contains the unescaped type name.
-			if (name.IndexOfAny(specialCharacters) >= 0)
+			// only the NUL character is illegal in CLR type names, so we replace it with a space
+			return name.Replace('\u0000', ' ');
+		}
+
+		internal static string Unescape(string name)
+		{
+			int pos = name.IndexOf('\\');
+			if (pos == -1)
 			{
-				System.Text.StringBuilder sb = new System.Text.StringBuilder();
-				foreach (char c in name)
-				{
-					if (specialCharactersString.IndexOf(c) >= 0)
-					{
-						if (c == 0)
-						{
-							// we can't escape the NUL character, so we replace it with a space.
-							sb.Append(' ');
-							continue;
-						}
-						sb.Append('\\');
-					}
-					sb.Append(c);
-				}
-				name = sb.ToString();
+				return name;
 			}
-			return name;
+			System.Text.StringBuilder sb = new System.Text.StringBuilder(name.Length);
+			sb.Append(name, 0, pos);
+			for (int i = pos; i < name.Length; i++)
+			{
+				char c = name[i];
+				if (c == '\\')
+				{
+					c = name[++i];
+				}
+				sb.Append(c);
+			}
+			return sb.ToString();
 		}
 
 		internal static string MangleNestedTypeName(string name)
@@ -1757,7 +1745,6 @@ namespace IKVM.Internal
 		private TypeFlags flags;
 		private MethodWrapper[] methods;
 		private FieldWrapper[] fields;
-		private readonly TypeWrapper baseWrapper;
 #if !STATIC_COMPILER && !STUB_GENERATOR
 		private java.lang.Class classObject;
 #endif
@@ -1765,7 +1752,7 @@ namespace IKVM.Internal
 		internal const Modifiers UnloadableModifiersHack = Modifiers.Final | Modifiers.Interface | Modifiers.Private;
 		internal const Modifiers VerifierTypeModifiersHack = Modifiers.Final | Modifiers.Interface;
 
-		internal TypeWrapper(Modifiers modifiers, string name, TypeWrapper baseWrapper)
+		internal TypeWrapper(Modifiers modifiers, string name)
 		{
 			Profiler.Count("TypeWrapper");
 			// class name should be dotted or null for primitives
@@ -1773,7 +1760,6 @@ namespace IKVM.Internal
 
 			this.modifiers = modifiers;
 			this.name = name == null ? null : String.Intern(name);
-			this.baseWrapper = baseWrapper;
 		}
 
 #if !STUB_GENERATOR
@@ -2039,6 +2025,7 @@ namespace IKVM.Internal
 		{
 			get
 			{
+				TypeWrapper baseWrapper = this.BaseTypeWrapper;
 				return (flags & TypeFlags.HasIncompleteInterfaceImplementation) != 0 || (baseWrapper != null && baseWrapper.HasIncompleteInterfaceImplementation);
 			}
 			set
@@ -2066,6 +2053,7 @@ namespace IKVM.Internal
 						return true;
 					}
 				}
+				TypeWrapper baseWrapper = this.BaseTypeWrapper;
 				return (flags & TypeFlags.HasUnsupportedAbstractMethods) != 0 || (baseWrapper != null && baseWrapper.HasUnsupportedAbstractMethods);
 			}
 			set
@@ -2425,6 +2413,7 @@ namespace IKVM.Internal
 					return fw;
 				}
 			}
+			TypeWrapper baseWrapper = this.BaseTypeWrapper;
 			if(baseWrapper != null)
 			{
 				return baseWrapper.GetFieldWrapper(fieldName, fieldSig);
@@ -2501,6 +2490,7 @@ namespace IKVM.Internal
 					return mw;
 				}
 			}
+			TypeWrapper baseWrapper = this.BaseTypeWrapper;
 			if(inherit && baseWrapper != null)
 			{
 				return baseWrapper.GetMethodWrapper(name, sig, inherit);
@@ -2612,16 +2602,6 @@ namespace IKVM.Internal
 			get;
 		}
 
-		internal virtual TypeBuilder TypeAsBuilder
-		{
-			get
-			{
-				TypeBuilder typeBuilder = TypeAsTBD as TypeBuilder;
-				Debug.Assert(typeBuilder != null);
-				return typeBuilder;
-			}
-		}
-
 		internal Type TypeAsSignatureType
 		{
 			get
@@ -2696,12 +2676,9 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal TypeWrapper BaseTypeWrapper
+		internal abstract TypeWrapper BaseTypeWrapper
 		{
-			get
-			{
-				return baseWrapper;
-			}
+			get;
 		}
 
 		internal TypeWrapper ElementTypeWrapper
@@ -3211,7 +3188,7 @@ namespace IKVM.Internal
 
 		internal virtual ConstructorInfo GetBaseSerializationConstructor()
 		{
-			return baseWrapper.GetSerializationConstructor();
+			return BaseTypeWrapper.GetSerializationConstructor();
 		}
 #endif
 	}
@@ -3219,8 +3196,13 @@ namespace IKVM.Internal
 	sealed class UnloadableTypeWrapper : TypeWrapper
 	{
 		internal UnloadableTypeWrapper(string name)
-			: base(TypeWrapper.UnloadableModifiersHack, name, null)
+			: base(TypeWrapper.UnloadableModifiersHack, name)
 		{
+		}
+
+		internal override TypeWrapper BaseTypeWrapper
+		{
+			get { return null; }
 		}
 
 		internal override ClassLoaderWrapper GetClassLoader()
@@ -3326,10 +3308,15 @@ namespace IKVM.Internal
 		private readonly string sigName;
 
 		private PrimitiveTypeWrapper(Type type, string sigName)
-			: base(Modifiers.Public | Modifiers.Abstract | Modifiers.Final, null, null)
+			: base(Modifiers.Public | Modifiers.Abstract | Modifiers.Final, null)
 		{
 			this.type = type;
 			this.sigName = sigName;
+		}
+
+		internal override TypeWrapper BaseTypeWrapper
+		{
+			get { return null; }
 		}
 
 		internal static bool IsPrimitiveType(Type type)
@@ -3403,6 +3390,7 @@ namespace IKVM.Internal
 	class CompiledTypeWrapper : TypeWrapper
 	{
 		private readonly Type type;
+		private TypeWrapper baseTypeWrapper;
 		private TypeWrapper[] interfaces;
 		private MethodInfo clinitMethod;
 		private bool clinitMethodSet;
@@ -3616,13 +3604,12 @@ namespace IKVM.Internal
 				}
 				if(type.DeclaringType != null)
 				{
-					return GetName(type.DeclaringType) + "$" + type.Name;
+					return GetName(type.DeclaringType) + "$" + TypeNameUtil.Unescape(type.Name);
 				}
 			}
-			return type.FullName;
+			return TypeNameUtil.Unescape(type.FullName);
 		}
 
-		// TODO consider resolving the baseType lazily
 		private static TypeWrapper GetBaseTypeWrapper(Type type)
 		{
 			if(type.IsInterface || AttributeHelper.IsGhostInterface(type))
@@ -3658,19 +3645,24 @@ namespace IKVM.Internal
 			}
 		}
 
-		private CompiledTypeWrapper(ExModifiers exmod, string name, TypeWrapper baseTypeWrapper)
-			: base(exmod.Modifiers, name, baseTypeWrapper)
+		private CompiledTypeWrapper(ExModifiers exmod, string name)
+			: base(exmod.Modifiers, name)
 		{
 			this.IsInternal = exmod.IsInternal;
 		}
 
 		private CompiledTypeWrapper(string name, Type type)
-			: this(GetModifiers(type), name, GetBaseTypeWrapper(type))
+			: this(GetModifiers(type), name)
 		{
 			Debug.Assert(!(type is TypeBuilder));
 			Debug.Assert(!type.Name.EndsWith("[]"));
 
 			this.type = type;
+		}
+
+		internal override TypeWrapper BaseTypeWrapper
+		{
+			get { return baseTypeWrapper ?? (baseTypeWrapper = GetBaseTypeWrapper(type)); }
 		}
 
 		internal override ClassLoaderWrapper GetClassLoader()
@@ -3800,6 +3792,14 @@ namespace IKVM.Internal
 				List<TypeWrapper> wrappers = new List<TypeWrapper>();
 				for(int i = 0; i < nestedTypes.Length; i++)
 				{
+					if(nestedTypes[i].Name.EndsWith("Attribute", StringComparison.Ordinal)
+						&& nestedTypes[i].IsClass
+						&& nestedTypes[i].BaseType.FullName == "ikvm.internal.AnnotationAttributeBase")
+					{
+						// HACK it's the custom attribute we generated for a corresponding annotation, so we shouldn't surface it as an inner classes
+						// (we can't put a HideFromJavaAttribute on it, because we do want the class to be visible as a $Proxy)
+						continue;
+					}
 					if(!AttributeHelper.IsHideFromJava(nestedTypes[i]))
 					{
 						wrappers.Add(ClassLoaderWrapper.GetWrapperFromType(nestedTypes[i]));
@@ -4688,11 +4688,16 @@ namespace IKVM.Internal
 		private bool finished;
 
 		internal ArrayTypeWrapper(TypeWrapper ultimateElementTypeWrapper, string name)
-			: base(Modifiers.Final | Modifiers.Abstract | (ultimateElementTypeWrapper.Modifiers & Modifiers.Public), name, CoreClasses.java.lang.Object.Wrapper)
+			: base(Modifiers.Final | Modifiers.Abstract | (ultimateElementTypeWrapper.Modifiers & Modifiers.Public), name)
 		{
 			Debug.Assert(!ultimateElementTypeWrapper.IsArray);
 			this.ultimateElementTypeWrapper = ultimateElementTypeWrapper;
 			this.IsInternal = ultimateElementTypeWrapper.IsInternal;
+		}
+
+		internal override TypeWrapper BaseTypeWrapper
+		{
+			get { return CoreClasses.java.lang.Object.Wrapper; }
 		}
 
 		internal override ClassLoaderWrapper GetClassLoader()
@@ -4948,11 +4953,16 @@ namespace IKVM.Internal
 		}
 
 		private VerifierTypeWrapper(string name, int index, TypeWrapper underlyingType, MethodAnalyzer methodAnalyzer)
-			: base(TypeWrapper.VerifierTypeModifiersHack, name, null)
+			: base(TypeWrapper.VerifierTypeModifiersHack, name)
 		{
 			this.index = index;
 			this.underlyingType = underlyingType;
 			this.methodAnalyzer = methodAnalyzer;
+		}
+
+		internal override TypeWrapper BaseTypeWrapper
+		{
+			get { return null; }
 		}
 
 		internal override ClassLoaderWrapper GetClassLoader()
