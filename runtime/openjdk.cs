@@ -2782,6 +2782,7 @@ namespace IKVM.NativeCode.java
 						}
 						else
 						{
+							fields[i].FieldTypeWrapper.EnsureLoadable(wrapper.GetClassLoader());
 							list.Add((jlrField)fields[i].ToField(false));
 						}
 					}
@@ -2818,6 +2819,8 @@ namespace IKVM.NativeCode.java
 						// TODO we should get the message from somewhere
 						throw new ClassFormatError(wrapper.Name);
 					}
+					// we need to look through the array for unloadable types, because we may not let them
+					// escape into the 'wild'
 					MethodWrapper[] methods = wrapper.GetMethods();
 					List<jlrMethod> list = new List<jlrMethod>();
 					for (int i = 0; i < methods.Length; i++)
@@ -2828,6 +2831,12 @@ namespace IKVM.NativeCode.java
 							&& methods[i].Name != "<clinit>" && methods[i].Name != "<init>"
 							&& (!publicOnly || methods[i].IsPublic))
 						{
+							methods[i].ReturnType.EnsureLoadable(wrapper.GetClassLoader());
+							TypeWrapper[] args = methods[i].GetParameters();
+							for (int j = 0; j < args.Length; j++)
+							{
+								args[j].EnsureLoadable(wrapper.GetClassLoader());
+							}
 							list.Add((jlrMethod)methods[i].ToMethodOrConstructor(false));
 						}
 					}
@@ -2864,6 +2873,8 @@ namespace IKVM.NativeCode.java
 						// TODO we should get the message from somewhere
 						throw new ClassFormatError(wrapper.Name);
 					}
+					// we need to look through the array for unloadable types, because we may not let them
+					// escape into the 'wild'
 					MethodWrapper[] methods = wrapper.GetMethods();
 					List<jlrConstructor> list = new List<jlrConstructor>();
 					for (int i = 0; i < methods.Length; i++)
@@ -2874,6 +2885,11 @@ namespace IKVM.NativeCode.java
 							&& methods[i].Name == "<init>"
 							&& (!publicOnly || methods[i].IsPublic))
 						{
+							TypeWrapper[] args = methods[i].GetParameters();
+							for (int j = 0; j < args.Length; j++)
+							{
+								args[j].EnsureLoadable(wrapper.GetClassLoader());
+							}
 							list.Add((jlrConstructor)methods[i].ToMethodOrConstructor(false));
 						}
 					}
@@ -2950,10 +2966,6 @@ namespace IKVM.NativeCode.java
 						if (classLoaderWrapper.EmitDebugInfo)
 						{
 							cfp |= ClassFileParseOptions.LocalVariableTable;
-						}
-						if (classLoaderWrapper.RelaxedClassNameValidation)
-						{
-							cfp |= ClassFileParseOptions.RelaxedClassNameValidation;
 						}
 						ClassFile classFile = new ClassFile(b, off, len, name, cfp);
 						if (name != null && classFile.Name != name)

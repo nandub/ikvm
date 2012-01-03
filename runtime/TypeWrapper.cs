@@ -473,12 +473,6 @@ namespace IKVM.Internal
 			mb.SetCustomAttribute(cab);
 		}
 
-		internal static void HideFromReflection(MethodBuilder mb, int reason)
-		{
-			CustomAttributeBuilder cab = new CustomAttributeBuilder(typeofHideFromReflectionAttribute.GetConstructor(new Type[] { Types.Int32 }), new object[] { reason });
-			mb.SetCustomAttribute(cab);
-		}
-
 		internal static void HideFromReflection(FieldBuilder fb)
 		{
 			CustomAttributeBuilder cab = new CustomAttributeBuilder(typeofHideFromReflectionAttribute.GetConstructor(Type.EmptyTypes), new object[0]);
@@ -798,10 +792,30 @@ namespace IKVM.Internal
 			tb.SetCustomAttribute(customAttributeBuilder);
 		}
 
-		internal static void SetNameSig(MethodBuilder mb, string name, string sig)
+		internal static void SetNameSig(MethodBase mb, string name, string sig)
 		{
 			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
-			mb.SetCustomAttribute(customAttributeBuilder);
+			MethodBuilder method = mb as MethodBuilder;
+			if(method != null)
+			{
+				method.SetCustomAttribute(customAttributeBuilder);
+			}
+			else
+			{
+				((ConstructorBuilder)mb).SetCustomAttribute(customAttributeBuilder);
+			}
+		}
+
+		internal static void SetNameSig(FieldBuilder fb, string name, string sig)
+		{
+			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
+			fb.SetCustomAttribute(customAttributeBuilder);
+		}
+
+		internal static void SetNameSig(PropertyBuilder pb, string name, string sig)
+		{
+			CustomAttributeBuilder customAttributeBuilder = new CustomAttributeBuilder(typeofNameSigAttribute.GetConstructor(new Type[] { Types.String, Types.String }), new object[] { name, sig });
+			pb.SetCustomAttribute(customAttributeBuilder);
 		}
 
 		internal static byte[] FreezeDryType(Type type)
@@ -1343,104 +1357,6 @@ namespace IKVM.Internal
 		}
 	}
 
-	static class TypeNameUtil
-	{
-		// note that MangleNestedTypeName() assumes that there are less than 16 special characters
-		private const string specialCharactersString = "\\+,[]*&\u0000";
-
-		internal static string ReplaceIllegalCharacters(string name)
-		{
-			// only the NUL character is illegal in CLR type names, so we replace it with a space
-			return name.Replace('\u0000', ' ');
-		}
-
-		internal static string Unescape(string name)
-		{
-			int pos = name.IndexOf('\\');
-			if (pos == -1)
-			{
-				return name;
-			}
-			System.Text.StringBuilder sb = new System.Text.StringBuilder(name.Length);
-			sb.Append(name, 0, pos);
-			for (int i = pos; i < name.Length; i++)
-			{
-				char c = name[i];
-				if (c == '\\')
-				{
-					c = name[++i];
-				}
-				sb.Append(c);
-			}
-			return sb.ToString();
-		}
-
-		internal static string MangleNestedTypeName(string name)
-		{
-			System.Text.StringBuilder sb = new System.Text.StringBuilder();
-			foreach (char c in name)
-			{
-				int index = specialCharactersString.IndexOf(c);
-				if (c == '.')
-				{
-					sb.Append("_");
-				}
-				else if (c == '_')
-				{
-					sb.Append("^-");
-				}
-				else if (index == -1)
-				{
-					sb.Append(c);
-					if (c == '^')
-					{
-						sb.Append(c);
-					}
-				}
-				else
-				{
-					sb.Append('^').AppendFormat("{0:X1}", index);
-				}
-			}
-			return sb.ToString();
-		}
-
-		internal static string UnmangleNestedTypeName(string name)
-		{
-			System.Text.StringBuilder sb = new System.Text.StringBuilder();
-			for (int i = 0; i < name.Length; i++)
-			{
-				char c = name[i];
-				int index = specialCharactersString.IndexOf(c);
-				if (c == '_')
-				{
-					sb.Append('.');
-				}
-				else if (c == '^')
-				{
-					c = name[++i];
-					if (c == '-')
-					{
-						sb.Append('_');
-					}
-					else if (c == '^')
-					{
-						sb.Append('^');
-					}
-					else
-					{
-						sb.Append(specialCharactersString[c - '0']);
-					}
-				}
-				else
-				{
-					sb.Append(c);
-				}
-			}
-			return sb.ToString();
-		}
-	}
-
 	abstract class Annotation
 	{
 		// NOTE this method returns null if the type could not be found
@@ -1733,9 +1649,6 @@ namespace IKVM.Internal
 	static class NamePrefix
 	{
 		internal const string Type2AccessStubBackingField = "__<>";
-		internal const string AccessStub = "<accessstub>";
-		internal const string NonVirtual = "<nonvirtual>";
-		internal const string Bridge = "<bridge>";
 	}
 
 	internal abstract class TypeWrapper
@@ -1774,23 +1687,8 @@ namespace IKVM.Internal
 			// note that this has to be the same check as in LazyInitClass
 			if (!this.IsFastClassLiteralSafe || IsForbiddenTypeParameterType(type))
 			{
-				int rank = 0;
-				while (ReflectUtil.IsVector(type))
-				{
-					rank++;
-					type = type.GetElementType();
-				}
-				if (rank == 0)
-				{
-					ilgen.Emit(OpCodes.Ldtoken, type);
-					Compiler.getClassFromTypeHandle.EmitCall(ilgen);
-				}
-				else
-				{
-					ilgen.Emit(OpCodes.Ldtoken, type);
-					ilgen.Emit(OpCodes.Ldc_I4, rank);
-					Compiler.getClassFromTypeHandle2.EmitCall(ilgen);
-				}
+				ilgen.Emit(OpCodes.Ldtoken, type);
+				Compiler.getClassFromTypeHandle.EmitCall(ilgen);
 			}
 			else
 			{
@@ -2207,11 +2105,6 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal virtual TypeWrapper GetUltimateElementTypeWrapper()
-		{
-			throw new InvalidOperationException();
-		}
-
 		internal bool IsNonPrimitiveValueType
 		{
 			get
@@ -2598,6 +2491,16 @@ namespace IKVM.Internal
 		internal abstract Type TypeAsTBD
 		{
 			get;
+		}
+
+		internal virtual TypeBuilder TypeAsBuilder
+		{
+			get
+			{
+				TypeBuilder typeBuilder = TypeAsTBD as TypeBuilder;
+				Debug.Assert(typeBuilder != null);
+				return typeBuilder;
+			}
 		}
 
 		internal Type TypeAsSignatureType
@@ -3164,7 +3067,6 @@ namespace IKVM.Internal
 
 		internal TypeWrapper GetPublicBaseTypeWrapper()
 		{
-			Debug.Assert(!this.IsPublic);
 			if (this.IsUnloadable || this.IsInterface)
 			{
 				return CoreClasses.java.lang.Object.Wrapper;
@@ -3594,10 +3496,10 @@ namespace IKVM.Internal
 				}
 				if(type.DeclaringType != null)
 				{
-					return GetName(type.DeclaringType) + "$" + TypeNameUtil.Unescape(type.Name);
+					return GetName(type.DeclaringType) + "$" + type.Name;
 				}
 			}
-			return TypeNameUtil.Unescape(type.FullName);
+			return type.FullName;
 		}
 
 		// TODO consider resolving the baseType lazily
@@ -3950,7 +3852,7 @@ namespace IKVM.Internal
 
 		private void GetNameSigFromMethodBase(MethodBase method, out string name, out string sig, out TypeWrapper retType, out TypeWrapper[] paramTypes, ref MemberFlags flags)
 		{
-			retType = method is ConstructorInfo ? PrimitiveTypeWrapper.VOID : GetParameterTypeWrapper(((MethodInfo)method).ReturnParameter);
+			retType = method is ConstructorInfo ? PrimitiveTypeWrapper.VOID : ClassLoaderWrapper.GetWrapperFromType(((MethodInfo)method).ReturnType);
 			ParameterInfo[] parameters = method.GetParameters();
 			int len = parameters.Length;
 			if(len > 0
@@ -3963,7 +3865,7 @@ namespace IKVM.Internal
 			paramTypes = new TypeWrapper[len];
 			for(int i = 0; i < len; i++)
 			{
-				paramTypes[i] = GetParameterTypeWrapper(parameters[i]);
+				paramTypes[i] = ClassLoaderWrapper.GetWrapperFromType(parameters[i].ParameterType);
 			}
 			NameSigAttribute attr = AttributeHelper.GetNameSig(method);
 			if(attr != null)
@@ -4093,54 +3995,9 @@ namespace IKVM.Internal
 					{
 						flags |= MemberFlags.InternalAccess;
 					}
-					if(hideFromReflection && name.StartsWith(NamePrefix.AccessStub, StringComparison.Ordinal))
-					{
-						int id = Int32.Parse(name.Substring(NamePrefix.AccessStub.Length, name.IndexOf('|', NamePrefix.AccessStub.Length) - NamePrefix.AccessStub.Length));
-						name = name.Substring(name.IndexOf('|', NamePrefix.AccessStub.Length) + 1);
-						flags |= MemberFlags.AccessStub;
-						MethodInfo nonvirt = type.GetMethod(NamePrefix.NonVirtual + id, BindingFlags.NonPublic | BindingFlags.DeclaredOnly | BindingFlags.Instance);
-						methods.Add(new AccessStubMethodWrapper(this, name, sig, mi, mi, nonvirt ?? mi, retType, paramTypes, mods.Modifiers & ~Modifiers.Final, flags));
-						return;
-					}
-					MethodWrapper mw = MethodWrapper.Create(this, name, sig, method, retType, paramTypes, mods.Modifiers, flags);
-					if (mw.HasNonPublicTypeInSignature)
-					{
-						MethodInfo stubVirt;
-						MethodInfo stubNonVirt;
-						if (GetType2AccessStubs(name, sig, out stubVirt, out stubNonVirt))
-						{
-							mw = new AccessStubMethodWrapper(this, name, sig, mi, stubVirt, stubNonVirt ?? stubVirt, retType, paramTypes, mw.Modifiers, flags);
-						}
-					}
-					methods.Add(mw);
+					methods.Add(MethodWrapper.Create(this, name, sig, method, retType, paramTypes, mods.Modifiers, flags));
 				}
 			}
-		}
-
-		private bool GetType2AccessStubs(string name, string sig, out MethodInfo stubVirt, out MethodInfo stubNonVirt)
-		{
-			stubVirt = null;
-			stubNonVirt = null;
-			const BindingFlags flags = BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
-			foreach (MethodInfo method in type.GetMethods(flags))
-			{
-				if (AttributeHelper.IsHideFromJava(method))
-				{
-					NameSigAttribute attr = AttributeHelper.GetNameSig(method);
-					if (attr != null && attr.Name == name && attr.Sig == sig)
-					{
-						if (method.Name.StartsWith(NamePrefix.NonVirtual, StringComparison.Ordinal))
-						{
-							stubNonVirt = method;
-						}
-						else
-						{
-							stubVirt = method;
-						}
-					}
-				}
-			}
-			return stubVirt != null;
 		}
 
 		private static int SortFieldByToken(FieldInfo field1, FieldInfo field2)
@@ -4154,8 +4011,6 @@ namespace IKVM.Internal
 			const BindingFlags flags = BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
 			FieldInfo[] rawfields = type.GetFields(flags);
 			Array.Sort(rawfields, SortFieldByToken);
-			// FXBUG on .NET 3.5 and Mono Type.GetProperties() will not return "duplicate" properties (i.e. that have the same name and type, but differ in custom modifiers).
-			// .NET 4.0 works as expected. We don't have a workaround, because that would require name mangling again and this situation is very unlikely anyway.
 			PropertyInfo[] properties = type.GetProperties(flags);
 			foreach(FieldInfo field in rawfields)
 			{
@@ -4163,15 +4018,14 @@ namespace IKVM.Internal
 				{
 					if(field.Name.StartsWith(NamePrefix.Type2AccessStubBackingField, StringComparison.Ordinal))
 					{
-						TypeWrapper tw = GetFieldTypeWrapper(field);
-						string name = field.Name.Substring(NamePrefix.Type2AccessStubBackingField.Length);
+						string name = field.Name.Substring(4);
 						for(int i = 0; i < properties.Length; i++)
 						{
-							if(properties[i] != null
-								&& name == properties[i].Name
-								&& tw == GetPropertyTypeWrapper(properties[i]))
+							// note that this "fails" when we have multiple fields with the same name, but the failure mode
+							// is simply that the fields won't retain their order (which is allowed by the reflection spec).
+							if(properties[i] != null && name == properties[i].Name)
 							{
-								fields.Add(new CompiledAccessStubFieldWrapper(this, properties[i], field, tw));
+								AddPropertyFieldWrapper(fields, properties[i]);
 								properties[i] = null;
 								break;
 							}
@@ -4194,29 +4048,38 @@ namespace IKVM.Internal
 			{
 				if(property != null)
 				{
-					AddPropertyFieldWrapper(fields, property, null);
+					AddPropertyFieldWrapper(fields, property);
 				}
 			}
 			SetFields(fields.ToArray());
 		}
 
-		private void AddPropertyFieldWrapper(List<FieldWrapper> fields, PropertyInfo property, FieldInfo field)
+		private void AddPropertyFieldWrapper(List<FieldWrapper> fields, PropertyInfo property)
 		{
 			// NOTE explictly defined properties (in map.xml) are decorated with HideFromJava,
 			// so we don't need to worry about them here
 			if(!AttributeHelper.IsHideFromJava(property))
 			{
-				// is it a type 1 access stub?
-				if(AttributeHelper.IsHideFromReflection(property))
+				// Only AccessStub properties (marked by HideFromReflectionAttribute or NameSigAttribute)
+				// are considered here
+				FieldWrapper accessStub;
+				if(CompiledAccessStubFieldWrapper.TryGet(this, property, out accessStub))
 				{
-					fields.Add(new CompiledAccessStubFieldWrapper(this, property, GetPropertyTypeWrapper(property)));
+					fields.Add(accessStub);
 				}
 				else
 				{
-					// It must be an explicit property
+					// If the property has a ModifiersAttribute, we know that it is an explicit property
 					// (defined in Java source by an @ikvm.lang.Property annotation)
 					ModifiersAttribute mods = AttributeHelper.GetModifiersAttribute(property);
-					fields.Add(new CompiledPropertyFieldWrapper(this, property, new ExModifiers(mods.Modifiers, mods.IsInternal)));
+					if(mods != null)
+					{
+						fields.Add(new CompiledPropertyFieldWrapper(this, property, new ExModifiers(mods.Modifiers, mods.IsInternal)));
+					}
+					else
+					{
+						fields.Add(CreateFieldWrapper(property));
+					}
 				}
 			}
 		}
@@ -4330,57 +4193,34 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static TypeWrapper TypeWrapperFromModOpt(Type modopt)
+		private FieldWrapper CreateFieldWrapper(PropertyInfo prop)
 		{
-			int rank = 0;
-			while (ReflectUtil.IsVector(modopt))
+			MethodInfo getter = prop.GetGetMethod(true);
+			ExModifiers modifiers = AttributeHelper.GetModifiers(getter, false);
+			// for static methods AttributeHelper.GetModifiers won't set the Final flag
+			modifiers = new ExModifiers(modifiers.Modifiers | Modifiers.Final, modifiers.IsInternal);
+			string name = prop.Name;
+			TypeWrapper type = ClassLoaderWrapper.GetWrapperFromType(prop.PropertyType);
+			NameSigAttribute attr = AttributeHelper.GetNameSig(getter);
+			if(attr != null)
 			{
-				rank++;
-				modopt = modopt.GetElementType();
+				name = attr.Name;
+				SigTypePatchUp(attr.Sig, ref type);
 			}
-			if (rank != 0)
-			{
-				return TypeWrapperFromModOpt(modopt).MakeArrayType(rank);
-			}
-			else if (modopt == Types.Void || modopt.IsPrimitive || ClassLoaderWrapper.IsRemappedType(modopt))
-			{
-				return DotNetTypeWrapper.GetWrapperFromDotNetType(modopt);
-			}
-			else
-			{
-				return ClassLoaderWrapper.GetWrapperFromType(modopt)
-					?? new UnloadableTypeWrapper(TypeNameUtil.UnmangleNestedTypeName(modopt.Name));
-			}
-		}
-
-		private static TypeWrapper GetPropertyTypeWrapper(PropertyInfo property)
-		{
-			Type[] modopt = property.GetOptionalCustomModifiers();
-			return modopt.Length == 0
-				? ClassLoaderWrapper.GetWrapperFromType(property.PropertyType)
-				: TypeWrapperFromModOpt(modopt[0]);
-		}
-
-		private static TypeWrapper GetFieldTypeWrapper(FieldInfo field)
-		{
-			Type[] modopt = field.GetOptionalCustomModifiers();
-			return modopt.Length == 0
-				? ClassLoaderWrapper.GetWrapperFromType(field.FieldType)
-				: TypeWrapperFromModOpt(modopt[0]);
-		}
-
-		private static TypeWrapper GetParameterTypeWrapper(ParameterInfo param)
-		{
-			Type[] modopt = param.GetOptionalCustomModifiers();
-			return modopt.Length == 0
-				? ClassLoaderWrapper.GetWrapperFromType(param.ParameterType)
-				: TypeWrapperFromModOpt(modopt[0]);
+			return new GetterFieldWrapper(this, type, null, name, type.SigName, modifiers, getter, prop);
 		}
 
 		private FieldWrapper CreateFieldWrapper(FieldInfo field)
 		{
 			ExModifiers modifiers = AttributeHelper.GetModifiers(field, false);
-			TypeWrapper type = GetFieldTypeWrapper(field);
+			string name = field.Name;
+			TypeWrapper type = ClassLoaderWrapper.GetWrapperFromType(field.FieldType);
+			NameSigAttribute attr = AttributeHelper.GetNameSig(field);
+			if(attr != null)
+			{
+				name = attr.Name;
+				SigTypePatchUp(attr.Sig, ref type);
+			}
 
 			if(field.IsLiteral)
 			{
@@ -4393,11 +4233,11 @@ namespace IKVM.Internal
 				{
 					flags |= MemberFlags.InternalAccess;
 				}
-				return new ConstantFieldWrapper(this, type, field.Name, type.SigName, modifiers.Modifiers, field, null, flags);
+				return new ConstantFieldWrapper(this, type, name, type.SigName, modifiers.Modifiers, field, null, flags);
 			}
 			else
 			{
-				return FieldWrapper.Create(this, type, field, field.Name, type.SigName, modifiers);
+				return FieldWrapper.Create(this, type, field, name, type.SigName, modifiers);
 			}
 		}
 
@@ -4478,6 +4318,18 @@ namespace IKVM.Internal
 					return attr.Signature;
 				}
 			}
+			else
+			{
+				GetterFieldWrapper getter = fw as GetterFieldWrapper;
+				if(getter != null)
+				{
+					SignatureAttribute attr = AttributeHelper.GetSignature(getter.GetGetter());
+					if(attr != null)
+					{
+						return attr.Signature;
+					}
+				}
+			}
 			return null;
 		}
 
@@ -4541,6 +4393,11 @@ namespace IKVM.Internal
 			if(field != null)
 			{
 				return field.GetCustomAttributes(false);
+			}
+			GetterFieldWrapper getter = fw as GetterFieldWrapper;
+			if(getter != null)
+			{
+				return getter.GetGetter().GetCustomAttributes(false);
 			}
 			CompiledPropertyFieldWrapper prop = fw as CompiledPropertyFieldWrapper;
 			if(prop != null)
@@ -4814,11 +4671,6 @@ namespace IKVM.Internal
 			// here we have to deal with the somewhat strange fact that in Java you cannot represent primitive type class literals,
 			// but you can represent arrays of primitive types as a class literal
 			get { return ultimateElementTypeWrapper.IsFastClassLiteralSafe || ultimateElementTypeWrapper.IsPrimitive; }
-		}
-
-		internal override TypeWrapper GetUltimateElementTypeWrapper()
-		{
-			return ultimateElementTypeWrapper;
 		}
 
 		internal static Type MakeArrayType(Type type, int dims)

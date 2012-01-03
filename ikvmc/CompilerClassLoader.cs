@@ -445,12 +445,7 @@ namespace IKVM.Internal
 
 		internal void SetMain(MethodInfo m, PEFileKinds target, Dictionary<string, string> props, bool noglobbing, Type apartmentAttributeType)
 		{
-			Type[] args = Type.EmptyTypes;
-			if(noglobbing)
-			{
-				args = new Type[] { JVM.Import(typeof(string[])) };
-			}
-			MethodBuilder mainStub = this.GetTypeWrapperFactory().ModuleBuilder.DefineGlobalMethod("main", MethodAttributes.Public | MethodAttributes.Static, Types.Int32, args);
+			MethodBuilder mainStub = this.GetTypeWrapperFactory().ModuleBuilder.DefineGlobalMethod("main", MethodAttributes.Public | MethodAttributes.Static, Types.Int32, new Type[] { Types.String.MakeArrayType() });
 			if(apartmentAttributeType != null)
 			{
 				mainStub.SetCustomAttribute(new CustomAttributeBuilder(apartmentAttributeType.GetConstructor(Type.EmptyTypes), new object[0]));
@@ -476,13 +471,11 @@ namespace IKVM.Internal
 			}
 			ilgen.BeginExceptionBlock();
 			startupType.GetMethodWrapper("enterMainThread", "()V", false).EmitCall(ilgen);
-			if(noglobbing)
+			ilgen.Emit(OpCodes.Ldarg_0);
+			if (!noglobbing)
 			{
-				ilgen.Emit(OpCodes.Ldarg_0);
-			}
-			else
-			{
-				startupType.GetMethodWrapper("glob", "()[Ljava.lang.String;", false).EmitCall(ilgen);
+				ilgen.Emit(OpCodes.Ldc_I4_0);
+				startupType.GetMethodWrapper("glob", "([Ljava.lang.String;I)[Ljava.lang.String;", false).EmitCall(ilgen);
 			}
 			ilgen.Emit(OpCodes.Call, m);
 			CodeEmitterLabel label = ilgen.DefineLabel();
@@ -951,19 +944,6 @@ namespace IKVM.Internal
 				internal abstract MethodBase DoLink();
 
 				internal abstract void Finish();
-
-				internal static void AddDeclaredExceptions(MethodBase mb, IKVM.Internal.MapXml.Throws[] throws)
-				{
-					if(throws != null)
-					{
-						string[] exceptions = new string[throws.Length];
-						for(int i = 0; i < exceptions.Length; i++)
-						{
-							exceptions[i] = throws[i].Class;
-						}
-						AttributeHelper.SetThrowsAttribute(mb, exceptions);
-					}
-				}
 			}
 
 			sealed class RemappedConstructorWrapper : RemappedMethodBaseWrapper
@@ -1146,7 +1126,17 @@ namespace IKVM.Internal
 
 				internal override void EmitCall(CodeEmitter ilgen)
 				{
-					ilgen.Emit(OpCodes.Call, (MethodInfo)GetMethod());
+					if(!IsStatic && IsFinal)
+					{
+						// When calling a final instance method on a remapped type from a class derived from a .NET class (i.e. a cli.System.Object or cli.System.Exception derived base class)
+						// then we can't call the java.lang.Object or java.lang.Throwable methods and we have to go through the instancehelper_ method. Note that since the method
+						// is final, this won't affect the semantics.
+						EmitCallvirt(ilgen);
+					}
+					else
+					{
+						ilgen.Emit(OpCodes.Call, (MethodInfo)GetMethod());
+					}
 				}
 
 				internal override void EmitCallvirt(CodeEmitter ilgen)
@@ -2167,6 +2157,19 @@ namespace IKVM.Internal
 			}
 		}
 
+		internal static void AddDeclaredExceptions(MethodBase mb, IKVM.Internal.MapXml.Throws[] throws)
+		{
+			if (throws != null)
+			{
+				string[] exceptions = new string[throws.Length];
+				for (int i = 0; i < exceptions.Length; i++)
+				{
+					exceptions[i] = throws[i].Class;
+				}
+				AttributeHelper.SetThrowsAttribute(mb, exceptions);
+			}
+		}
+
 		internal void EmitRemappedTypes()
 		{
 			Tracer.Info(Tracer.Compiler, "Emit remapped types");
@@ -2642,6 +2645,10 @@ namespace IKVM.Internal
 				{
 					compiler.PrepareSave();
 				}
+				if (StaticCompiler.errorCount > 0)
+				{
+					return 1;
+				}
 				foreach (CompilerClassLoader compiler in compilers)
 				{
 					compiler.Save();
@@ -2652,7 +2659,7 @@ namespace IKVM.Internal
 				Console.Error.WriteLine("Error: {0}", x.Message);
 				return 1;
 			}
-			return 0;
+			return StaticCompiler.errorCount == 0 ? 0 : 1;
 		}
 
 		private static int CreateCompiler(CompilerOptions options, ref CompilerClassLoader loader, ref bool compilingCoreAssembly)
@@ -2853,7 +2860,7 @@ namespace IKVM.Internal
 				FileStream fs;
 				try
 				{
-					fs = File.Open(options.remapfile, FileMode.Open);
+					fs = File.OpenRead(options.remapfile);
 				}
 				catch(Exception x)
 				{
@@ -3401,6 +3408,8 @@ namespace IKVM.Internal
 		StartErrors = 4000,
 		UnableToCreateProxy = 4001,
 		DuplicateProxy = 4002,
+		MapXmlUnableToResolveOpCode = 4003,
+		MapXmlError = 4004,
 	}
 
 	static class StaticCompiler
@@ -3409,6 +3418,7 @@ namespace IKVM.Internal
 		internal static Assembly runtimeAssembly;
 		internal static Assembly runtimeJniAssembly;
 		internal static CompilerOptions toplevel;
+		internal static int errorCount;
 
 		internal static Assembly Load(string assemblyString)
 		{
@@ -3618,6 +3628,12 @@ namespace IKVM.Internal
 				case Message.DuplicateProxy:
 					msg = "duplicate proxy \"{0}\"";
 					break;
+				case Message.MapXmlUnableToResolveOpCode:
+					msg = "unable to resolve opcode in remap file: {0}";
+					break;
+				case Message.MapXmlError:
+					msg = "error in remap file: {0}";
+					break;
 				case Message.UnknownWarning:
 					msg = "{0}";
 					break;
@@ -3625,11 +3641,11 @@ namespace IKVM.Internal
 					throw new InvalidProgramException();
 			}
 			bool error = msgId >= Message.StartErrors
-				|| options.warnaserror
+				|| (options.warnaserror && msgId >= Message.StartWarnings)
 				|| options.errorWarnings.ContainsKey(key)
 				|| options.errorWarnings.ContainsKey(((int)msgId).ToString());
 			Console.Error.Write("{0} IKVMC{1:D4}: ", error ? "Error" : msgId < Message.StartWarnings ? "Note" : "Warning", (int)msgId);
-			if (error && msgId < Message.StartErrors)
+			if (error && Message.StartWarnings <= msgId && msgId < Message.StartErrors)
 			{
 				Console.Error.Write("Warning as Error: ");
 			}
@@ -3640,7 +3656,11 @@ namespace IKVM.Internal
 			}
 			if(error)
 			{
-				Environment.Exit(1);
+				if (++errorCount == 100)
+				{
+					Console.Error.WriteLine("Maximum error count reached, exiting.");
+					Environment.Exit(1);
+				}
 			}
 		}
 

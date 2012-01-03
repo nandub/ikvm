@@ -57,11 +57,7 @@ namespace IKVM.Internal
 		internal abstract ModuleBuilder ModuleBuilder { get; }
 		internal abstract TypeWrapper DefineClassImpl(Dictionary<string, TypeWrapper> types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain);
 		internal abstract bool ReserveName(string name);
-		internal abstract string AllocMangledName(DynamicTypeWrapper tw);
 		internal abstract Type DefineUnloadable(string name);
-#if CLASSGC
-		internal abstract void AddInternalsVisibleTo(Assembly friend);
-#endif
 	}
 #endif // !STUB_GENERATOR
 
@@ -69,6 +65,9 @@ namespace IKVM.Internal
 	{
 		private static readonly object wrapperLock = new object();
 		private static readonly Dictionary<Type, TypeWrapper> globalTypeToTypeWrapper = new Dictionary<Type, TypeWrapper>();
+#if STATIC_COMPILER
+		private TypeWrapper circularDependencyHack;
+#endif
 #if STATIC_COMPILER || STUB_GENERATOR
 		private static ClassLoaderWrapper bootstrapClassLoader;
 #else
@@ -268,20 +267,6 @@ namespace IKVM.Internal
 			}
 		}
 
-#if !STATIC_COMPILER && !STUB_GENERATOR
-		internal bool RelaxedClassNameValidation
-		{
-			get
-			{
-#if FIRST_PASS
-				return true;
-#else
-				return JVM.relaxedVerification && (javaClassLoader == null || java.lang.ClassLoader.isTrustedLoader(javaClassLoader));
-#endif
-			}
-		}
-#endif // !STATIC_COMPILER && !STUB_GENERATOR
-
 		internal virtual string SourcePath
 		{
 			get
@@ -289,6 +274,32 @@ namespace IKVM.Internal
 				return null;
 			}
 		}
+
+#if STATIC_COMPILER
+		internal TypeWrapper LoadCircularDependencyHack(TypeWrapper tw, string name)
+		{
+			if (circularDependencyHack == null)
+			{
+				circularDependencyHack = tw;
+				try
+				{
+					return LoadClassByDottedNameFast(name);
+				}
+				finally
+				{
+					circularDependencyHack = null;
+				}
+			}
+			else if (circularDependencyHack.Name == name)
+			{
+				return circularDependencyHack;
+			}
+			else
+			{
+				return LoadClassByDottedNameFast(name);
+			}
+		}
+#endif
 
 		protected virtual void CheckDefineClassAllowed(string className)
 		{
@@ -421,6 +432,11 @@ namespace IKVM.Internal
 
 		private TypeWrapper LoadClassByDottedNameFastImpl(string name, bool throwClassNotFoundException)
 		{
+			// .NET 1.1 has a limit of 1024 characters for type names
+			if(name.Length >= 1024 || name.Length == 0)
+			{
+				return null;
+			}
 			Profiler.Enter("LoadClassByDottedName");
 			try
 			{
@@ -1019,6 +1035,39 @@ namespace IKVM.Internal
 			return wrapper;
 		}
 
+		private static ClassLoaderWrapper GetLoaderFromType(Type type)
+		{
+			Debug.Assert(!ReflectUtil.IsReflectionOnly(type));
+			if(remappedTypes.ContainsKey(type))
+			{
+				return bootstrapClassLoader;
+			}
+			else if(ReflectUtil.IsVector(type))
+			{
+				// it might be an array of a dynamically compiled Java type
+				int rank = 1;
+				Type elem = type.GetElementType();
+				while(ReflectUtil.IsVector(elem))
+				{
+					rank++;
+					elem = elem.GetElementType();
+				}
+				return GetLoaderFromType(elem);
+			}
+			else
+			{
+				Assembly asm = type.Assembly;
+#if CLASSGC
+				ClassLoaderWrapper loader;
+				if(dynamicAssemblies != null && dynamicAssemblies.TryGetValue(asm, out loader))
+				{
+					return loader;
+				}
+#endif
+				return AssemblyClassLoader.FromAssembly(asm);
+			}
+		}
+
 		internal virtual Type GetGenericTypeDefinition(string name)
 		{
 			return null;
@@ -1034,7 +1083,7 @@ namespace IKVM.Internal
 			list.Add(AssemblyClassLoader.FromAssembly(type.Assembly));
 			foreach(Type arg in type.GetGenericArguments())
 			{
-				ClassLoaderWrapper loader = GetWrapperFromType(arg).GetClassLoader();
+				ClassLoaderWrapper loader = GetLoaderFromType(arg);
 				if(!list.Contains(loader) && loader != bootstrapClassLoader)
 				{
 					list.Add(loader);

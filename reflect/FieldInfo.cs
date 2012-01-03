@@ -48,19 +48,14 @@ namespace IKVM.Reflection
 			get { return this.FieldSignature.FieldType; }
 		}
 
-		public CustomModifiers __GetCustomModifiers()
-		{
-			return this.FieldSignature.GetCustomModifiers();
-		}
-
 		public Type[] GetOptionalCustomModifiers()
 		{
-			return __GetCustomModifiers().GetOptional();
+			return this.FieldSignature.GetOptionalCustomModifiers();
 		}
 
 		public Type[] GetRequiredCustomModifiers()
 		{
-			return __GetCustomModifiers().GetRequired();
+			return this.FieldSignature.GetRequiredCustomModifiers();
 		}
 
 		public bool IsStatic
@@ -110,7 +105,7 @@ namespace IKVM.Reflection
 
 		public bool IsAssembly
 		{
-			get { return (Attributes & FieldAttributes.FieldAccessMask) == FieldAttributes.Family; }
+			get { return (Attributes & FieldAttributes.FieldAccessMask) == FieldAttributes.Assembly; }
 		}
 
 		public bool IsFamilyAndAssembly
