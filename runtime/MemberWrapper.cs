@@ -51,6 +51,7 @@ namespace IKVM.Internal
 		Intrinsic = 128,
 		CallerID = 256,
 		NonPublicTypeInSignature = 512,	// this flag is only available after linking and is not set for access stubs
+		DelegateInvokeWithByRefParameter = 1024,
 	}
 
 	class MemberWrapper
@@ -277,6 +278,11 @@ namespace IKVM.Internal
 			{
 				return (flags & MemberFlags.CallerID) != 0;
 			}
+		}
+
+		internal bool IsDelegateInvokeWithByRefParameter
+		{
+			get { return (flags & MemberFlags.DelegateInvokeWithByRefParameter) != 0; }
 		}
 
 		internal Modifiers Modifiers
@@ -1103,7 +1109,7 @@ namespace IKVM.Internal
 			if(DeclaringType.IsNonPrimitiveValueType)
 			{
 				// callvirt isn't allowed on a value type
-				// TODO we need to check for a null reference
+				// (we don't need to check for a null reference, because we're always dealing with an unboxed value)
 				CallImpl(ilgen);
 			}
 			else
