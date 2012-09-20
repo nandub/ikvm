@@ -1333,11 +1333,6 @@ namespace IKVM.Internal
 
 		internal object ToField(bool copy)
 		{
-			return ToField(copy, null);
-		}
-
-		internal object ToField(bool copy, int? fieldIndex)
-		{
 #if FIRST_PASS
 			return null;
 #else
@@ -1352,7 +1347,7 @@ namespace IKVM.Internal
 					this.Name,
 					this.FieldTypeWrapper.EnsureLoadable(this.DeclaringType.GetClassLoader()).ClassObject,
 					(int)(this.Modifiers & ReflectionFieldModifiersMask) | (this.IsInternal ? 0x40000000 : 0),
-					fieldIndex ?? Array.IndexOf(this.DeclaringType.GetFields(), this),
+					Array.IndexOf(this.DeclaringType.GetFields(), this),
 					this.DeclaringType.GetGenericFieldSignature(this),
 					null
 				);
@@ -1410,14 +1405,6 @@ namespace IKVM.Internal
 		protected abstract void EmitSetImpl(CodeEmitter ilgen);
 #endif // !STUB_GENERATOR
 
-
-#if STATIC_COMPILER
-		internal bool IsLinked
-		{
-			get { return fieldType != null; }
-		}
-#endif
-		
 		internal void Link()
 		{
 			lock(this)
