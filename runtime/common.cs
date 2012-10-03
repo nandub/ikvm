@@ -104,6 +104,15 @@ namespace IKVM.NativeCode.java.lang
 		{
 			return VirtualFileSystem.RootPath;
 		}
+
+		public static string getBootClassPath()
+		{
+#if FIRST_PASS
+			return null;
+#else
+			return VirtualFileSystem.GetAssemblyClassesPath(JVM.CoreAssembly);
+#endif
+		}
 	}
 }
 
@@ -230,6 +239,20 @@ namespace IKVM.NativeCode.ikvm.runtime
 			}
 		}
 
+		public static global::java.net.URL GetManifest(Assembly assembly)
+		{
+#if FIRST_PASS
+			return null;
+#else
+			IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
+			foreach (global::java.net.URL url in wrapper.FindResources("META-INF/MANIFEST.MF"))
+			{
+				return url;
+			}
+			return null;
+#endif
+		}
+
 		public static global::java.net.URL getResource(global::java.lang.ClassLoader classLoader, Assembly assembly, string name)
 		{
 #if FIRST_PASS
@@ -253,15 +276,22 @@ namespace IKVM.NativeCode.ikvm.runtime
 			return null;
 #else
 			global::java.util.Vector v = new global::java.util.Vector();
-			IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
-			foreach (global::java.net.URL url in wrapper.GetResources(name))
+			if (assembly != null)
 			{
-				v.addElement(url);
+				IKVM.Internal.AssemblyClassLoader wrapper = IKVM.Internal.AssemblyClassLoader.FromAssembly(assembly);
+				foreach (global::java.net.URL url in wrapper.GetResources(name))
+				{
+					v.addElement(url);
+				}
 			}
-			global::java.net.URL curl = GetClassResource(classLoader, assembly, name);
-			if (curl != null)
+			// we'll only generate a stub class if there isn't already a resource with this name
+			if (v.isEmpty())
 			{
-				v.addElement(curl);
+				global::java.net.URL curl = GetClassResource(classLoader, assembly, name);
+				if (curl != null)
+				{
+					v.addElement(curl);
+				}
 			}
 			return v.elements();
 #endif
