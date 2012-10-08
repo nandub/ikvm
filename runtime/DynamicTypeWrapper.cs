@@ -2327,7 +2327,7 @@ namespace IKVM.Internal
 					{
 						// skip
 					}
-					else if (baseMethod.IsFinal && (baseMethod.IsPublic || baseMethod.IsProtected || IsAccessibleInternal(baseMethod) || baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper)))
+					else if (baseMethod.IsFinal && (baseMethod.IsPublic || baseMethod.IsProtected || baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper)))
 					{
 						throw new VerifyError("final method " + baseMethod.Name + baseMethod.Signature + " in " + baseMethod.DeclaringType.Name + " is overridden in " + wrapper.Name);
 					}
@@ -2335,12 +2335,12 @@ namespace IKVM.Internal
 					{
 						// skip
 					}
-					else if (topPublicOrProtectedMethod == null && !baseMethod.IsPublic && !baseMethod.IsProtected && !IsAccessibleInternal(baseMethod) && !baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper))
+					else if (topPublicOrProtectedMethod == null && !baseMethod.IsPublic && !baseMethod.IsProtected && !baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper))
 					{
 						// this is a package private method that we're not overriding (unless its vtable stream interleaves ours, which is a case we handle below)
 						explicitOverride = true;
 					}
-					else if (topPublicOrProtectedMethod != null && baseMethod.IsFinal && !baseMethod.IsPublic && !baseMethod.IsProtected && !IsAccessibleInternal(baseMethod) && !baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper))
+					else if (topPublicOrProtectedMethod != null && baseMethod.IsFinal && !baseMethod.IsPublic && !baseMethod.IsProtected && !baseMethod.DeclaringType.IsPackageAccessibleFrom(wrapper))
 					{
 						// this is package private final method that we would override had it not been final, but which is ignored by HotSpot (instead of throwing a VerifyError)
 						explicitOverride = true;
@@ -2451,11 +2451,6 @@ namespace IKVM.Internal
 					tw = baseMethod.DeclaringType.BaseTypeWrapper;
 				}
 				return null;
-			}
-
-			private bool IsAccessibleInternal(MethodWrapper mw)
-			{
-				return mw.IsInternal && mw.DeclaringType.InternalsVisibleTo(wrapper);
 			}
 
 			private static MethodBase LinkAndGetMethod(MethodWrapper mw)
@@ -5128,12 +5123,10 @@ namespace IKVM.Internal
 						interfaceList.Add(iface);
 						// NOTE we're using TypeAsBaseType for the interfaces!
 						Type ifaceType = iface.TypeAsBaseType;
-#if !STATIC_COMPILER
 						if (!iface.IsPublic && !ReflectUtil.IsSameAssembly(ifaceType, typeBuilder))
 						{
 							ifaceType = ReflectUtil.GetAssembly(ifaceType).GetType(DynamicClassLoader.GetProxyHelperName(ifaceType));
 						}
-#endif
 						typeBuilder.AddInterfaceImplementation(ifaceType);
 #if STATIC_COMPILER
 						if (!wrapper.IsInterface)
@@ -5227,35 +5220,10 @@ namespace IKVM.Internal
 				}
 				MethodAttributes attr = MethodAttributes.NewSlot | MethodAttributes.Virtual | MethodAttributes.Private;
 				MethodBuilder m = typeBuilder.DefineMethod("__<unsupported>" + mb.DeclaringType.FullName + "/" + mb.Name, attr, ((MethodInfo)mb).ReturnType, parameterTypes);
-				if (mb.IsGenericMethodDefinition)
-				{
-					CopyGenericArguments(mb, m);
-				}
 				CodeEmitter ilgen = CodeEmitter.Create(m);
 				ilgen.EmitThrow("java.lang.AbstractMethodError", "Method " + mb.DeclaringType.FullName + "." + mb.Name + " is unsupported by IKVM.");
 				ilgen.DoEmit();
 				typeBuilder.DefineMethodOverride(m, (MethodInfo)mb);
-			}
-
-			private static void CopyGenericArguments(MethodBase mi, MethodBuilder mb)
-			{
-				Type[] genericParameters = mi.GetGenericArguments();
-				string[] genParamNames = new string[genericParameters.Length];
-				for (int i = 0; i < genParamNames.Length; i++)
-				{
-					genParamNames[i] = genericParameters[i].Name;
-				}
-				GenericTypeParameterBuilder[] genParamBuilders = mb.DefineGenericParameters(genParamNames);
-				for (int i = 0; i < genParamBuilders.Length; i++)
-				{
-					// NOTE apparently we don't need to set the interface constraints
-					// (and if we do, it fails for some reason)
-					if (genericParameters[i].BaseType != Types.Object)
-					{
-						genParamBuilders[i].SetBaseTypeConstraint(genericParameters[i].BaseType);
-					}
-					genParamBuilders[i].SetGenericParameterAttributes(genericParameters[i].GenericParameterAttributes);
-				}
 			}
 
 			private void CompileConstructorBody(FinishContext context, CodeEmitter ilGenerator, int methodIndex, Dictionary<MethodKey, MethodInfo> invokespecialstubcache)
@@ -6006,13 +5974,18 @@ namespace IKVM.Internal
 				TypeWrapper tw1 = tw.IsArray ? tw.GetUltimateElementTypeWrapper() : tw;
 				if (tw1.IsErasedOrBoxedPrimitiveOrRemapped || tw.IsGhostArray || (mustBePublic && !tw1.IsPublic))
 				{
+#if STATIC_COMPILER
+					modopt = new Type[] { GetModOptHelper(tw) };
+#else
 					// FXBUG Ref.Emit refuses arrays in custom modifiers, so we add an array type for each dimension
+					// (note that in this case we only add the custom modifiers to make the signature unique, we never read back this information)
 					modopt = new Type[tw.ArrayRank + 1];
 					modopt[0] = GetModOptHelper(tw1);
 					for (int i = 1; i < modopt.Length; i++)
 					{
-						modopt[i] = Types.Array;
+						modopt[i] = typeof(Array);
 					}
+#endif
 				}
 			}
 			return modopt;
