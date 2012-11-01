@@ -1340,9 +1340,15 @@ namespace IKVM.Internal
 				// for compatibility with broken Java code that assumes that reflection returns the fields in class declaration
 				// order, we emit the fields in class declaration order in the .NET metadata (and then when we retrieve them
 				// using .NET reflection, we sort on metadata token.)
-				for (int i = 0; i < fieldIndex; i++)
+				if (fieldIndex > 0)
 				{
-					fields[i].Link();
+					if (!fields[fieldIndex - 1].IsLinked)
+					{
+						for (int i = 0; i < fieldIndex; i++)
+						{
+							fields[i].Link();
+						}
+					}
 				}
 				if (fieldIndex >= classFile.Fields.Length)
 				{
@@ -5188,10 +5194,35 @@ namespace IKVM.Internal
 				}
 				MethodAttributes attr = MethodAttributes.NewSlot | MethodAttributes.Virtual | MethodAttributes.Private;
 				MethodBuilder m = typeBuilder.DefineMethod("__<unsupported>" + mb.DeclaringType.FullName + "/" + mb.Name, attr, ((MethodInfo)mb).ReturnType, parameterTypes);
+				if (mb.IsGenericMethodDefinition)
+				{
+					CopyGenericArguments(mb, m);
+				}
 				CodeEmitter ilgen = CodeEmitter.Create(m);
 				ilgen.EmitThrow("java.lang.AbstractMethodError", "Method " + mb.DeclaringType.FullName + "." + mb.Name + " is unsupported by IKVM.");
 				ilgen.DoEmit();
 				typeBuilder.DefineMethodOverride(m, (MethodInfo)mb);
+			}
+
+			private static void CopyGenericArguments(MethodBase mi, MethodBuilder mb)
+			{
+				Type[] genericParameters = mi.GetGenericArguments();
+				string[] genParamNames = new string[genericParameters.Length];
+				for (int i = 0; i < genParamNames.Length; i++)
+				{
+					genParamNames[i] = genericParameters[i].Name;
+				}
+				GenericTypeParameterBuilder[] genParamBuilders = mb.DefineGenericParameters(genParamNames);
+				for (int i = 0; i < genParamBuilders.Length; i++)
+				{
+					// NOTE apparently we don't need to set the interface constraints
+					// (and if we do, it fails for some reason)
+					if (genericParameters[i].BaseType != Types.Object)
+					{
+						genParamBuilders[i].SetBaseTypeConstraint(genericParameters[i].BaseType);
+					}
+					genParamBuilders[i].SetGenericParameterAttributes(genericParameters[i].GenericParameterAttributes);
+				}
 			}
 
 			private void CompileConstructorBody(FinishContext context, CodeEmitter ilGenerator, int methodIndex, Dictionary<MethodKey, MethodInfo> invokespecialstubcache)
@@ -5934,18 +5965,13 @@ namespace IKVM.Internal
 				TypeWrapper tw1 = tw.IsArray ? tw.GetUltimateElementTypeWrapper() : tw;
 				if (tw1.IsErasedOrBoxedPrimitiveOrRemapped || tw.IsGhostArray || (mustBePublic && !tw1.IsPublic))
 				{
-#if STATIC_COMPILER
-					modopt = new Type[] { GetModOptHelper(tw) };
-#else
 					// FXBUG Ref.Emit refuses arrays in custom modifiers, so we add an array type for each dimension
-					// (note that in this case we only add the custom modifiers to make the signature unique, we never read back this information)
 					modopt = new Type[tw.ArrayRank + 1];
 					modopt[0] = GetModOptHelper(tw1);
 					for (int i = 1; i < modopt.Length; i++)
 					{
-						modopt[i] = typeof(Array);
+						modopt[i] = Types.Array;
 					}
-#endif
 				}
 			}
 			return modopt;
