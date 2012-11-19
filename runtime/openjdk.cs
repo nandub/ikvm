@@ -291,9 +291,9 @@ static class DynamicMethodUtils
 			}
 			return new DynamicMethod(name, MethodAttributes.Public | MethodAttributes.Static, CallingConventions.Standard, returnType, paramTypes, dynamicModule, true);
 #else
-			if (owner.IsInterface)
+			if (!ReflectUtil.CanOwnDynamicMethod(owner))
 			{
-				// FXBUG interfaces aren't allowed as owners of dynamic methods
+				// interfaces and arrays aren't allowed as owners of dynamic methods
 				return new DynamicMethod(name, MethodAttributes.Public | MethodAttributes.Static, CallingConventions.Standard, returnType, paramTypes, owner.Module, true);
 			}
 			else
@@ -5221,6 +5221,7 @@ namespace IKVM.NativeCode.java
                     out uint ReturnLength);
 
                 internal static bool Enabled {
+                    [System.Security.SecuritySafeCritical]
                     get {
 						OperatingSystem os = Environment.OSVersion;
 						if (os.Platform != PlatformID.Win32NT || os.Version.Major < 6) {
