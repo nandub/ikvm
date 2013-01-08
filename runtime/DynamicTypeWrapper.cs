@@ -67,7 +67,32 @@ namespace IKVM.Internal
 			{
 				throw new NoClassDefFoundError(name);
 			}
+			CheckMissing(tw);
 			return tw;
+		}
+
+		private static void CheckMissing(TypeWrapper tw)
+		{
+#if STATIC_COMPILER
+			TypeWrapper prev = tw;
+			do
+			{
+				UnloadableTypeWrapper missing = tw as UnloadableTypeWrapper;
+				if (missing != null)
+				{
+					throw new FatalCompilerErrorException(Message.MissingBaseType,
+						missing.MissingType.FullName, missing.MissingType.Assembly.FullName,
+						prev.TypeAsBaseType.FullName, prev.TypeAsBaseType.Module.Name);
+				}
+				foreach (TypeWrapper iface in tw.Interfaces)
+				{
+					CheckMissing(iface);
+				}
+				prev = tw;
+				tw = tw.BaseTypeWrapper;
+			}
+			while (tw != null);
+#endif
 		}
 
 #if STATIC_COMPILER
@@ -5097,10 +5122,12 @@ namespace IKVM.Internal
 						interfaceList.Add(iface);
 						// NOTE we're using TypeAsBaseType for the interfaces!
 						Type ifaceType = iface.TypeAsBaseType;
+#if !STATIC_COMPILER
 						if (!iface.IsPublic && !ReflectUtil.IsSameAssembly(ifaceType, typeBuilder))
 						{
 							ifaceType = ReflectUtil.GetAssembly(ifaceType).GetType(DynamicClassLoader.GetProxyHelperName(ifaceType));
 						}
+#endif
 						typeBuilder.AddInterfaceImplementation(ifaceType);
 #if STATIC_COMPILER
 						if (!wrapper.IsInterface)
@@ -5965,18 +5992,13 @@ namespace IKVM.Internal
 				TypeWrapper tw1 = tw.IsArray ? tw.GetUltimateElementTypeWrapper() : tw;
 				if (tw1.IsErasedOrBoxedPrimitiveOrRemapped || tw.IsGhostArray || (mustBePublic && !tw1.IsPublic))
 				{
-#if STATIC_COMPILER
-					modopt = new Type[] { GetModOptHelper(tw) };
-#else
 					// FXBUG Ref.Emit refuses arrays in custom modifiers, so we add an array type for each dimension
-					// (note that in this case we only add the custom modifiers to make the signature unique, we never read back this information)
 					modopt = new Type[tw.ArrayRank + 1];
 					modopt[0] = GetModOptHelper(tw1);
 					for (int i = 1; i < modopt.Length; i++)
 					{
-						modopt[i] = typeof(Array);
+						modopt[i] = Types.Array;
 					}
-#endif
 				}
 			}
 			return modopt;
