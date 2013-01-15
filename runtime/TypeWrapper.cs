@@ -2544,7 +2544,7 @@ namespace IKVM.Internal
 			{
 				if(IsUnloadable)
 				{
-					return Types.Object;
+					return ((UnloadableTypeWrapper)this).MissingType ?? Types.Object;
 				}
 				if(IsGhostArray)
 				{
@@ -3687,7 +3687,14 @@ namespace IKVM.Internal
 			{
 				if(!clinitMethodSet)
 				{
-					clinitMethod = type.GetMethod("__<clinit>", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+					try
+					{
+						clinitMethod = type.GetMethod("__<clinit>", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+					}
+#if STATIC_COMPILER
+					catch (IKVM.Reflection.MissingMemberException) { }
+#endif
+					finally { }
 					clinitMethodSet = true;
 				}
 				return clinitMethod != null;
