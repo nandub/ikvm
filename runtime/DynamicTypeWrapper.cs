@@ -60,33 +60,36 @@ namespace IKVM.Internal
 #endif
 		private MethodBase automagicSerializationCtor;
 
-		private static TypeWrapper LoadTypeWrapper(ClassLoaderWrapper classLoader, string name)
+		private TypeWrapper LoadTypeWrapper(ClassLoaderWrapper classLoader, string name)
 		{
 			TypeWrapper tw = classLoader.LoadClassByDottedNameFast(name);
 			if (tw == null)
 			{
 				throw new NoClassDefFoundError(name);
 			}
-			CheckMissing(tw);
+			CheckMissing(this, tw);
 			return tw;
 		}
 
-		private static void CheckMissing(TypeWrapper tw)
+		private static void CheckMissing(TypeWrapper prev, TypeWrapper tw)
 		{
 #if STATIC_COMPILER
-			TypeWrapper prev = tw;
 			do
 			{
 				UnloadableTypeWrapper missing = tw as UnloadableTypeWrapper;
 				if (missing != null)
 				{
-					throw new FatalCompilerErrorException(Message.MissingBaseType,
-						missing.MissingType.FullName, missing.MissingType.Assembly.FullName,
+					Type mt = ReflectUtil.GetMissingType(missing.MissingType);
+					if (mt.Assembly.__IsMissing)
+					{
+						throw new FatalCompilerErrorException(Message.MissingBaseTypeReference, mt.FullName, mt.Assembly.FullName);
+					}
+					throw new FatalCompilerErrorException(Message.MissingBaseType, mt.FullName, mt.Assembly.FullName,
 						prev.TypeAsBaseType.FullName, prev.TypeAsBaseType.Module.Name);
 				}
 				foreach (TypeWrapper iface in tw.Interfaces)
 				{
-					CheckMissing(iface);
+					CheckMissing(tw, iface);
 				}
 				prev = tw;
 				tw = tw.BaseTypeWrapper;
@@ -5985,7 +5988,10 @@ namespace IKVM.Internal
 			Type[] modopt = Type.EmptyTypes;
 			if (tw.IsUnloadable)
 			{
-				modopt = new Type[] { ((UnloadableTypeWrapper)tw).GetCustomModifier(context) };
+				if (((UnloadableTypeWrapper)tw).MissingType == null)
+				{
+					modopt = new Type[] { ((UnloadableTypeWrapper)tw).GetCustomModifier(context) };
+				}
 			}
 			else
 			{
