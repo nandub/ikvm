@@ -50,17 +50,16 @@ namespace IKVM.Internal
 #else
 		private static readonly Dictionary<string, TypeWrapper> dynamicTypes = new Dictionary<string, TypeWrapper>();
 #endif
-		private ModuleBuilder moduleBuilder;
+		private readonly ModuleBuilder moduleBuilder;
+		private readonly bool hasInternalAccess;
 #if STATIC_COMPILER
-		private TypeBuilder proxyHelperContainer;
-		private List<TypeBuilder> proxyHelpers;
 		private TypeBuilder proxiesContainer;
 		private List<TypeBuilder> proxies;
 #endif // STATIC_COMPILER
 		private Dictionary<string, TypeBuilder> unloadables;
 		private TypeBuilder unloadableContainer;
 #if !STATIC_COMPILER && !CLASSGC
-		private static DynamicClassLoader instance = new DynamicClassLoader(CreateModuleBuilder());
+		private static DynamicClassLoader instance = new DynamicClassLoader(CreateModuleBuilder(), false);
 #endif
 #if CLASSGC
 		private List<string> friends = new List<string>();
@@ -87,9 +86,10 @@ namespace IKVM.Internal
 #endif // !STATIC_COMPILER
 		}
 
-		internal DynamicClassLoader(ModuleBuilder moduleBuilder)
+		internal DynamicClassLoader(ModuleBuilder moduleBuilder, bool hasInternalAccess)
 		{
 			this.moduleBuilder = moduleBuilder;
+			this.hasInternalAccess = hasInternalAccess;
 
 #if STATIC_COMPILER || CLASSGC
 			// Ref.Emit doesn't like the "<Module>" name for types
@@ -250,18 +250,6 @@ namespace IKVM.Internal
 		}
 
 #if STATIC_COMPILER
-		internal void DefineProxyHelper(Type type)
-		{
-			if(proxyHelperContainer == null)
-			{
-				proxyHelperContainer = moduleBuilder.DefineType("__<Proxy>", TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract);
-				AttributeHelper.HideFromJava(proxyHelperContainer);
-				AttributeHelper.SetEditorBrowsableNever(proxyHelperContainer);
-				proxyHelpers = new List<TypeBuilder>();
-			}
-			proxyHelpers.Add(proxyHelperContainer.DefineNestedType(TypeNameUtil.MangleNestedTypeName(type.FullName), TypeAttributes.NestedPublic | TypeAttributes.Interface | TypeAttributes.Abstract, null, new Type[] { type }));
-		}
-
 		internal TypeBuilder DefineProxy(TypeWrapper proxyClass, TypeWrapper[] interfaces)
 		{
 			if (proxiesContainer == null)
@@ -297,11 +285,6 @@ namespace IKVM.Internal
 			return "__<Proxies>+" + GetProxyNestedName(interfaces);
 		}
 
-		internal static string GetProxyHelperName(Type type)
-		{
-			return "__<Proxy>+" + TypeNameUtil.MangleNestedTypeName(type.FullName);
-		}
-
 		internal override Type DefineUnloadable(string name)
 		{
 			lock(this)
@@ -324,6 +307,11 @@ namespace IKVM.Internal
 				unloadables.Add(name, type);
 				return type;
 			}
+		}
+
+		internal override bool HasInternalAccess
+		{
+			get { return hasInternalAccess; }
 		}
 
 		internal void FinishAll()
@@ -354,14 +342,6 @@ namespace IKVM.Internal
 				}
 			}
 #if STATIC_COMPILER
-			if(proxyHelperContainer != null)
-			{
-				proxyHelperContainer.CreateType();
-				foreach(TypeBuilder tb in proxyHelpers)
-				{
-					tb.CreateType();
-				}
-			}
 			if(proxiesContainer != null)
 			{
 				proxiesContainer.CreateType();
@@ -417,7 +397,7 @@ namespace IKVM.Internal
 		internal static DynamicClassLoader Get(ClassLoaderWrapper loader)
 		{
 #if STATIC_COMPILER
-			return new DynamicClassLoader(((CompilerClassLoader)loader).CreateModuleBuilder());
+			return new DynamicClassLoader(((CompilerClassLoader)loader).CreateModuleBuilder(), false);
 #else
 			AssemblyClassLoader acl = loader as AssemblyClassLoader;
 			if (acl != null && ForgedKeyPair.Instance != null)
@@ -429,7 +409,7 @@ namespace IKVM.Internal
 					{
 						AssemblyName n = new AssemblyName(name);
 						n.KeyPair = ForgedKeyPair.Instance;
-						return new DynamicClassLoader(CreateModuleBuilder(n));
+						return new DynamicClassLoader(CreateModuleBuilder(n), true);
 					}
 				}
 			}
