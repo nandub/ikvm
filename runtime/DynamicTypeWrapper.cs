@@ -106,11 +106,10 @@ namespace IKVM.Internal
 #else
 		internal DynamicTypeWrapper(ClassFile f, ClassLoaderWrapper classLoader, ProtectionDomain pd)
 #endif
-			: base(f.Modifiers, f.Name)
+			: base(f.IsInternal ? TypeFlags.InternalAccess : TypeFlags.None, f.Modifiers, f.Name)
 		{
 			Profiler.Count("DynamicTypeWrapper");
 			this.classLoader = classLoader;
-			this.IsInternal = f.IsInternal;
 			this.sourceFileName = f.SourceFileAttribute;
 			this.baseTypeWrapper = f.IsInterface ? null : LoadTypeWrapper(classLoader, pd, f.SuperClass);
 			if (BaseTypeWrapper != null)
@@ -779,6 +778,27 @@ namespace IKVM.Internal
 					{
 						AttributeHelper.SetNonNestedOuterClass(typeBuilder, outerClassWrapper.Name);
 						AttributeHelper.SetNonNestedInnerClass(outer, f.Name);
+					}
+					if (outerClass.outerClass != 0 && outer == null)
+					{
+						AttributeHelper.SetNonNestedOuterClass(typeBuilder, classFile.GetConstantPoolClass(outerClass.outerClass));
+					}
+					if (classFile.InnerClasses != null)
+					{
+						foreach (ClassFile.InnerClass inner in classFile.InnerClasses)
+						{
+							string name = classFile.GetConstantPoolClass(inner.innerClass);
+							bool exists = false;
+							try
+							{
+								exists = wrapper.GetClassLoader().LoadClassByDottedNameFast(name) != null;
+							}
+							catch (RetargetableJavaException) { }
+							if (!exists)
+							{
+								AttributeHelper.SetNonNestedInnerClass(typeBuilder, name);
+							}
+						}
 					}
 					if (outer == null && mangledTypeName != wrapper.Name)
 					{
