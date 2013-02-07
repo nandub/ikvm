@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002-2012 Jeroen Frijters
+  Copyright (C) 2002-2013 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -106,6 +106,10 @@ namespace IKVM.Internal
 			if(tw == CoreClasses.java.lang.String.Wrapper)
 			{
 				return val;
+			}
+			else if(tw.IsUnloadable)
+			{
+				throw new FatalCompilerErrorException(Message.MapFileTypeNotFound, tw.Name);
 			}
 			else if(tw.TypeAsTBD.IsEnum)
 			{
@@ -331,19 +335,20 @@ namespace IKVM.Internal
 			}
 		}
 
-		private static Assembly GetSystemAssembly()
-		{
-			AssemblyName name = Types.Object.Assembly.GetName();
-			name.Name = "System";
-			return StaticCompiler.Load(name.FullName);
-		}
-
 		private static CustomAttributeBuilder GetEditorBrowsableNever()
 		{
 			if (editorBrowsableNever == null)
 			{
-				Assembly system = GetSystemAssembly();
-				editorBrowsableNever = new CustomAttributeBuilder(system.GetType("System.ComponentModel.EditorBrowsableAttribute", true).GetConstructor(new Type[] { system.GetType("System.ComponentModel.EditorBrowsableState", true) }), new object[] { (int)System.ComponentModel.EditorBrowsableState.Never });
+				// to avoid having to load (and find) System.dll, we construct a symbolic CustomAttributeBuilder
+				AssemblyName name = Types.Object.Assembly.GetName();
+				name.Name = "System";
+				Universe u = StaticCompiler.Universe;
+				Type typeofEditorBrowsableAttribute = u.ResolveType(Types.Object.Assembly, "System.ComponentModel.EditorBrowsableAttribute, " + name.FullName);
+				Type typeofEditorBrowsableState = u.ResolveType(Types.Object.Assembly, "System.ComponentModel.EditorBrowsableState, " + name.FullName);
+				u.MissingTypeIsValueType += delegate(Type type) { return type == typeofEditorBrowsableState; };
+				ConstructorInfo ctor = (ConstructorInfo)typeofEditorBrowsableAttribute.__CreateMissingMethod(ConstructorInfo.ConstructorName,
+					CallingConventions.Standard | CallingConventions.HasThis, null, default(CustomModifiers), new Type[] { typeofEditorBrowsableState }, null);
+				editorBrowsableNever = CustomAttributeBuilder.__FromBlob(ctor, new byte[] { 01, 00, 01, 00, 00, 00, 00, 00 });
 			}
 			return editorBrowsableNever;
 		}
@@ -1167,6 +1172,14 @@ namespace IKVM.Internal
 				new PropertyInfo[] { runtimeCompatibilityAttribute.GetProperty("WrapNonExceptionThrows") }, new object[] { true },
 				new FieldInfo[0], new object[0]));
 		}
+
+		internal static void SetInternalsVisibleToAttribute(AssemblyBuilder assemblyBuilder, string assemblyName)
+		{
+			Type internalsVisibleToAttribute = JVM.Import(typeof(System.Runtime.CompilerServices.InternalsVisibleToAttribute));
+			CustomAttributeBuilder cab = new CustomAttributeBuilder(
+				internalsVisibleToAttribute.GetConstructor(new Type[] { Types.String }), new object[] { assemblyName });
+			assemblyBuilder.SetCustomAttribute(cab);
+		}
 	}
 
 	static class EnumHelper
@@ -1399,17 +1412,14 @@ namespace IKVM.Internal
 				TypeWrapper annot = loader.RetTypeWrapperFromSig(annotationClass.Replace('/', '.'));
 				return annot.Annotation;
 			}
-#if STATIC_COMPILER
-			catch(ClassNotFoundException x)
-			{
-				loader.IssueMessage(Message.ClassNotFound, x.Message);
-				return null;
-			}
-#endif
 			catch (RetargetableJavaException)
 			{
 				Tracer.Warning(Tracer.Compiler, "Unable to load annotation class {0}", annotationClass);
+#if STATIC_COMPILER
+				return new CompiledTypeWrapper.CompiledAnnotation(StaticCompiler.GetRuntimeType("IKVM.Attributes.DynamicAnnotationAttribute"));
+#else
 				return null;
+#endif
 			}
 		}
 
@@ -1658,6 +1668,7 @@ namespace IKVM.Internal
 	[Flags]
 	enum TypeFlags : ushort
 	{
+		None = 0,
 		HasIncompleteInterfaceImplementation = 1,
 		InternalAccess = 2,
 		HasStaticInitializer = 4,
@@ -1672,10 +1683,12 @@ namespace IKVM.Internal
 		internal const string AccessStub = "<accessstub>";
 		internal const string NonVirtual = "<nonvirtual>";
 		internal const string Bridge = "<bridge>";
+		internal const string Incomplete = "<incomplete>";
 	}
 
 	internal abstract class TypeWrapper
 	{
+		private static readonly object flagsLock = new object();
 		private readonly string name;		// java name (e.g. java.lang.Object)
 		private readonly Modifiers modifiers;
 		private TypeFlags flags;
@@ -1688,12 +1701,13 @@ namespace IKVM.Internal
 		internal const Modifiers UnloadableModifiersHack = Modifiers.Final | Modifiers.Interface | Modifiers.Private;
 		internal const Modifiers VerifierTypeModifiersHack = Modifiers.Final | Modifiers.Interface;
 
-		internal TypeWrapper(Modifiers modifiers, string name)
+		internal TypeWrapper(TypeFlags flags, Modifiers modifiers, string name)
 		{
 			Profiler.Count("TypeWrapper");
 			// class name should be dotted or null for primitives
 			Debug.Assert(name == null || name.IndexOf('/') < 0);
 
+			this.flags = flags;
 			this.modifiers = modifiers;
 			this.name = name == null ? null : String.Intern(name);
 		}
@@ -1957,6 +1971,15 @@ namespace IKVM.Internal
 			return this;
 		}
 
+		private void SetTypeFlag(TypeFlags flag)
+		{
+			// we use a global lock object, since the chance of contention is very small
+			lock (flagsLock)
+			{
+				flags |= flag;
+			}
+		}
+
 		internal bool HasIncompleteInterfaceImplementation
 		{
 			get
@@ -1964,18 +1987,11 @@ namespace IKVM.Internal
 				TypeWrapper baseWrapper = this.BaseTypeWrapper;
 				return (flags & TypeFlags.HasIncompleteInterfaceImplementation) != 0 || (baseWrapper != null && baseWrapper.HasIncompleteInterfaceImplementation);
 			}
-			set
-			{
-				// TODO do we need locking here?
-				if(value)
-				{
-					flags |= TypeFlags.HasIncompleteInterfaceImplementation;
-				}
-				else
-				{
-					flags &= ~TypeFlags.HasIncompleteInterfaceImplementation;
-				}
-			}
+		}
+
+		internal void SetHasIncompleteInterfaceImplementation()
+		{
+			SetTypeFlag(TypeFlags.HasIncompleteInterfaceImplementation);
 		}
 
 		internal bool HasUnsupportedAbstractMethods
@@ -1992,18 +2008,11 @@ namespace IKVM.Internal
 				TypeWrapper baseWrapper = this.BaseTypeWrapper;
 				return (flags & TypeFlags.HasUnsupportedAbstractMethods) != 0 || (baseWrapper != null && baseWrapper.HasUnsupportedAbstractMethods);
 			}
-			set
-			{
-				// TODO do we need locking here?
-				if(value)
-				{
-					flags |= TypeFlags.HasUnsupportedAbstractMethods;
-				}
-				else
-				{
-					flags &= ~TypeFlags.HasUnsupportedAbstractMethods;
-				}
-			}
+		}
+
+		internal void SetHasUnsupportedAbstractMethods()
+		{
+			SetTypeFlag(TypeFlags.HasUnsupportedAbstractMethods);
 		}
 
 		internal virtual bool HasStaticInitializer
@@ -2012,18 +2021,11 @@ namespace IKVM.Internal
 			{
 				return (flags & TypeFlags.HasStaticInitializer) != 0;
 			}
-			set
-			{
-				// TODO do we need locking here?
-				if(value)
-				{
-					flags |= TypeFlags.HasStaticInitializer;
-				}
-				else
-				{
-					flags &= ~TypeFlags.HasStaticInitializer;
-				}
-			}
+		}
+
+		internal void SetHasStaticInitializer()
+		{
+			SetTypeFlag(TypeFlags.HasStaticInitializer);
 		}
 
 		internal bool HasVerifyError
@@ -2032,18 +2034,11 @@ namespace IKVM.Internal
 			{
 				return (flags & TypeFlags.VerifyError) != 0;
 			}
-			set
-			{
-				// TODO do we need locking here?
-				if(value)
-				{
-					flags |= TypeFlags.VerifyError;
-				}
-				else
-				{
-					flags &= ~TypeFlags.VerifyError;
-				}
-			}
+		}
+
+		internal void SetHasVerifyError()
+		{
+			SetTypeFlag(TypeFlags.VerifyError);
 		}
 
 		internal bool HasClassFormatError
@@ -2052,18 +2047,11 @@ namespace IKVM.Internal
 			{
 				return (flags & TypeFlags.ClassFormatError) != 0;
 			}
-			set
-			{
-				// TODO do we need locking here?
-				if(value)
-				{
-					flags |= TypeFlags.ClassFormatError;
-				}
-				else
-				{
-					flags &= ~TypeFlags.ClassFormatError;
-				}
-			}
+		}
+
+		internal void SetHasClassFormatError()
+		{
+			SetTypeFlag(TypeFlags.ClassFormatError);
 		}
 
 		internal virtual bool IsFakeTypeContainer
@@ -2265,18 +2253,6 @@ namespace IKVM.Internal
 			{
 				return (flags & TypeFlags.InternalAccess) != 0;
 			}
-			set
-			{
-				// TODO do we need locking here?
-				if(value)
-				{
-					flags |= TypeFlags.InternalAccess;
-				}
-				else
-				{
-					flags &= ~TypeFlags.InternalAccess;
-				}
-			}
 		}
 
 		internal bool IsPublic
@@ -2387,6 +2363,12 @@ namespace IKVM.Internal
 				{
 					if(methods == null)
 					{
+#if STATIC_COMPILER
+						if(!CheckMissingBaseTypes(TypeAsBaseType))
+						{
+							return methods = MethodWrapper.EmptyArray;
+						}
+#endif
 						LazyPublishMethods();
 					}
 				}
@@ -2402,12 +2384,43 @@ namespace IKVM.Internal
 				{
 					if(fields == null)
 					{
+#if STATIC_COMPILER
+						if (!CheckMissingBaseTypes(TypeAsBaseType))
+						{
+							return fields = FieldWrapper.EmptyArray;
+						}
+#endif
 						LazyPublishFields();
 					}
 				}
 			}
 			return fields;
 		}
+
+#if STATIC_COMPILER
+		private static bool CheckMissingBaseTypes(Type type)
+		{
+			while (type != null)
+			{
+				if (type.__ContainsMissingType)
+				{
+					StaticCompiler.IssueMissingTypeMessage(type);
+					return false;
+				}
+				bool ok = true;
+				foreach (Type iface in type.__GetDeclaredInterfaces())
+				{
+					ok &= CheckMissingBaseTypes(iface);
+				}
+				if (!ok)
+				{
+					return false;
+				}
+				type = type.BaseType;
+			}
+			return true;
+		}
+#endif
 
 		internal MethodWrapper GetMethodWrapper(string name, string sig, bool inherit)
 		{
@@ -2476,7 +2489,7 @@ namespace IKVM.Internal
 			return GetClassLoader().InternalsVisibleToImpl(this, wrapper);
 		}
 
-		internal bool IsPackageAccessibleFrom(TypeWrapper wrapper)
+		internal virtual bool IsPackageAccessibleFrom(TypeWrapper wrapper)
 		{
 			if (MatchingPackageNames(name, wrapper.name))
 			{
@@ -2489,7 +2502,15 @@ namespace IKVM.Internal
 					return ccl.IsEquivalentTo(wrapper.GetClassLoader());
 				}
 #endif
-				return GetClassLoader() == wrapper.GetClassLoader();
+				if (GetClassLoader() != wrapper.GetClassLoader())
+				{
+					return false;
+				}
+#if STATIC_COMPILER || STUB_GENERATOR
+				return true;
+#else
+				return InternalsVisibleTo(wrapper);
+#endif
 			}
 			else
 			{
@@ -2897,7 +2918,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal virtual void EmitCheckcast(TypeWrapper context, CodeEmitter ilgen)
+		internal virtual void EmitCheckcast(CodeEmitter ilgen)
 		{
 			if(IsGhost)
 			{
@@ -2931,7 +2952,7 @@ namespace IKVM.Internal
 			}
 		}
 
-		internal virtual void EmitInstanceOf(TypeWrapper context, CodeEmitter ilgen)
+		internal virtual void EmitInstanceOf(CodeEmitter ilgen)
 		{
 			if(IsGhost)
 			{
@@ -3136,7 +3157,7 @@ namespace IKVM.Internal
 		private Type customModifier;
 
 		internal UnloadableTypeWrapper(string name)
-			: base(TypeWrapper.UnloadableModifiersHack, name)
+			: base(TypeFlags.None, TypeWrapper.UnloadableModifiersHack, name)
 		{
 		}
 
@@ -3249,18 +3270,14 @@ namespace IKVM.Internal
 			return customModifier ?? (customModifier = context.DefineUnloadable(this.Name));
 		}
 
-		internal override void EmitCheckcast(TypeWrapper context, CodeEmitter ilgen)
+		internal override void EmitCheckcast(CodeEmitter ilgen)
 		{
-			ilgen.Emit(OpCodes.Ldtoken, context.TypeAsTBD);
-			ilgen.Emit(OpCodes.Ldstr, Name);
-			ilgen.Emit(OpCodes.Call, ByteCodeHelperMethods.DynamicCast);
+			throw new InvalidOperationException("EmitCheckcast called on UnloadableTypeWrapper: " + Name);
 		}
 
-		internal override void EmitInstanceOf(TypeWrapper context, CodeEmitter ilgen)
+		internal override void EmitInstanceOf(CodeEmitter ilgen)
 		{
-			ilgen.Emit(OpCodes.Ldtoken, context.TypeAsTBD);
-			ilgen.Emit(OpCodes.Ldstr, Name);
-			ilgen.Emit(OpCodes.Call, ByteCodeHelperMethods.DynamicInstanceOf);
+			throw new InvalidOperationException("EmitInstanceOf called on UnloadableTypeWrapper: " + Name);
 		}
 #endif // !STUB_GENERATOR
 	}
@@ -3281,7 +3298,7 @@ namespace IKVM.Internal
 		private readonly string sigName;
 
 		private PrimitiveTypeWrapper(Type type, string sigName)
-			: base(Modifiers.Public | Modifiers.Abstract | Modifiers.Final, null)
+			: base(TypeFlags.None, Modifiers.Public | Modifiers.Abstract | Modifiers.Final, null)
 		{
 			this.type = type;
 			this.sigName = sigName;
@@ -3624,9 +3641,8 @@ namespace IKVM.Internal
 		}
 
 		private CompiledTypeWrapper(ExModifiers exmod, string name)
-			: base(exmod.Modifiers, name)
+			: base(exmod.IsInternal ? TypeFlags.InternalAccess : TypeFlags.None, exmod.Modifiers, name)
 		{
-			this.IsInternal = exmod.IsInternal;
 		}
 
 		private CompiledTypeWrapper(string name, Type type)
@@ -3687,7 +3703,14 @@ namespace IKVM.Internal
 			{
 				if(!clinitMethodSet)
 				{
-					clinitMethod = type.GetMethod("__<clinit>", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+					try
+					{
+						clinitMethod = type.GetMethod("__<clinit>", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+					}
+#if STATIC_COMPILER
+					catch (IKVM.Reflection.MissingMemberException) { }
+#endif
+					finally { }
 					clinitMethodSet = true;
 				}
 				return clinitMethod != null;
@@ -4068,7 +4091,14 @@ namespace IKVM.Internal
 
 		private void AddMethodOrConstructor(MethodBase method, List<MethodWrapper> methods)
 		{
-			if(!AttributeHelper.IsHideFromJava(method))
+			if(AttributeHelper.IsHideFromJava(method))
+			{
+				if(method.Name.StartsWith(NamePrefix.Incomplete, StringComparison.Ordinal))
+				{
+					SetHasIncompleteInterfaceImplementation();
+				}
+			}
+			else
 			{
 				if(method.IsSpecialName && method.Name.StartsWith("__<"))
 				{
@@ -4610,7 +4640,7 @@ namespace IKVM.Internal
 		}
 #endif
 
-		private sealed class CompiledAnnotation : Annotation
+		internal sealed class CompiledAnnotation : Annotation
 		{
 			private Type type;
 
@@ -4732,11 +4762,11 @@ namespace IKVM.Internal
 		private bool finished;
 
 		internal ArrayTypeWrapper(TypeWrapper ultimateElementTypeWrapper, string name)
-			: base(Modifiers.Final | Modifiers.Abstract | (ultimateElementTypeWrapper.Modifiers & Modifiers.Public), name)
+			: base(ultimateElementTypeWrapper.IsInternal ? TypeFlags.InternalAccess : TypeFlags.None,
+				Modifiers.Final | Modifiers.Abstract | (ultimateElementTypeWrapper.Modifiers & Modifiers.Public), name)
 		{
 			Debug.Assert(!ultimateElementTypeWrapper.IsArray);
 			this.ultimateElementTypeWrapper = ultimateElementTypeWrapper;
-			this.IsInternal = ultimateElementTypeWrapper.IsInternal;
 		}
 
 		internal override TypeWrapper BaseTypeWrapper
@@ -4997,7 +5027,7 @@ namespace IKVM.Internal
 		}
 
 		private VerifierTypeWrapper(string name, int index, TypeWrapper underlyingType, MethodAnalyzer methodAnalyzer)
-			: base(TypeWrapper.VerifierTypeModifiersHack, name)
+			: base(TypeFlags.None, TypeWrapper.VerifierTypeModifiersHack, name)
 		{
 			this.index = index;
 			this.underlyingType = underlyingType;
