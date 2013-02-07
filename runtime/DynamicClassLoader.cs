@@ -30,9 +30,11 @@ using System.Runtime.Serialization;
 using IKVM.Reflection;
 using IKVM.Reflection.Emit;
 using Type = IKVM.Reflection.Type;
+using ProtectionDomain = System.Object;
 #else
 using System.Reflection;
 using System.Reflection.Emit;
+using ProtectionDomain = java.security.ProtectionDomain;
 #endif
 
 namespace IKVM.Internal
@@ -44,13 +46,15 @@ namespace IKVM.Internal
 #if !STATIC_COMPILER
 		private static List<AssemblyBuilder> saveDebugAssemblies;
 		private static List<DynamicClassLoader> saveClassLoaders;
+		private static int dumpCounter;
 #endif // !STATIC_COMPILER
 #if STATIC_COMPILER || CLASSGC
 		private readonly Dictionary<string, TypeWrapper> dynamicTypes = new Dictionary<string, TypeWrapper>();
 #else
 		private static readonly Dictionary<string, TypeWrapper> dynamicTypes = new Dictionary<string, TypeWrapper>();
 #endif
-		private ModuleBuilder moduleBuilder;
+		private readonly ModuleBuilder moduleBuilder;
+		private readonly bool hasInternalAccess;
 #if STATIC_COMPILER
 		private TypeBuilder proxiesContainer;
 		private List<TypeBuilder> proxies;
@@ -58,7 +62,7 @@ namespace IKVM.Internal
 		private Dictionary<string, TypeBuilder> unloadables;
 		private TypeBuilder unloadableContainer;
 #if !STATIC_COMPILER && !CLASSGC
-		private static DynamicClassLoader instance = new DynamicClassLoader(CreateModuleBuilder());
+		private static DynamicClassLoader instance = new DynamicClassLoader(CreateModuleBuilder(), false);
 #endif
 #if CLASSGC
 		private List<string> friends = new List<string>();
@@ -85,9 +89,10 @@ namespace IKVM.Internal
 #endif // !STATIC_COMPILER
 		}
 
-		internal DynamicClassLoader(ModuleBuilder moduleBuilder)
+		internal DynamicClassLoader(ModuleBuilder moduleBuilder, bool hasInternalAccess)
 		{
 			this.moduleBuilder = moduleBuilder;
+			this.hasInternalAccess = hasInternalAccess;
 
 #if STATIC_COMPILER || CLASSGC
 			// Ref.Emit doesn't like the "<Module>" name for types
@@ -201,7 +206,7 @@ namespace IKVM.Internal
 			return mangledTypeName;
 		}
 
-		internal sealed override TypeWrapper DefineClassImpl(Dictionary<string, TypeWrapper> types, ClassFile f, ClassLoaderWrapper classLoader, object protectionDomain)
+		internal sealed override TypeWrapper DefineClassImpl(Dictionary<string, TypeWrapper> types, ClassFile f, ClassLoaderWrapper classLoader, ProtectionDomain protectionDomain)
 		{
 #if STATIC_COMPILER
 			AotTypeWrapper type = new AotTypeWrapper(f, (CompilerClassLoader)classLoader);
@@ -210,7 +215,7 @@ namespace IKVM.Internal
 			return type;
 #else
 			// this step can throw a retargettable exception, if the class is incorrect
-			DynamicTypeWrapper type = new DynamicTypeWrapper(f, classLoader);
+			DynamicTypeWrapper type = new DynamicTypeWrapper(f, classLoader, protectionDomain);
 			// This step actually creates the TypeBuilder. It is not allowed to throw any exceptions,
 			// if an exception does occur, it is due to a programming error in the IKVM or CLR runtime
 			// and will cause a CriticalFailure and exit the process.
@@ -234,7 +239,7 @@ namespace IKVM.Internal
 #else
 					clazz.typeWrapper = type;
 #endif
-					clazz.pd = (java.security.ProtectionDomain)protectionDomain;
+					clazz.pd = protectionDomain;
 					type.SetClassObject(clazz);
 #endif
 				}
@@ -305,6 +310,11 @@ namespace IKVM.Internal
 				unloadables.Add(name, type);
 				return type;
 			}
+		}
+
+		internal override bool HasInternalAccess
+		{
+			get { return hasInternalAccess; }
 		}
 
 		internal void FinishAll()
@@ -390,7 +400,7 @@ namespace IKVM.Internal
 		internal static DynamicClassLoader Get(ClassLoaderWrapper loader)
 		{
 #if STATIC_COMPILER
-			return new DynamicClassLoader(((CompilerClassLoader)loader).CreateModuleBuilder());
+			return new DynamicClassLoader(((CompilerClassLoader)loader).CreateModuleBuilder(), false);
 #else
 			AssemblyClassLoader acl = loader as AssemblyClassLoader;
 			if (acl != null && ForgedKeyPair.Instance != null)
@@ -402,7 +412,7 @@ namespace IKVM.Internal
 					{
 						AssemblyName n = new AssemblyName(name);
 						n.KeyPair = ForgedKeyPair.Instance;
-						return new DynamicClassLoader(CreateModuleBuilder(n));
+						return new DynamicClassLoader(CreateModuleBuilder(n), true);
 					}
 				}
 			}
@@ -475,9 +485,7 @@ namespace IKVM.Internal
 				{
 					System.Threading.Interlocked.CompareExchange(ref saveClassLoaders, new List<DynamicClassLoader>(), null);
 				}
-				// we ignore the race condition (we could end up with multiple assemblies with the same name),
-				// because it is pretty harmless (you'll miss one of the ikvmdump-xx.dll files)
-				name.Name = "ikvmdump-" + saveClassLoaders.Count;
+				name.Name = "ikvmdump-" + System.Threading.Interlocked.Increment(ref dumpCounter);
 			}
 			else
 			{
