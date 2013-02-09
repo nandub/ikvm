@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002-2012 Jeroen Frijters
+  Copyright (C) 2002-2013 Jeroen Frijters
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -533,7 +533,7 @@ namespace IKVM.Internal
 				{
 					wrapper.SetHasStaticInitializer();
 				}
-				if (wrapper.IsAbstract && (!wrapper.IsInterface || wrapper.IsPublic))
+				if (!wrapper.IsInterface || wrapper.IsPublic)
 				{
 					List<MethodWrapper> methodsArray = new List<MethodWrapper>(methods);
 					List<MethodWrapper[]> baseMethodsArray = new List<MethodWrapper[]>(baseMethods);
@@ -2750,7 +2750,12 @@ namespace IKVM.Internal
 						{
 							// We're a Miranda method
 							Debug.Assert(baseMethods[index].Length == 1 && baseMethods[index][0].DeclaringType.IsInterface);
-							MethodBuilder mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, typeBuilder, methods[index].Name, MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.Abstract | MethodAttributes.CheckAccessOnOverride);
+							MethodAttributes attr = MethodAttributes.HideBySig | MethodAttributes.NewSlot | MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.CheckAccessOnOverride;
+							if (wrapper.IsAbstract)
+							{
+								attr |= MethodAttributes.Abstract;
+							}
+							MethodBuilder mb = methods[index].GetDefineMethodHelper().DefineMethod(wrapper, typeBuilder, methods[index].Name, attr);
 							AttributeHelper.HideFromReflection(mb);
 							if (CheckRequireOverrideStub(methods[index], baseMethods[index][0]))
 							{
@@ -2760,6 +2765,12 @@ namespace IKVM.Internal
 							else if (!baseMethods[index][0].IsDynamicOnly && methods[index].Name != baseMethods[index][0].RealName)
 							{
 								typeBuilder.DefineMethodOverride(mb, (MethodInfo)baseMethods[index][0].GetMethod());
+							}
+							if (!wrapper.IsAbstract)
+							{
+								CodeEmitter ilgen = CodeEmitter.Create(mb);
+								ilgen.EmitThrow("java.lang.AbstractMethodError", wrapper.Name + "." + methods[index].Name + methods[index].Signature);
+								ilgen.DoEmit();
 							}
 							return mb;
 						}
@@ -4590,7 +4601,7 @@ namespace IKVM.Internal
 						// it makes sense, so I hope the spec is wrong
 						// UPDATE unfortunately, according to Serge Lidin the spec is correct, and it is not allowed to have virtual privatescope
 						// methods. Sigh! So I have to use private methods and mangle the name
-						MethodBuilder mb = DefineInterfaceStubMethod(mangledName, ifmethod);
+						MethodBuilder mb = DefineInterfaceStubMethod(NamePrefix.Incomplete + mangledName, ifmethod);
 						AttributeHelper.HideFromJava(mb);
 						CodeEmitter ilgen = CodeEmitter.Create(mb);
 						ilgen.EmitThrow("java.lang.IllegalAccessError", wrapper.Name + "." + ifmethod.Name + ifmethod.Signature);
@@ -4648,7 +4659,7 @@ namespace IKVM.Internal
 					{
 						// the type doesn't implement the interface method and isn't abstract either. The JVM allows this, but the CLR doesn't,
 						// so we have to create a stub method that throws an AbstractMethodError
-						MethodBuilder mb = DefineInterfaceStubMethod(mangledName, ifmethod);
+						MethodBuilder mb = DefineInterfaceStubMethod(NamePrefix.Incomplete + mangledName, ifmethod);
 						AttributeHelper.HideFromJava(mb);
 						CodeEmitter ilgen = CodeEmitter.Create(mb);
 						ilgen.EmitThrow("java.lang.AbstractMethodError", wrapper.Name + "." + ifmethod.Name + ifmethod.Signature);
@@ -5458,6 +5469,13 @@ namespace IKVM.Internal
 				return tb;
 			}
 
+			internal TypeBuilder DefineMethodTypeConstantType(int index)
+			{
+				TypeBuilder tb = typeBuilder.DefineNestedType("__<>MTC" + index, TypeAttributes.NestedPrivate | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.BeforeFieldInit);
+				RegisterNestedTypeBuilder(tb);
+				return tb;
+			}
+
 			internal MethodBuilder DefineMethodHandleDispatchStub(Type returnType, Type[] parameterTypes)
 			{
 				return typeBuilder.DefineMethod("__<>MHC", MethodAttributes.Static | MethodAttributes.PrivateScope, returnType, parameterTypes);
@@ -5466,6 +5484,11 @@ namespace IKVM.Internal
 			internal FieldBuilder DefineMethodHandleInvokeCacheField(Type fieldType)
 			{
 				return typeBuilder.DefineField("__<>invokeCache", fieldType, FieldAttributes.Static | FieldAttributes.PrivateScope);
+			}
+
+			internal FieldBuilder DefineDynamicMethodTypeCacheField()
+			{
+				return typeBuilder.DefineField("__<>dynamicMethodTypeCache", ClassLoaderWrapper.LoadClassCritical("java.lang.invoke.MethodType").TypeAsSignatureType, FieldAttributes.Static | FieldAttributes.PrivateScope);
 			}
 
 			internal MethodBuilder DefineInvokeSpecialStub(DefineMethodHelper sig)
