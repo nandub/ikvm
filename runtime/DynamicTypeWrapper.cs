@@ -5469,6 +5469,13 @@ namespace IKVM.Internal
 				return tb;
 			}
 
+			internal TypeBuilder DefineMethodTypeConstantType(int index)
+			{
+				TypeBuilder tb = typeBuilder.DefineNestedType("__<>MTC" + index, TypeAttributes.NestedPrivate | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.BeforeFieldInit);
+				RegisterNestedTypeBuilder(tb);
+				return tb;
+			}
+
 			internal MethodBuilder DefineMethodHandleDispatchStub(Type returnType, Type[] parameterTypes)
 			{
 				return typeBuilder.DefineMethod("__<>MHC", MethodAttributes.Static | MethodAttributes.PrivateScope, returnType, parameterTypes);
@@ -5477,6 +5484,16 @@ namespace IKVM.Internal
 			internal FieldBuilder DefineMethodHandleInvokeCacheField(Type fieldType)
 			{
 				return typeBuilder.DefineField("__<>invokeCache", fieldType, FieldAttributes.Static | FieldAttributes.PrivateScope);
+			}
+
+			internal FieldBuilder DefineDynamicMethodHandleCacheField()
+			{
+				return typeBuilder.DefineField("__<>dynamicMethodHandleCache", CoreClasses.java.lang.invoke.MethodHandle.Wrapper.TypeAsSignatureType, FieldAttributes.Static | FieldAttributes.PrivateScope);
+			}
+
+			internal FieldBuilder DefineDynamicMethodTypeCacheField()
+			{
+				return typeBuilder.DefineField("__<>dynamicMethodTypeCache", CoreClasses.java.lang.invoke.MethodType.Wrapper.TypeAsSignatureType, FieldAttributes.Static | FieldAttributes.PrivateScope);
 			}
 
 			internal MethodBuilder DefineInvokeSpecialStub(DefineMethodHelper sig)
