@@ -58,11 +58,11 @@ namespace IKVM.Internal
 	abstract class MemberWrapper
 	{
 		private HandleWrapper handle;
-		private TypeWrapper declaringType;
-		private Modifiers modifiers;
+		private readonly TypeWrapper declaringType;
+		private readonly Modifiers modifiers;
 		private MemberFlags flags;
-		private string name;
-		private string sig;
+		private readonly string name;
+		private readonly string sig;
 
 		private sealed class HandleWrapper
 		{
@@ -1090,8 +1090,8 @@ namespace IKVM.Internal
 
 	sealed class SimpleCallMethodWrapper : MethodWrapper
 	{
-		private SimpleOpCode call;
-		private SimpleOpCode callvirt;
+		private readonly SimpleOpCode call;
+		private readonly SimpleOpCode callvirt;
 
 		internal SimpleCallMethodWrapper(TypeWrapper declaringType, string name, string sig, MethodInfo method, TypeWrapper returnType, TypeWrapper[] parameterTypes, Modifiers modifiers, MemberFlags flags, SimpleOpCode call, SimpleOpCode callvirt)
 			: base(declaringType, name, sig, method, returnType, parameterTypes, modifiers, flags)
@@ -1333,6 +1333,11 @@ namespace IKVM.Internal
 
 		internal object ToField(bool copy)
 		{
+			return ToField(copy, null);
+		}
+
+		internal object ToField(bool copy, int? fieldIndex)
+		{
 #if FIRST_PASS
 			return null;
 #else
@@ -1347,7 +1352,7 @@ namespace IKVM.Internal
 					this.Name,
 					this.FieldTypeWrapper.EnsureLoadable(this.DeclaringType.GetClassLoader()).ClassObject,
 					(int)(this.Modifiers & ReflectionFieldModifiersMask) | (this.IsInternal ? 0x40000000 : 0),
-					Array.IndexOf(this.DeclaringType.GetFields(), this),
+					fieldIndex ?? Array.IndexOf(this.DeclaringType.GetFields(), this),
 					this.DeclaringType.GetGenericFieldSignature(this),
 					null
 				);
@@ -1405,6 +1410,14 @@ namespace IKVM.Internal
 		protected abstract void EmitSetImpl(CodeEmitter ilgen);
 #endif // !STUB_GENERATOR
 
+
+#if STATIC_COMPILER
+		internal bool IsLinked
+		{
+			get { return fieldType != null; }
+		}
+#endif
+		
 		internal void Link()
 		{
 			lock(this)
@@ -1478,7 +1491,7 @@ namespace IKVM.Internal
 #else
 			if (jniAccessor == null)
 			{
-				jniAccessor = IKVM.NativeCode.sun.reflect.ReflectionFactory.NewFieldAccessorJNI(this);
+				Interlocked.CompareExchange(ref jniAccessor, IKVM.NativeCode.sun.reflect.ReflectionFactory.NewFieldAccessorJNI(this), null);
 			}
 			return jniAccessor;
 #endif
@@ -1900,8 +1913,8 @@ namespace IKVM.Internal
 
 	sealed class CompiledAccessStubFieldWrapper : FieldWrapper
 	{
-		private MethodInfo getter;
-		private MethodInfo setter;
+		private readonly MethodInfo getter;
+		private readonly MethodInfo setter;
 
 		private static Modifiers GetModifiers(PropertyInfo property)
 		{
