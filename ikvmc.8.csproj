@@ -35,7 +35,7 @@
     <CheckForOverflowUnderflow>false</CheckForOverflowUnderflow>
     <ConfigurationOverrideFile>
     </ConfigurationOverrideFile>
-    <DefineConstants>TRACE;DEBUG;STATIC_COMPILER;IKVM_REF_EMIT</DefineConstants>
+    <DefineConstants>TRACE;DEBUG;STATIC_COMPILER;EMITTERS</DefineConstants>
     <DocumentationFile>
     </DocumentationFile>
     <DebugSymbols>true</DebugSymbols>
@@ -71,6 +71,7 @@
     <Compile Include="ikvmc\AssemblyInfo.cs">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="ikvmc\AssemblyResolver.cs" />
     <Compile Include="ikvmc\Compiler.cs">
       <SubType>Code</SubType>
     </Compile>
@@ -78,9 +79,11 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="ikvmc\FakeTypes.cs" />
+    <Compile Include="ikvmc\Proxy.cs" />
     <Compile Include="ikvmc\remapper.cs">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="runtime\AssemblyClassLoader.cs" />
     <Compile Include="runtime\atomic.cs" />
     <Compile Include="runtime\attributes.cs">
       <SubType>Code</SubType>
@@ -106,14 +109,17 @@
     <Compile Include="runtime\CoreClasses.cs">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="runtime\DotNetTypeWrapper.cs" />
     <Compile Include="runtime\DynamicClassLoader.cs">
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="runtime\DynamicTypeWrapper.cs" />
     <Compile Include="runtime\intrinsics.cs" />
     <Compile Include="runtime\JavaException.cs">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="runtime\JsrInliner.cs" />
+    <Compile Include="runtime\LocalVars.cs" />
     <Compile Include="runtime\MemberWrapper.cs">
       <SubType>Code</SubType>
     </Compile>
@@ -122,7 +128,9 @@
     </Compile>
     <Compile Include="runtime\ReflectUtil.cs" />
     <Compile Include="runtime\RuntimeHelperTypes.cs" />
+    <Compile Include="runtime\Serialization.cs" />
     <Compile Include="runtime\tracer.cs" />
+    <Compile Include="runtime\Types.cs" />
     <Compile Include="runtime\TypeWrapper.cs">
       <SubType>Code</SubType>
     </Compile>
@@ -135,9 +143,9 @@
     <Compile Include="CommonAssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="refemit\IKVM.Reflection.Emit.csproj">
-      <Project>{3949055D-38DF-4A8F-A632-0F0E62337428}</Project>
-      <Name>IKVM.Reflection.Emit</Name>
+    <ProjectReference Include="reflect\IKVM.Reflection.csproj">
+      <Project>{4CB170EF-DFE6-4A56-9E1B-A85449E827A7}</Project>
+      <Name>IKVM.Reflection</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.CSharp.targets" />
