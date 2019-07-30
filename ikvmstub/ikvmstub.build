@@ -50,7 +50,6 @@
                 <include name="../runtime/stubgen/ClassFileWriter.cs" />
                 <include name="../runtime/stubgen/SerialVersionUID.cs" />
                 <include name="../runtime/stubgen/StubGenerator.cs" />
-                <include name="AssemblyInfo.cs" />
                 <include name="ikvmstub.cs" />
             </sources>
             <references>
