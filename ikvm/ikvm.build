@@ -30,7 +30,7 @@
         <csc target="exe" output="../bin/ikvm.exe" define="TRACE;${signed}" noconfig="true" nostdlib="true">
             <sources>
                 <include name="../CommonAssemblyInfo.cs" />
-                <include name="*.cs" />
+                <include name="starter.cs" />
             </sources>
             <references>
                 <include name="../bin/IKVM.OpenJDK.Core.dll" asis="true" />
